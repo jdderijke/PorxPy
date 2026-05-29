@@ -1,0 +1,8 @@
+Version=1
+asset_class,description,matches
+equity,Shares / common stock and equity-like instruments,stock|stocks|equities|shares|equity securities|stockPosition
+fixed_income,Bonds and other debt instruments,bond|bonds|fixed income|fixedincome|fi|debt|bondPosition|preferredPosition|convertiblePosition
+cash,Cash and cash equivalents / money-market instruments,money market|moneymarket|cash equivalents|cashPosition|deposits
+mixed,Mixed / balanced / multi-asset allocation,balanced|allocation|multi-asset|multiasset|multi asset
+commodity,Commodities and commodity-linked instruments,commodities|commodity-linked|gold|precious metals
+other,Anything not covered by the categories above,others|otherPosition|misc|miscellaneous|unclassified

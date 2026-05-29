@@ -1,0 +1,25 @@
+Version=6
+asset_class,asset_class_desc,sub_class,sub_class_desc,matches
+equity,Shares of publicly traded companies,shares,Regular equity,
+bond,"Bonds, deposit accnts, money market",corporate bond,,
+bond,"Bonds, deposit accnts, money market",government bond,,
+bond,"Bonds, deposit accnts, money market",government currency bond,goverment deposit account,
+bond,"Bonds, deposit accnts, money market",regular currency bond,bank deposit account,
+bond,"Bonds, deposit accnts, money market",interest rate future,,
+bond,"Bonds, deposit accnts, money market",money market,,
+bond,"Bonds, deposit accnts, money market",money market short term,,
+bond,"Bonds, either company or government",mortgage backed,,
+cash,Cash posittions,free spendable cash,,shares
+cash,Cash posittions,bank guarantees,,
+cash,Cash posittions,committed cash,,
+cash,Cash posittions,cash offset accounts,,
+other,"Futures, Crypto, Financial constructs",crypto,bitcoin etc.,
+other,"Futures, Crypto, Financial constructs",share future,"options, call, put",
+other,"Futures, Crypto, Financial constructs",bond future,,
+other,"Futures, Crypto, Financial constructs",interest future,,
+other,"Futures, Crypto, Financial constructs",treasury future,,
+other,"Futures, Crypto, Financial constructs",index swap,for synthetic replication,
+other,"Futures, Crypto, Financial constructs",credit default swap,,
+other,"Futures, Crypto, Financial constructs",buy-back agreements,,
+other,"Futures, Crypto, Financial constructs",debts/claims,,
+other,"Futures, Crypto, Financial constructs",unknown,,undefined

@@ -1,0 +1,14 @@
+Version=16
+sector,super_sector,description,matches
+basic materials,cyclical,"Chemicals, building materials, mining and metals.",materials|basic resources|mining|chemicals|basic_materials
+communication services,sensitive,"Telecoms, media, interactive media and services.",communications|telecom|telecommunications|telecommunication services|media|telecom services|communication_services
+consumer cyclical,cyclical,"Discretionary consumer goods and services — autos, hotels, retail.",consumer discretionary|consumer cyclicals|retail|consumer_cyclical
+consumer defensive,defensive,"Staple consumer goods — food, beverages, household products.",consumer staples|consumer non-cyclical|consumer staples products|staples|consumer_defensive
+energy,sensitive,"Oil, gas, fuel, and energy equipment / services.","oil & gas|oil and gas|oil, gas & consumable fuels|petroleum"
+financial services,cyclical,"Banks, insurance, capital markets, diversified financials.",financials|financial|banks|insurance|banking|financial|financial_services|financialservices|finance companies|brokerage/asset managers/exchanges|financial other
+healthcare,defensive,"Pharmaceuticals, biotech, medical devices, providers.",health care|health|pharmaceuticals|biotech|pharma
+industrials,sensitive,"Aerospace & defense, capital goods, transportation, construction.",industrial|capital goods|transportation|aerospace & defense|autotjes maken|basic industry|industrial other
+real estate,cyclical,REITs and real estate management & development.,reit|reits|real estate investment trusts|realestate|other
+technology,sensitive,"Software, hardware, semiconductors, IT services.",information technology|tech|it|infotech|software|semiconductors|bioloog tech|telco|communication
+utilities,defensive,"Electric, gas, water, and multi-utility companies.",utility|electric utilities|electric|utility other|owned no guarantee
+cash and/or derivatives,defensive,"Cash, deposit accounts, money-market positions, and short-dated derivative offsets.",cash|cash and derivatives|cash & derivatives|derivatives|money market|deposits

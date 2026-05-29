@@ -1,0 +1,63 @@
+# =============================================================
+#  PorxPy .gitignore
+# =============================================================
+
+# ----- Personal directories (not for repo) -------------------
+user_*/
+
+# ----- PorxPy runtime data (never commit user data) ----------
+portfolios.json
+settings.json
+overrides.json
+isin_map.json
+
+# Cache directories (auto-rebuilt at runtime)
+cache/
+
+# Uploaded holdings files (user data, auto-managed by the app)
+uploads/
+
+# Resource CSVs are source-controlled and should be committed.
+# Only exclude runtime-written JSON that the app may drop in resources/
+resources/*.json
+
+# ----- Python ---------------------------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.env
+
+# ----- PyCharm / JetBrains --------------------------------
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# ----- VS Code --------------------------------------------
+.vscode/
+
+# ----- OS cruft -------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ----- Misc -----------------------------------------------
+*.log
+*.bak
+*.swp
+*.tmp
