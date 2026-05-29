@@ -722,7 +722,7 @@ def holdings_status_from_cache(isin: str) -> dict:
 # columns are always present in the schema for shape uniformity; the
 # holdings table can show or hide them via the "Show bond columns" toggle.
 HOLDINGS_ROW_FIELDS: tuple[str, ...] = (
-    "name", "ticker", "isin", "sector", "asset_class", "sub_class",
+    "name", "ticker", "isin", "cusip", "sector", "asset_class", "sub_class",
     "country", "currency", "weight_pct",
     "duration", "maturity", "coupon", "effective_date",
 )
@@ -1490,6 +1490,32 @@ def alias_put(raw: str, resolved: str | None) -> None:
     blob = cache_read(SYMBOL_ALIAS_CACHE_NAME, "_symbol_aliases")
     blob[raw] = {"resolved": resolved, "stamped_at": now_iso()}
     cache_write(SYMBOL_ALIAS_CACHE_NAME, "_symbol_aliases", blob)
+
+
+def alias_delete(raw: str) -> bool:
+    """Remove an alias cache entry for ``raw``, if present.
+
+    Used to clear a stale negative alias (``None`` resolved value)
+    before re-enriching on a fresh upload — without this, a ticker
+    that failed to resolve on a previous upload would be short-
+    circuited forever, even if the re-upload supplies an ISIN or
+    CUSIP that would now let us find it.
+
+    Args:
+        raw: The raw input form (already cleaned).
+
+    Returns:
+        ``True`` if an entry was present and removed, ``False`` if
+        nothing was cached for ``raw``.
+    """
+    if not raw:
+        return False
+    blob = cache_read(SYMBOL_ALIAS_CACHE_NAME, "_symbol_aliases")
+    if raw not in blob:
+        return False
+    del blob[raw]
+    cache_write(SYMBOL_ALIAS_CACHE_NAME, "_symbol_aliases", blob)
+    return True
 
 
 # ---------------------------------------------------------------------------

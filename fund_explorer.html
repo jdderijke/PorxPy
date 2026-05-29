@@ -1637,7 +1637,7 @@
         For Sector / Country / Currency / Asset class, when the dropdown
         is <em>(none)</em> you can either type a default value applied to
         every row, or click <strong>📥 Yahoo</strong> to fetch the field
-        per holding from Yahoo Finance (requires a Ticker column). Yahoo
+        per holding from Yahoo Finance (requires a Ticker, CUSIP, or ISIN column). Yahoo
         wins where it has data; the default fills any remaining gaps.
       </div>
 
@@ -1719,7 +1719,7 @@
         <input id="heName" type="text" autocomplete="off">
       </div>
     </div>
-    <div class="fgrp" style="grid-template-columns:repeat(2, 1fr)">
+    <div class="fgrp" style="grid-template-columns:repeat(3, 1fr)">
       <div class="field">
         <label class="mfl">Ticker</label>
         <input id="heTicker" type="text" autocomplete="off" spellcheck="false">
@@ -1728,6 +1728,11 @@
         <label class="mfl">ISIN</label>
         <input id="heIsin" type="text" autocomplete="off" spellcheck="false"
                style="font-family:var(--mono)">
+      </div>
+      <div class="field">
+        <label class="mfl">CUSIP <span style="color:var(--muted)">(US)</span></label>
+        <input id="heCusip" type="text" autocomplete="off" spellcheck="false"
+               style="font-family:var(--mono)" placeholder="9-char identifier">
       </div>
     </div>
     <div class="fgrp" style="grid-template-columns:repeat(2, 1fr)">
@@ -3760,7 +3765,7 @@ function renderPortfolioHoldingsBody(){
     if (s.filters.maturity       && (r.maturity       || '') !== s.filters.maturity)       return false;
     if (s.filters.effective_date && (r.effective_date || '') !== s.filters.effective_date) return false;
     if (s.search) {
-      const hay = ((r.name||'')+' '+(r.ticker||'')+' '+(r.isin||'')+' '+
+      const hay = ((r.name||'')+' '+(r.ticker||'')+' '+(r.isin||'')+' '+(r.cusip||'')+' '+
                    (r.sector||'')+' '+(r.sub_class||'')+' '+(r.country||'')).toLowerCase();
       if (!hay.includes(s.search)) return false;
     }
@@ -5950,7 +5955,8 @@ function renderHoldingsTable(rows, data, note) {
           <tr class="htitles">
             ${fhTh('name',        'Name')}
             ${fhTh('ticker',      'Ticker')}
-            ${fhTh('isin',        'ISIN', {width:130})}
+            ${fhTh('isin',        'ISIN',  {width:130})}
+            ${fhTh('cusip',       'CUSIP', {width:110})}
             ${fhTh('sector',      'Sector')}
             ${fhTh('asset_class', 'Asset Class')}
             ${fhTh('sub_class',   'Sub Class')}
@@ -5963,6 +5969,7 @@ function renderHoldingsTable(rows, data, note) {
             ${fhTh('weight_pct',  'Weight', {right:true, width:160})}
           </tr>
           <tr class="hfilterrow">
+            <th></th>
             <th></th>
             <th></th>
             <th></th>
@@ -6124,7 +6131,8 @@ function openHoldingEditor(rowId){
   // Populate the immediate text/number fields.
   document.getElementById('heName').value   = row.name || '';
   document.getElementById('heTicker').value = row.ticker || '';
-  document.getElementById('heIsin').value   = row.isin || '';
+  document.getElementById('heIsin').value   = row.isin  || '';
+  document.getElementById('heCusip').value  = row.cusip || '';
   document.getElementById('heWeight').value =
     (row.weight_pct == null || row.weight_pct === '') ? '' : row.weight_pct;
   // Bond-only fields. Numeric ones come from coerce_holdings_row as
@@ -6464,6 +6472,7 @@ async function saveHoldingEditor(){
     name:           document.getElementById('heName').value.trim(),
     ticker:         document.getElementById('heTicker').value.trim(),
     isin:           document.getElementById('heIsin').value.trim().toUpperCase(),
+    cusip:          document.getElementById('heCusip').value.trim().toUpperCase(),
     asset_class:    document.getElementById('heAssetClass').value,
     // Strict <select> values — no further trimming or case folding
     // needed; the option values come from the resource CSVs in their
@@ -7049,7 +7058,7 @@ function renderFullHoldingsBody() {
     if (s.filters.effective_date && (r.effective_date || '') !== s.filters.effective_date) return false;
     if (s.search) {
       const hay = (
-        (r.name || '') + ' ' + (r.ticker || '') + ' ' + (r.isin || '') +
+        (r.name || '') + ' ' + (r.ticker || '') + ' ' + (r.isin || '') + ' ' + (r.cusip || '') +
         ' ' + (r.sector || '') + ' ' + (r.sub_class || '') + ' ' + (r.country || '')
       ).toLowerCase();
       if (!hay.includes(s.search)) return false;
@@ -7150,6 +7159,7 @@ function renderFullHoldingsBody() {
       <td style="color:var(--text)">${escapeHtml(r.name || '—')}</td>
       <td class="tk">${escapeHtml(r.ticker || '—')}</td>
       <td class="tk">${escapeHtml(r.isin || '—')}</td>
+      <td class="tk">${escapeHtml(r.cusip || '—')}</td>
       <td>${escapeHtml(r.sector || '—')}</td>
       <td>${escapeHtml(r.asset_class || '—')}</td>
       <td>${escapeHtml(r.sub_class || '—')}</td>
@@ -7657,6 +7667,7 @@ async function submitUploadPreview(){
         weight:         seedMapping.weight         ?? null,
         ticker:         seedMapping.ticker         ?? null,
         isin:           seedMapping.isin           ?? null,
+        cusip:          seedMapping.cusip          ?? null,
         sector:         seedMapping.sector         ?? null,
         country:        seedMapping.country        ?? null,
         currency:       seedMapping.currency       ?? null,
@@ -7776,6 +7787,8 @@ const MAP_FIELDS = [
     aliases:['ticker','symbol','bbg','bloomberg'] },
   { key:'isin',         label:'ISIN',          required:false,
     aliases:['isin'] },
+  { key:'cusip',        label:'CUSIP',         required:false,
+    aliases:['cusip'] },
   { key:'sector',       label:'Sector',        required:false, defaultable:true,
     aliases:['sector','gics','industry'] },
   { key:'country',      label:'Country',       required:false, defaultable:true,
@@ -7887,9 +7900,10 @@ function buildMappingRows(){
   MAP_FIELDS.filter(f => !f.required).forEach(autoPickFor);
 
   // Whether enrichment buttons should be enabled — depends on having a
-  // ticker column mapped. If not, the buttons stay visible-but-disabled
-  // with a tooltip explaining why.
-  const tickerMapped = uploadState.mapping.ticker != null;
+  // ticker, CUSIP, or ISIN column mapped (all three can drive Yahoo lookups).
+  const tickerMapped = uploadState.mapping.ticker != null
+                    || uploadState.mapping.cusip  != null
+                    || uploadState.mapping.isin   != null;
 
   const rows = MAP_FIELDS.map(f => {
     const cur    = uploadState.mapping[f.key];
@@ -7954,7 +7968,7 @@ function buildMappingRows(){
         const tip  = tickerMapped
           ? (isOn ? 'Click to disable Yahoo enrichment for this field'
                   : 'Fetch this field from Yahoo Finance per holding')
-          : 'Map a Ticker column first to enable Yahoo enrichment';
+          : 'Map a Ticker, CUSIP, or ISIN column first to enable Yahoo enrichment';
         const btnLabel = isOn ? '📥 Yahoo ✓' : '📥 Yahoo';
         btn = `<button type="button" class="${cls}"${dis}
                  title="${escapeAttr(tip)}"
@@ -8142,8 +8156,10 @@ async function submitUploadCommit(){
   // front about the wait time on a cold cache (up to ~1s/symbol on
   // first lookup). After it's been done once, repeat uploads are fast.
   const enrichList = Array.from(uploadState.enrich);
-  if (enrichList.length && uploadState.mapping.ticker == null) {
-    showUploadMapError('Yahoo enrichment requires the Ticker column to be mapped.');
+  if (enrichList.length && uploadState.mapping.ticker == null
+                        && uploadState.mapping.cusip  == null
+                        && uploadState.mapping.isin   == null) {
+    showUploadMapError('Yahoo enrichment requires a Ticker, CUSIP, or ISIN column to be mapped.');
     return;
   }
 

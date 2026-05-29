@@ -37,10 +37,14 @@ from porxpy.resolver import (
     build_ticker,
     candidate_variants,
     clean_holding_ticker_input,
+    isin_country_variant,
+    search_id_variant,
+    search_name_variant,
 )
 from porxpy.breakdowns import build_fund_breakdowns, rollup_holdings
 from porxpy.utils import (
     age_days,
+    alias_delete,
     alias_get,
     alias_put,
     cache_put,
@@ -506,6 +510,58 @@ def extract_isin_from_ticker(ticker: yf.Ticker, info: dict | None = None
         if s and s != "-" and len(s) == 12:
             return s
     return None
+
+
+def _isin_from_info(resolved_ticker: str) -> str | None:
+    """Best-effort ISIN retrieval from the symbol-info cache for a resolved ticker.
+
+    Checks the already-cached ``yf.Ticker.info`` dict for the ``isin``
+    field — no extra HTTP call. Returns a valid 12-char ISIN or ``None``.
+    Called after a successful ``get_symbol_info_cached`` to backfill the
+    ``isin`` field on a holdings row.
+    """
+    from porxpy.utils import symbol_info_get
+    cached = symbol_info_get(resolved_ticker)
+    if not isinstance(cached, dict):
+        return None
+    # Try the info dict stored by extract_symbol_info (via symbol_info_put).
+    # yfinance exposes 'isin' directly on ticker.info for many securities.
+    raw = (cached.get("isin") or "").strip().upper()
+    if raw and raw != "-" and len(raw) == 12:
+        return raw
+    # Also try fetching live via yfinance as a fallback — only one call
+    # per resolved ticker, not per row, since the alias cache means each
+    # unique ticker is resolved once across all rows.
+    try:
+        tk = yf.Ticker(resolved_ticker)
+        isin = getattr(tk, "isin", None)
+        if isin:
+            s = str(isin).strip().upper()
+            if s and s != "-" and len(s) == 12:
+                return s
+    except Exception:
+        pass
+    return None
+
+
+def _cusip_from_isin(isin: str) -> str | None:
+    """Derive a CUSIP from a US ISIN.
+
+    US ISINs have the form ``US`` + 9-char CUSIP + 1 check digit.
+    Strips the country prefix and check digit to recover the CUSIP.
+    Returns ``None`` for non-US ISINs or invalid input.
+
+    Args:
+        isin: 12-character ISIN string (already validated).
+
+    Returns:
+        9-character CUSIP string, or ``None``.
+    """
+    if not isin or len(isin) != 12:
+        return None
+    if not isin.upper().startswith("US"):
+        return None
+    return isin[2:11]   # chars 2–10 inclusive = 9-char CUSIP
 
 
 def extract_profile(ticker: yf.Ticker) -> dict:
@@ -1033,7 +1089,11 @@ def _info_looks_found(info: dict) -> bool:
 _VARIANT_PROBE_CAP = 3
 
 
-def get_symbol_info_cached(symbol: str, *, force: bool = False) -> dict:
+def get_symbol_info_cached(symbol: str, *, force: bool = False,
+                           isin: str | None = None,
+                           cusip: str | None = None,
+                           name: str | None = None,
+                           retry_negative: bool = False) -> dict:
     """Resolve a possibly-non-Yahoo ticker via the variant-probe chokepoint.
 
     Tries the input as-is on Yahoo first; if Yahoo doesn't recognise it,
@@ -1041,6 +1101,21 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False) -> dict:
     :func:`porxpy.resolver.candidate_variants` (Bloomberg-spaced rewrite,
     concat-suffix strip, Refinitiv suffix strip, etc.) and returns the
     first one Yahoo accepts.
+
+    When all variant candidates are exhausted two additional fallbacks are
+    attempted in order:
+
+    1. **ISIN country prefix** (:func:`porxpy.resolver.isin_country_variant`).
+       If ``isin`` is provided, the ISO 3166-1 alpha-2 prefix (first two
+       chars) is mapped to a Yahoo exchange suffix and the bare ticker is
+       tried with that suffix.  E.g. ticker ``"AIR"``, ISIN ``"FR…"``
+       → probe ``"AIR.PA"``.
+
+    2. **Name search** (:func:`porxpy.resolver.search_name_variant`).
+       If ``name`` is provided (and the ISIN fallback failed or was not
+       available), ``yfinance.Search`` is called with the security name.
+       The returned tickers are matched against the first four characters
+       of the raw ticker; the first match is probed on Yahoo.
 
     Three caches collaborate to keep this cheap on repeat use:
 
@@ -1058,6 +1133,17 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False) -> dict:
             :func:`clean_holding_ticker_input` before probing.
         force: Bypass both caches and re-probe live. Useful in tests
             and when the user wants to refresh.
+        isin: Optional ISIN for the holding. Used as fallback when all
+            variant candidates fail — the country prefix drives exchange
+            suffix selection. Also passed to ``yf.Search`` as an exact
+            identifier when no ticker is present on the row.
+        cusip: Optional CUSIP (9-char US identifier). When no ticker is
+            present, passed directly to ``yf.Search`` to resolve a Yahoo
+            ticker. Tried before ISIN search (CUSIPs are US-specific and
+            tend to resolve more precisely for US securities).
+        name: Optional security name from the holdings file. Used as a
+            last-resort fallback via Yahoo name search when all other
+            probes have failed.
 
     Returns:
         The same dict shape as :func:`extract_symbol_info` plus
@@ -1065,21 +1151,58 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False) -> dict:
         resolved on Yahoo or the cleaned input was empty.
     """
     cleaned = clean_holding_ticker_input(symbol)
+
+    # No ticker supplied — skip variant probing entirely and go straight to
+    # identifier-based search. CUSIP is tried first (US-specific, very
+    # precise), then ISIN (also an exact identifier). If neither resolves,
+    # fall through to the name-search fallback at the bottom.
     if not cleaned:
+        for _id_label, _id_val in (("CUSIP", cusip), ("ISIN", isin)):
+            if not _id_val:
+                continue
+            id_ticker = search_id_variant(_id_val)
+            if id_ticker:
+                info = extract_symbol_info(id_ticker)
+                info["_found"] = _info_looks_found(info)
+                symbol_info_put(id_ticker, info)
+                if info["_found"]:
+                    info["_resolved_ticker"] = id_ticker
+                    print(f"[SymbolInfo] no ticker — resolved via {_id_label}"
+                          f" ({_id_val}) → {id_ticker}")
+                    return info
+        # Name search as last resort when no ticker and no id resolved
+        if name:
+            name_cand = search_name_variant(name, "")
+            if name_cand:
+                info = extract_symbol_info(name_cand)
+                info["_found"] = _info_looks_found(info)
+                symbol_info_put(name_cand, info)
+                if info["_found"]:
+                    info["_resolved_ticker"] = name_cand
+                    print(f"[SymbolInfo] no ticker — resolved via name"
+                          f" search ('{name}') → {name_cand}")
+                    return info
         return {"_found": False}
 
     # Alias cache short-circuit. ``present`` means we've probed before;
     # ``resolved`` is the form that worked, or ``None`` for "tried,
     # nothing worked". Skipped under force=True.
+    # ``retry_negative`` clears a stale None entry so a re-upload that
+    # now supplies an ISIN/CUSIP gets a fresh probe instead of hitting
+    # the cached failure immediately.
     if not force:
         present, resolved = alias_get(cleaned)
         if present:
             if resolved is None:
-                return {"_found": False}
+                if retry_negative:
+                    alias_delete(cleaned)   # clear stale negative; fall through
+                else:
+                    return {"_found": False}
             cached = symbol_info_get(resolved)
             if cached is not None:
                 # Backfill _found for entries written before the flag existed
                 cached.setdefault("_found", _info_looks_found(cached))
+                cached["_resolved_ticker"] = resolved
                 return cached
             # Alias points to a resolved ticker but the info entry has
             # expired (90-day TTL). Fall through and re-probe — it's
@@ -1098,6 +1221,7 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False) -> dict:
                 # Remember the alias so we can short-circuit next time
                 if cand != cleaned or candidates.index(cand) != 0:
                     alias_put(cleaned, cand)
+                cached["_resolved_ticker"] = cand
                 return cached
             # Negatively-cached candidate — keep going, don't re-probe Yahoo
             continue
@@ -1113,14 +1237,95 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False) -> dict:
             # candidate's entry.
             if cand != cleaned:
                 alias_put(cleaned, cand)
+            info["_resolved_ticker"] = cand
             return info
         # else: candidate didn't resolve — try the next one. Each
         # candidate's negative result is cached above, so even if this
         # symbol comes up across multiple uploads we won't hit Yahoo
         # again for the same dud variant.
 
-    # All candidates exhausted, none resolved. Record a negative alias
-    # so the next probe of this raw input doesn't re-run the loop.
+    # All candidates exhausted. Before recording a negative alias, try the
+    # two extended fallbacks (ISIN country prefix, then name search).
+
+    # Fallback 1 — ISIN country prefix.
+    # Strip any existing suffix from cleaned, apply the ISIN-derived suffix,
+    # and probe the result once. On success, record the alias and return.
+    if isin:
+        isin_cand = isin_country_variant(cleaned, isin)
+        if isin_cand:
+            cached = None if force else symbol_info_get(isin_cand)
+            if cached is not None:
+                cached.setdefault("_found", _info_looks_found(cached))
+                if cached["_found"]:
+                    alias_put(cleaned, isin_cand)
+                    cached["_resolved_ticker"] = isin_cand
+                    return cached
+            else:
+                info = extract_symbol_info(isin_cand)
+                info["_found"] = _info_looks_found(info)
+                symbol_info_put(isin_cand, info)
+                if info["_found"]:
+                    alias_put(cleaned, isin_cand)
+                    info["_resolved_ticker"] = isin_cand
+                    print(f"[SymbolInfo] {cleaned} resolved via ISIN prefix"
+                          f" ({isin[:2]}) → {isin_cand}")
+                    return info
+
+    # Fallback 2 — identifier search (CUSIP / ISIN).
+    # When a ticker existed but didn't resolve, try the exact identifiers
+    # before falling back to the fuzzier name search. CUSIP first (US),
+    # then ISIN. On success, alias the resolved ticker to cleaned so the
+    # next probe of this raw ticker is fast.
+    for _id_label, _id_val in (("CUSIP", cusip), ("ISIN", isin)):
+        if not _id_val:
+            continue
+        id_ticker = search_id_variant(_id_val)
+        if not id_ticker:
+            continue
+        cached = None if force else symbol_info_get(id_ticker)
+        if cached is not None:
+            cached.setdefault("_found", _info_looks_found(cached))
+            if cached["_found"]:
+                alias_put(cleaned, id_ticker)
+                cached["_resolved_ticker"] = id_ticker
+                return cached
+        else:
+            info = extract_symbol_info(id_ticker)
+            info["_found"] = _info_looks_found(info)
+            symbol_info_put(id_ticker, info)
+            if info["_found"]:
+                alias_put(cleaned, id_ticker)
+                info["_resolved_ticker"] = id_ticker
+                print(f"[SymbolInfo] {cleaned} resolved via {_id_label}"
+                      f" ({_id_val}) → {id_ticker}")
+                return info
+
+    # Fallback 3 — name search.
+    # Only attempted when a name was supplied. On success, probe the returned
+    # ticker (it may already be cached from a prior lookup of that symbol).
+    if name:
+        name_cand = search_name_variant(name, cleaned)
+        if name_cand:
+            cached = None if force else symbol_info_get(name_cand)
+            if cached is not None:
+                cached.setdefault("_found", _info_looks_found(cached))
+                if cached["_found"]:
+                    alias_put(cleaned, name_cand)
+                    cached["_resolved_ticker"] = name_cand
+                    return cached
+            else:
+                info = extract_symbol_info(name_cand)
+                info["_found"] = _info_looks_found(info)
+                symbol_info_put(name_cand, info)
+                if info["_found"]:
+                    alias_put(cleaned, name_cand)
+                    info["_resolved_ticker"] = name_cand
+                    print(f"[SymbolInfo] {cleaned} resolved via name search"
+                          f" ('{name}') → {name_cand}")
+                    return info
+
+    # All fallbacks failed. Record a negative alias so the next probe of
+    # this raw input doesn't re-run the full loop.
     alias_put(cleaned, None)
     return {"_found": False}
 
@@ -1342,18 +1547,40 @@ def enrich_existing_holdings(rows: list[dict], fields: list[str]
 
     for row in rows:
         stats["rows_processed"] += 1
-        sym = (row.get("ticker") or "").strip()
-        if not sym:
+        sym      = (row.get("ticker") or "").strip()
+        row_isin = row.get("isin")  or None
+        row_cusip= row.get("cusip") or None
+        if not sym and not row_isin and not row_cusip:
             stats["rows_skipped_no_ticker"] += 1
             continue
         try:
-            info = get_symbol_info_cached(sym)
+            info = get_symbol_info_cached(
+                sym,
+                isin=row_isin,
+                cusip=row_cusip,
+                name=row.get("name") or None,
+            )
         except Exception as exc:
             print(f"[enrich_existing] {sym} error: {exc}")
             continue
         if not isinstance(info, dict) or not info.get("_found"):
             stats["rows_yahoo_not_found"] += 1
             continue
+
+        # Backfill ticker / ISIN / CUSIP from the resolved info.
+        resolved_ticker = (info.get("_resolved_ticker") or "").strip() or None
+        if resolved_ticker and resolved_ticker != (row.get("ticker") or ""):
+            row["ticker"] = resolved_ticker
+        if resolved_ticker and not (row.get("isin") or "").strip():
+            fetched_isin = _isin_from_info(resolved_ticker)
+            if fetched_isin:
+                row["isin"] = fetched_isin
+        if not (row.get("cusip") or "").strip():
+            isin_for_cusip = (row.get("isin") or "").strip().upper()
+            if isin_for_cusip:
+                derived = _cusip_from_isin(isin_for_cusip)
+                if derived:
+                    row["cusip"] = derived
 
         written = _apply_lookup_to_row(row, info, eff_fields, blank_only=True)
         if written:

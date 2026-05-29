@@ -476,15 +476,60 @@ _REFINITIV_US_SUFFIXES = (".OQ", ".O", ".N", ".K", ".A", ".P", ".PK")
 # code (sometimes also without a country code). Trimmed during cleanup.
 _BLOOMBERG_TRAILERS = (" EQUITY", " CORP", " INDEX", " COMDTY", " CURNCY")
 
+# ISO 3166-1 alpha-2 country prefix of an ISIN → most-likely Yahoo suffix.
+# Used as fallback when all variant candidates fail but we have an ISIN:
+# strip any existing suffix from the ticker and try bare_ticker + this suffix.
+# Only the most common European and Asia-Pacific markets are listed; US/CA
+# ISINs (US / CA) map to bare tickers (no suffix). Omitted entries are
+# silently skipped — we won't guess wildly.
+_ISIN_PREFIX_TO_YF: dict[str, str] = {
+    "US": "",       # NYSE / NASDAQ — bare ticker
+    "CA": ".TO",    # Toronto (most liquid)
+    "GB": ".L",     # London
+    "DE": ".DE",    # XETRA
+    "FR": ".PA",    # Euronext Paris
+    "NL": ".AS",    # Euronext Amsterdam
+    "BE": ".BR",    # Euronext Brussels
+    "PT": ".LS",    # Euronext Lisbon
+    "IT": ".MI",    # Milan (Borsa Italiana)
+    "ES": ".MC",    # Madrid BME
+    "SE": ".ST",    # Stockholm
+    "NO": ".OL",    # Oslo
+    "DK": ".CO",    # Copenhagen
+    "FI": ".HE",    # Helsinki
+    "AT": ".VI",    # Vienna
+    "CH": ".SW",    # SIX Swiss
+    "JP": ".T",     # Tokyo
+    "HK": ".HK",    # Hong Kong
+    "AU": ".AX",    # ASX
+    "NZ": ".NZ",    # New Zealand
+    "SG": ".SI",    # Singapore
+    "TW": ".TW",    # Taiwan
+    "KR": ".KS",    # Korea KOSPI
+    "IN": ".NS",    # India NSE
+    "BR": ".SA",    # Brazil B3
+    "MX": ".MX",    # Mexico
+    "ZA": ".JO",    # Johannesburg
+    "ID": ".JK",    # Jakarta
+    "MY": ".KL",    # Kuala Lumpur
+    "TH": ".BK",    # Bangkok
+}
+
 
 def clean_holding_ticker_input(raw: str | None) -> str:
     """First-pass cleanup of an issuer-supplied ticker string.
 
     Trims whitespace, uppercases, strips a leading ``$``, and drops a
     trailing Bloomberg asset-class qualifier (``" Equity"`` and friends).
-    Does NOT attempt to rewrite Bloomberg/Refinitiv/concat forms — those
-    are handled by :func:`candidate_variants` and gated by Yahoo's
-    response.
+    Also normalises dot-separated Bloomberg country codes to the spaced
+    form (``"AIR.FP"`` → ``"AIR FP"``) so :func:`candidate_variants`
+    can convert them to Yahoo suffixes via its existing Bloomberg-spaced
+    path. This covers the common European issuer convention of writing
+    ``"ASML.NA"`` or ``"MC.FP"`` instead of ``"ASML NA"`` or ``"MC FP"``.
+
+    Does NOT attempt to rewrite Bloomberg/Refinitiv/concat forms beyond
+    the above — those are handled by :func:`candidate_variants` and gated
+    by Yahoo's response.
 
     Args:
         raw: Whatever the holdings file had in the ticker cell.
@@ -502,6 +547,24 @@ def clean_holding_ticker_input(raw: str | None) -> str:
     for trailer in _BLOOMBERG_TRAILERS:
         if s.endswith(trailer):
             s = s[: -len(trailer)].strip()
+
+    # Dot-separated Bloomberg country-code form: "TICKER.CC" where CC is a
+    # known two-letter Bloomberg country code and the part before the dot is
+    # at least one character. Rewrite to the spaced form "TICKER CC" so
+    # candidate_variants' Bloomberg-spaced branch picks it up. We only
+    # convert when the two chars after the last dot are a recognised Bloomberg
+    # country code — this avoids misreading genuine Yahoo suffixes like
+    # ".L" / ".PA" / ".AS" / ".DE" which already work as-is and have more
+    # than two characters or don't match a Bloomberg code.
+    if "." in s:
+        dot_pos = s.rfind(".")
+        after_dot = s[dot_pos + 1:]
+        before_dot = s[:dot_pos]
+        if (len(after_dot) == 2 and after_dot.isalpha()
+                and before_dot
+                and after_dot in _BLOOMBERG_TO_YF):
+            s = before_dot + " " + after_dot
+
     return s
 
 
@@ -572,3 +635,168 @@ def candidate_variants(cleaned: str) -> list[str]:
             add(prefix + yf_sfx)
 
     return out[:_MAX_CANDIDATE_VARIANTS]
+
+
+def isin_country_variant(cleaned: str, isin: str) -> str | None:
+    """Derive a Yahoo ticker from an ISIN country prefix when all variants fail.
+
+    Uses the first two characters of ``isin`` (the ISO 3166-1 alpha-2
+    country code) to look up the most-likely Yahoo exchange suffix, then
+    strips any existing suffix from ``cleaned`` and appends the ISIN-derived
+    one.
+
+    This handles the case where an issuer supplies a ticker in an unrecognised
+    form (e.g. a local exchange code) together with an ISIN. Example:
+
+    * ticker ``"AIR"`` (bare, no suffix), ISIN ``"FR0000120271"``
+      → ``"AIR.PA"``
+    * ticker ``"AIR FP"`` already handled by Bloomberg-spaced path, but
+      ISIN fallback would also produce ``"AIR.PA"`` as a backstop.
+    * ticker ``"RDSA NA"`` (already handled), ISIN ``"NL0000009132"``
+      → backstop ``"RDSA.AS"``
+
+    Args:
+        cleaned: Output of :func:`clean_holding_ticker_input`. May include
+            a Bloomberg-spaced country code (``"AIR FP"``) or be bare
+            (``"AIR"``). The function always strips to the base symbol
+            before appending the ISIN-derived suffix.
+        isin: Full 12-character ISIN. Only the first two characters are used.
+
+    Returns:
+        A candidate Yahoo ticker string, or ``None`` if:
+        * ``isin`` is shorter than 2 chars.
+        * The country prefix is not in :data:`_ISIN_PREFIX_TO_YF`.
+        * The derived candidate would be identical to ``cleaned`` (already
+          tried).
+        * ``cleaned`` is empty.
+    """
+    if not cleaned or not isin or len(isin) < 2:
+        return None
+    country_prefix = isin[:2].upper()
+    if country_prefix not in _ISIN_PREFIX_TO_YF:
+        return None
+    yf_suffix = _ISIN_PREFIX_TO_YF[country_prefix]
+
+    # Extract the base symbol — strip any existing space+country or suffix.
+    base = cleaned
+    if " " in base:
+        # Bloomberg-spaced: "AIR FP" → "AIR"
+        base = base.split()[0]
+    elif "." in base:
+        # Yahoo-suffixed: "AIR.PA" → "AIR"
+        base = base.split(".")[0]
+
+    if not base:
+        return None
+
+    candidate = base + yf_suffix
+    # Don't return a candidate identical to the cleaned input (already tried).
+    if candidate == cleaned:
+        return None
+    return candidate
+
+
+def search_name_variant(name: str, ticker_prefix: str,
+                        prefix_chars: int = 4) -> str | None:
+    """Search Yahoo by security name and find a ticker matching the prefix.
+
+    Used as the last-resort fallback when both variant probing and the ISIN
+    country fallback have failed. Calls ``yfinance.Search`` with the
+    security name and looks for a returned ticker whose first
+    ``prefix_chars`` characters match those of ``ticker_prefix``.
+
+    The prefix match is case-insensitive and uses only the base ticker
+    (stripping any Yahoo suffix before comparing) so that ``"AIR"``
+    matches both ``"AIR.PA"`` and ``"AIRBUS"`` but not ``"AIRG"``.
+
+    Args:
+        name: Security name from the holdings file (e.g. ``"Airbus SE"``).
+        ticker_prefix: The cleaned raw ticker from the file (e.g. ``"AIR"``
+            or ``"AIR FP"``). Only the first ``prefix_chars`` characters of
+            the base ticker are used for matching.
+        prefix_chars: How many leading characters of the base ticker to
+            require as a match. Default 4 is conservative (reduces false
+            positives for short tickers like ``"BP"``); callers may lower
+            it when the ticker is genuinely short.
+
+    Returns:
+        The first Yahoo ticker from the search results whose base ticker
+        starts with the required prefix, or ``None`` if the search fails,
+        returns nothing, or no result matches.
+    """
+    if not name or not ticker_prefix:
+        return None
+
+    # Extract the base ticker prefix for matching (strip space / dot suffix).
+    base_prefix = ticker_prefix.upper()
+    if " " in base_prefix:
+        base_prefix = base_prefix.split()[0]
+    elif "." in base_prefix:
+        base_prefix = base_prefix.split(".")[0]
+    match_prefix = base_prefix[:prefix_chars]
+    if not match_prefix:
+        return None
+
+    try:
+        import yfinance as yf
+        result = yf.Search(name, max_results=8)
+        quotes = result.quotes or []
+    except Exception as exc:
+        print(f"[NameSearch] yf.Search('{name}') failed: {exc}")
+        return None
+
+    for q in quotes:
+        sym = (q.get("symbol") or "").upper().strip()
+        if not sym:
+            continue
+        # Compare the base ticker (strip suffix) to the required prefix.
+        base_sym = sym.split(".")[0]
+        if base_sym.startswith(match_prefix):
+            return sym
+
+    return None
+
+
+def search_id_variant(identifier: str) -> str | None:
+    """Resolve a CUSIP or ISIN to a Yahoo ticker via Yahoo's search endpoint.
+
+    Passes the identifier directly to ``yfinance.Search`` as the query.
+    Yahoo's search understands both CUSIP (9-character alphanumeric) and
+    ISIN (12-character, two-letter country prefix) and typically returns
+    the primary listing as the first result. No prefix matching is applied
+    — the identifier is unambiguous, so the first returned ticker is used.
+
+    This is intentionally simpler than :func:`search_name_variant` because:
+
+    * CUSIPs and ISINs are exact identifiers; the first search result is
+      virtually always the right security.
+    * There is no ticker-prefix to match against — the caller has no ticker
+      at all (that's the reason this path is being tried).
+
+    Called by :func:`porxpy.extractors.get_symbol_info_cached` when no
+    ticker is available but a CUSIP or ISIN is present on the row.
+
+    Args:
+        identifier: A CUSIP (9 chars) or ISIN (12 chars). Passed verbatim
+            to ``yf.Search``; leading/trailing whitespace is stripped.
+
+    Returns:
+        The first Yahoo ticker returned by the search, or ``None`` if the
+        search fails, returns nothing, or the first result has no symbol.
+    """
+    identifier = (identifier or "").strip()
+    if not identifier:
+        return None
+    try:
+        import yfinance as yf
+        result = yf.Search(identifier, max_results=3, news_count=0)
+        quotes = result.quotes or []
+    except Exception as exc:
+        print(f"[IdSearch] yf.Search('{identifier}') failed: {exc}")
+        return None
+
+    for q in quotes:
+        sym = (q.get("symbol") or "").strip()
+        if sym:
+            return sym
+    return None

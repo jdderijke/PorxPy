@@ -933,7 +933,7 @@ def _upload_commit_impl(token: str, *,
     invalid_isins     = 0
     unmapped_countries: list[str] = []
 
-    OPT_FIELDS = ("ticker", "isin", "sector", "country", "currency",
+    OPT_FIELDS = ("ticker", "isin", "cusip", "sector", "country", "currency",
                   "asset_class", "sub_class",
                   # Bond metadata (v0.12.7) — read verbatim from the
                   # mapped column. coerce_holdings_row at the bottom of
@@ -983,6 +983,13 @@ def _upload_commit_impl(token: str, *,
                     row_out["isin"] = vu
                 else:
                     invalid_isins += 1
+            elif field == "cusip":
+                # CUSIP: 9-character alphanumeric US identifier. Uppercase,
+                # strip spaces. No checksum validation — some issuers supply
+                # 8-char CUSIPs (without the check digit); we accept both.
+                vu = v.upper().replace(" ", "")
+                if 8 <= len(vu) <= 9 and vu.isalnum():
+                    row_out["cusip"] = vu
             elif field == "ticker":
                 # Light cleanup only at upload time; the variant-probe
                 # chokepoint in get_symbol_info_cached decides the
@@ -1069,7 +1076,7 @@ def _upload_commit_impl(token: str, *,
     if enrich_fields:
         # Lazy import to avoid pulling extractors → utils → ... at module
         # load time when upload.py is imported by the route registration.
-        from porxpy.extractors import get_symbol_info_cached
+        from porxpy.extractors import get_symbol_info_cached, _isin_from_info, _cusip_from_isin
         from porxpy.utils import alias_get
 
         # Cancel checkpoint #1: early exit if the user already hit
@@ -1089,11 +1096,20 @@ def _upload_commit_impl(token: str, *,
                 enrich_skipped_over_cap += 1
                 continue
             sym = (row.get("ticker") or "").strip()
-            if not sym:
+            row_isin  = row.get("isin")  or None
+            row_cusip = row.get("cusip") or None
+            row_name  = row.get("name")  or None
+            if not sym and not row_isin and not row_cusip:
                 enrich_skipped_no_ticker += 1
                 continue
             try:
-                info = get_symbol_info_cached(sym)
+                info = get_symbol_info_cached(
+                    sym,
+                    isin=row_isin,
+                    cusip=row_cusip,
+                    name=row_name,
+                    retry_negative=True,
+                )
             except Exception as exc:
                 print(f"[upload-enrich] {sym} error: {exc}")
                 continue
@@ -1107,16 +1123,34 @@ def _upload_commit_impl(token: str, *,
                 enrich_unrecognised.append(sym)
                 continue   # nothing to enrich from
 
-            # If the resolved ticker differs from what was on the row
-            # (i.e. variant probing rewrote it — PLTRUS → PLTR), update
-            # the row to the canonical Yahoo form. The holdings table
-            # then shows clean tickers, and downstream rollup/lookups
-            # see consistent symbols. The alias cache preserves the
-            # original mapping for audit.
-            present, resolved = alias_get(sym)
-            if present and resolved and resolved != sym:
-                row["ticker"] = resolved
+              # Backfill ticker / ISIN / CUSIP on the row.
+            #
+            # _resolved_ticker is injected by get_symbol_info_cached at
+            # every successful return site — it is the canonical Yahoo
+            # ticker regardless of which path resolved it (variant rewrite,
+            # ISIN country prefix, id-search, name search, or straight hit).
+            resolved_ticker = (info.get("_resolved_ticker") or "").strip() or None
 
+            # Ticker — always write the canonical Yahoo form. Fills a
+            # blank ticker (id-search path) and corrects a rewritten one.
+            if resolved_ticker and resolved_ticker != (row.get("ticker") or ""):
+                row["ticker"] = resolved_ticker
+
+            # ISIN — fetch from Yahoo info cache; no extra HTTP call.
+            # Only fills blank — never overwrites a file-mapped ISIN.
+            if resolved_ticker and not (row.get("isin") or "").strip():
+                fetched_isin = _isin_from_info(resolved_ticker)
+                if fetched_isin:
+                    row["isin"] = fetched_isin
+
+            # CUSIP — derived from ISIN when it's a US ISIN (chars 2–10).
+            # Only fills blank — if the file supplied a CUSIP we trust it.
+            if not (row.get("cusip") or "").strip():
+                isin_for_cusip = (row.get("isin") or "").strip().upper()
+                if isin_for_cusip:
+                    derived_cusip = _cusip_from_isin(isin_for_cusip)
+                    if derived_cusip:
+                        row["cusip"] = derived_cusip
             for f in enrich_fields:
                 v = info.get(f)
                 if not v:
