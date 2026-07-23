@@ -48,6 +48,7 @@ from porxpy.config import (
     DEFAULT_CACHE_CONFIG,
     DEFAULT_FUND_STRUCTURE,
     DEFAULT_SETTINGS,
+    DISTRIBUTION_POLICIES,
     ENRICHABLE_FIELDS,
     FUND_STRUCTURES,
     FUND_STYLES,
@@ -378,6 +379,26 @@ def _maybe_migrate_facets(fp, data: dict) -> bool:
         "normalised_at": datetime.now(timezone.utc).isoformat(),
     }
     return True
+
+
+def listing_exists(ticker: str) -> bool:
+    """Return True if a listing-level cache file exists for ``ticker``.
+
+    Used by the v0.21.0 explicit-save model: a listing existing in
+    ``cache/listings/`` IS the marker that the fund has been saved to
+    the pre-loaded list. There is no separate flag — the file's
+    presence is the truth.
+
+    Args:
+        ticker: Yahoo ticker symbol (case-insensitive).
+
+    Returns:
+        ``True`` if ``cache/listings/<ticker>.json`` exists, else False.
+    """
+    if not ticker:
+        return False
+    fp = _cache_path_for(ticker, "profile")
+    return fp.exists()
 
 
 def cache_read(key: str, category: str) -> dict:
@@ -2146,6 +2167,12 @@ def normalise_fund_structure(raw: dict | None) -> dict:
     replication = str(raw.get("replication", "")).strip().lower()
     if replication not in REPLICATION_METHODS:
         replication = "unknown"
+    # v0.21.0 — distribution policy (accumulating / distributing / unknown).
+    # Lives on the structure block so it travels with Replication and Style
+    # through the override surface and the Edit Fund dialog.
+    distribution = str(raw.get("distribution", "")).strip().lower()
+    if distribution not in DISTRIBUTION_POLICIES:
+        distribution = "unknown"
 
     # Couple replication to structure.
     if structure == "fund":
@@ -2156,7 +2183,10 @@ def normalise_fund_structure(raw: dict | None) -> dict:
         # unknown structure) treat it as "not yet specified".
         replication = "unknown"
 
-    return {"structure": structure, "replication": replication, "style": style}
+    return {"structure":    structure,
+            "replication":  replication,
+            "style":        style,
+            "distribution": distribution}
 
 
 

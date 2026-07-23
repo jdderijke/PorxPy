@@ -159,6 +159,23 @@
   .uvmrow .uvmenrich:hover{border-color:#a78bfa;color:#c4b5fd;}
   .uvmrow .uvmenrich.on{background:rgba(167,139,250,.14);border-color:#a78bfa;color:#c4b5fd;}
   .uvmrow .uvmenrich:disabled{opacity:.4;cursor:not-allowed;}
+
+  /* Optimizer panel. Reuses .src as the badge base so BUY/SELL pills
+     match the app's existing badge look; .pos/.neg are scoped to dtable
+     cells because the global ones only apply as .mv.pos / .mv.neg. */
+  .src.buy{background:rgba(52,211,153,.12);color:var(--green);}
+  .src.sell{background:rgba(251,191,36,.14);color:var(--amber);}
+  .dtable tbody td.pos{color:var(--green);}
+  .dtable tbody td.neg{color:var(--red);}
+  .dtable tbody td .sub{display:block;font-size:.65rem;color:var(--muted);margin-top:2px;}
+  .dtable tbody td select{width:100%;background:var(--bg);border:1px solid var(--border2);
+    color:var(--text);font-family:var(--mono);font-size:.7rem;padding:3px 4px;border-radius:4px;}
+
+  /* File picker rows — hover feedback so it reads as a clickable list.
+     Selection highlight is applied inline by fpHighlight() so it survives
+     the hover state. */
+  .fp-row:hover{background:rgba(255,255,255,.05);}
+  .fp-row{user-select:none;border-bottom:1px solid rgba(255,255,255,.03);}
   /* Click-to-open popover dropdowns (used for Categories and Portfolios columns).
      Anchor wrapper has position:relative so the absolute popover positions
      beneath it. Popover stays open until next click anywhere; closeAllPopovers
@@ -1016,6 +1033,7 @@
         <button class="subtab"        id="pSubTabXray"     onclick="switchPortfolioSubTab('xray')">X-ray</button>
         <button class="subtab"        id="pSubTabTargets"  onclick="switchPortfolioSubTab('targets')">Targets</button>
         <button class="subtab"        id="pSubTabHoldings" onclick="switchPortfolioSubTab('holdings')">Holdings</button>
+        <button class="subtab"        id="pSubTabOptimizer" onclick="switchPortfolioSubTab('optimizer')">Optimizer</button>
       </div>
 
       <!-- ===== X-ray sub-tab : the four breakdown cards ===== -->
@@ -1166,6 +1184,123 @@
       </div><!-- /pSubHistory -->
 
       <!-- ===== Funds sub-tab : the fund list ===== -->
+      <!-- ── Optimizer ────────────────────────────────────────────────
+           Designs a portfolio (or a rebalance) from the exposure targets.
+           Construction and rebalancing are the same problem: a fresh
+           design is just a portfolio where every position is zero and all
+           the money is cash. So this panel does both, and always speaks in
+           the same currency — a trade list.
+
+           It PROPOSES; it never mutates. You review, then Apply. -->
+      <div id="pSubOptimizer" class="psubpanel" style="display:none">
+        <div class="cc">
+          <div class="ct">// optimizer</div>
+          <div class="mhint" style="margin:.4rem 0 .8rem">
+            Designs a portfolio from your <strong>Targets</strong> using your
+            pre-loaded funds and available cash. Funds already held can be
+            sold, so this works equally as a rebalance. Nothing is changed
+            until you press Apply.
+          </div>
+
+          <!-- Tolerance per facet, not one number for all of them. A single
+               tolerance has to be set to whatever the loosest facet needs,
+               which drags the strict ones down with it. These also weight the
+               objective — a facet you demand 2% on is worked five times harder
+               than one you allow 10% on. -->
+          <div class="mhint" style="margin:.2rem 0 .35rem">
+            Max fit error, per target category — how many percentage points any
+            single bucket may be off. Tighter categories are prioritised by the
+            solver, so spend your precision where it matters.
+          </div>
+          <div class="fgrp" style="grid-template-columns:repeat(4,1fr)">
+            <div class="field">
+              <label class="mfl">Asset class %</label>
+              <input id="optErrAssetClass" class="opterr" type="number" min="0.5" max="20" step="0.5" value="5">
+            </div>
+            <div class="field">
+              <label class="mfl">Sector %</label>
+              <input id="optErrSector" class="opterr" type="number" min="0.5" max="20" step="0.5" value="5">
+            </div>
+            <div class="field">
+              <label class="mfl">Region %</label>
+              <input id="optErrCountry" class="opterr" type="number" min="0.5" max="20" step="0.5" value="5">
+            </div>
+            <div class="field">
+              <label class="mfl">Currency %</label>
+              <input id="optErrCurrency" class="opterr" type="number" min="0.5" max="20" step="0.5" value="5">
+            </div>
+          </div>
+
+          <div class="fgrp" style="grid-template-columns:repeat(4,1fr)">
+            <div class="field">
+              <label class="mfl">Max funds</label>
+              <input id="optMaxFunds" type="number" min="1" max="30" step="1" value="10"
+                     title="Cap on how many funds the design may use. Raise this if the optimiser says it couldn't reach the error target within the cap.">
+            </div>
+            <div class="field">
+              <label class="mfl">Min weight %</label>
+              <input id="optMinWeight" type="number" min="0" max="50" step="0.5" value="1"
+                     title="Drop any position smaller than this and re-solve, so you don't get dust holdings">
+            </div>
+            <div class="field">
+              <label class="mfl">Min trade <span id="optMinTradeCur" style="color:var(--muted)"></span></label>
+              <input id="optMinTrade" type="number" min="0" step="50" value="100"
+                     title="Suppress any trade worth less than this. An amount in the portfolio's base currency, not a share count — it stops the optimiser proposing trades too small to be worth executing. 0 = no minimum.">
+            </div>
+            <div class="field">
+              <label class="mfl">&nbsp;</label>
+              <button class="btn btn-p" onclick="runOptimizer()" id="optRunBtn">
+                ⚙ Propose design
+              </button>
+            </div>
+          </div>
+
+          <div id="optStatus" class="mhint" style="margin-top:.5rem"></div>
+        </div>
+
+        <div id="optResult" style="display:none">
+          <div class="cc" style="margin-top:.8rem">
+            <div class="ct" style="display:flex;justify-content:space-between;align-items:center">
+              <span>// proposed trades <span id="optTradeCount" class="src"></span></span>
+              <button class="btn btn-p btn-sm" onclick="applyOptimizerTrades()" id="optApplyBtn">
+                ✓ Apply these trades
+              </button>
+            </div>
+            <div class="mhint" style="margin:.3rem 0 .6rem">
+              Applied as a single batch — if any leg fails, none are applied.
+              Pick the cash position each trade settles against.
+            </div>
+            <table class="dtable">
+              <colgroup>
+                <col style="width:56px"><col><col style="width:90px">
+                <col style="width:90px"><col style="width:100px">
+                <col style="width:110px"><col style="width:180px">
+              </colgroup>
+              <thead><tr class="htitles">
+                <th class="nosort"></th>
+                <th class="nosort">Fund</th>
+                <th class="nosort r">Now</th>
+                <th class="nosort r">Target</th>
+                <th class="nosort r">Δ shares</th>
+                <th class="nosort r">Amount</th>
+                <th class="nosort">Settle from</th>
+              </tr></thead>
+              <tbody id="optTradesBody"></tbody>
+            </table>
+          </div>
+
+          <div class="cc" style="margin-top:.8rem">
+            <div class="ct">// resulting exposure</div>
+            <div class="mhint" style="margin:.3rem 0 .6rem">
+              What the design actually achieves against each target. Large
+              residuals usually mean the targets aren't reachable with the
+              funds available — not that the solver failed.
+            </div>
+            <div id="optAchieved"></div>
+          </div>
+        </div>
+      </div>
+
       <div id="pSubFunds" class="psubpanel">
       <div class="hcard" style="margin-top:16px">
         <div class="ct">// portfolio funds</div>
@@ -1512,12 +1647,12 @@
     <div class="structlookup-row">
       <button class="btn-lookup" id="editFundLookupBtn"
         onclick="lookupFundStructure()"
-        title="Look up replication method and style from justETF (by ISIN)">
+        title="Look up replication method, style, and distribution policy from justETF (by ISIN)">
         ⌕ Look up on justETF
       </button>
       <span class="structlookup-status" id="editFundLookupStatus"></span>
     </div>
-    <div class="fgrp" style="grid-template-columns:1fr 1fr 1fr;margin-top:.4rem">
+    <div class="fgrp" style="grid-template-columns:1fr 1fr 1fr 1fr;margin-top:.4rem">
       <div class="field">
         <label class="mfl" style="font-size:.6rem">Fund structure</label>
         <select id="editFundStructure" onchange="onEditFundStructureChange()">
@@ -1541,6 +1676,14 @@
         <select id="editFundStyle">
           <option value="active">Actively managed</option>
           <option value="passive">Passively managed</option>
+          <option value="unknown">— Unknown —</option>
+        </select>
+      </div>
+      <div class="field">
+        <label class="mfl" style="font-size:.6rem">Distribution</label>
+        <select id="editFundDistribution">
+          <option value="accumulating">Accumulating</option>
+          <option value="distributing">Distributing</option>
           <option value="unknown">— Unknown —</option>
         </select>
       </div>
@@ -1614,9 +1757,14 @@
       <div class="fgrp single">
         <div class="field">
           <label class="mfl">Source</label>
-          <input id="uvSourceInput" type="text" autocomplete="off" spellcheck="false"
-                 placeholder="https://… or C:\path\to\holdings.csv"
-                 style="width:100%;font-family:var(--mono);font-size:.78rem">
+          <div style="display:flex;gap:.4rem;align-items:stretch">
+            <input id="uvSourceInput" type="text" autocomplete="off" spellcheck="false"
+                   placeholder="https://… or C:\path\to\holdings.csv"
+                   style="flex:1;font-family:var(--mono);font-size:.78rem">
+            <button class="btn btn-s" type="button" onclick="openFilePicker()"
+                    title="Browse the local filesystem for a holdings file"
+                    style="flex-shrink:0;white-space:nowrap">📁 Browse…</button>
+          </div>
         </div>
       </div>
       <div class="mhint" id="uvSourceLastUsed" style="display:none;margin-top:-.4rem;color:var(--muted);font-family:var(--mono);font-size:.7rem"></div>
@@ -1836,6 +1984,67 @@
 
      There is intentionally no "define new canonical" path — those
      belong in a hand-edit of the CSV file. -->
+<!-- ── File picker ──────────────────────────────────────────────────────
+     In-app filesystem browser for the holdings upload. The browser can
+     never hand us a file's path (security), but PorxPy's server runs on
+     the user's own machine, so IT can list the disk and return a real
+     path. That matters: a path keeps the whole existing pipeline intact
+     (resolve_source, the remembered source_value, one-click re-upload),
+     which a native <input type="file"> would break — it gives us bytes
+     with no path, so we could never re-read the same file later.
+
+     Interaction: single-click selects, double-click on a folder
+     navigates into it, double-click on a file picks it and closes.
+     Select + Confirm does the same without the double-click. -->
+<div class="modal-bg" id="filePickerModal">
+  <div class="modal" style="max-width:720px;width:90vw">
+    <div class="modal-h">
+      <h3>Select a holdings file</h3>
+    </div>
+    <div class="mhint">
+      Only files PorxPy can parse are shown (<code>.csv</code>,
+      <code>.tsv</code>, <code>.txt</code>, <code>.xlsx</code>,
+      <code>.xlsm</code>). Double-click a folder to open it, or a file to
+      pick it.
+    </div>
+
+    <!-- Current directory. Click to type a path directly — quicker than
+         clicking down a deep tree when you already know where you're going. -->
+    <div class="fgrp single">
+      <div class="field">
+        <label class="mfl">Folder</label>
+        <div style="display:flex;gap:.4rem">
+          <input id="fpPathInput" type="text" autocomplete="off" spellcheck="false"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault();fpNavigate(this.value);}"
+                 style="flex:1;font-family:var(--mono);font-size:.75rem">
+          <button class="btn btn-s" type="button"
+                  onclick="fpNavigate(document.getElementById('fpPathInput').value)"
+                  style="flex-shrink:0">Go</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="fpError" class="mhint"
+         style="display:none;color:var(--red);margin-top:-.4rem"></div>
+
+    <div id="fpList"
+         style="border:1px solid var(--line);border-radius:4px;height:340px;
+                overflow-y:auto;font-family:var(--mono);font-size:.78rem;
+                background:var(--bg2)"></div>
+
+    <div class="mhint" id="fpSelected"
+         style="margin-top:.4rem;color:var(--muted);font-family:var(--mono);
+                font-size:.72rem;min-height:1em"></div>
+
+    <div class="mfoot">
+      <button class="btn btn-s" onclick="closeFilePicker()">Cancel</button>
+      <button class="btn btn-p" id="fpConfirmBtn" onclick="fpConfirm()" disabled>
+        Select file
+      </button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-bg" id="ufDialog">
   <div class="modal" style="max-width:1200px;width:95vw;max-height:90vh;overflow-y:auto">
     <div class="modal-h">
@@ -2490,7 +2699,7 @@ function renderCachePanel(){
       <td onclick="event.stopPropagation()">${portfoliosTrigger}</td>
       <td class="r" style="white-space:nowrap">
         <button class="btn btn-d btn-sm" title="Delete cache file"
-                onclick="event.stopPropagation(); deleteCachedFund('${escapeAttr(c.ticker)}')">✕</button>
+                onclick="event.stopPropagation(); deleteCachedFund('${escapeAttr(c.ticker)}', ${(c.portfolios || []).length})">✕</button>
       </td>
     </tr>`;
   }).join('');
@@ -2739,6 +2948,10 @@ document.addEventListener('click', (ev) => {
 // user-supplied key OpenFIGI never resolved).
 async function loadCachedFund(ticker, isin, exchange, currency){
   if (!isin && !ticker) return;
+  // Wipe the stale fund data BEFORE switching to the Explore tab —
+  // otherwise the user sees the previously-loaded fund's tiles for a
+  // beat until the fetch returns, which is confusing.
+  clearFundView();
   switchTab('explore');
   switchSubTab('loadNew');
 
@@ -2789,9 +3002,18 @@ function cacheRowDblClick(ticker){
   openEditFundFromCache(ticker);
 }
 
-async function deleteCachedFund(ticker){
+async function deleteCachedFund(ticker, portfolioCount = 0){
   if (!ticker) return;
-  if (!confirm(`Delete cached data for ${ticker}?\n\nIf this fund is in a portfolio, it will be re-fetched (and re-cached) the next time you open that portfolio.`)) return;
+  // Tailor the confirm to the fund's actual state. Showing the
+  // "if this fund is in a portfolio…" caveat for a fund that ISN'T in
+  // one is just confusing — it makes the user wonder which portfolio
+  // they forgot about.
+  const msg = portfolioCount > 0
+    ? `Delete cached data for ${ticker}?\n\nThis fund is in ${portfolioCount} `
+      + `${portfolioCount === 1 ? 'portfolio' : 'portfolios'} and will be `
+      + `re-fetched (and re-cached) the next time you open ${portfolioCount === 1 ? 'that portfolio' : 'one of them'}.`
+    : `Delete cached data for ${ticker}?`;
+  if (!confirm(msg)) return;
   try {
     const r = await fetch(`${API}/cache/purge`, {
       method:'POST',
@@ -2864,6 +3086,223 @@ function switchSubTab(name){
 // Funds + History + X-ray and is fetched up front by reloadPortfolio().
 // The Holdings panel pulls a separate /holdings_rollup endpoint, lazily,
 // the first time it's opened (and again when the cached copy is stale).
+// ── Optimizer ────────────────────────────────────────────────────────
+// Proposes a portfolio design (or rebalance) from the exposure targets,
+// then hands the resulting trade list to the same apply_trades endpoint
+// the manual Buy/Sell dialog uses. Propose and apply are deliberately
+// separate steps: an optimiser that silently rearranged your portfolio
+// would be alarming, and reviewing the trades is the point.
+let optProposal = null;
+let optCashPositions = [];
+
+async function runOptimizer(){
+  if (!activePid){ return; }
+  const btn    = document.getElementById('optRunBtn');
+  const status = document.getElementById('optStatus');
+  const result = document.getElementById('optResult');
+
+  btn.disabled = true;
+  result.style.display = 'none';
+  optProposal = null;
+  status.textContent = 'Solving…';
+
+  try {
+    // Cash positions are needed for the "settle from" dropdowns.
+    const cr = await fetch(`${API}/portfolios/${activePid}/cash`);
+    optCashPositions = (await cr.json()).cash_positions || [];
+
+    const body = {
+      max_funds:  parseInt(document.getElementById('optMaxFunds').value, 10) || 10,
+      min_weight: (parseFloat(document.getElementById('optMinWeight').value) || 0) / 100,
+      min_trade:  parseFloat(document.getElementById('optMinTrade').value) || 0,
+      // Per-facet tolerances, as fractions. Facets with no targets set are
+      // simply ignored by the backend, so sending all four is harmless.
+      max_error: {
+        asset_class: (parseFloat(document.getElementById('optErrAssetClass').value) || 5) / 100,
+        sector:      (parseFloat(document.getElementById('optErrSector').value)     || 5) / 100,
+        country:     (parseFloat(document.getElementById('optErrCountry').value)    || 5) / 100,
+        currency:    (parseFloat(document.getElementById('optErrCurrency').value)   || 5) / 100,
+      },
+    };
+    const r = await fetch(`${API}/portfolios/${activePid}/optimize`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+
+    if (!d.ok){
+      status.textContent = d.reason || d.error || 'Could not produce a design.';
+      return;
+    }
+    if (!optCashPositions.length){
+      status.textContent =
+        'No cash positions — add one on the Cash tab so trades have somewhere to settle.';
+      return;
+    }
+
+    optProposal = d;
+    renderOptimizerResult(d);
+    result.style.display = '';
+
+    const bits = [
+      `${d.selected.length} of ${d.candidate_count} funds`,
+      `investable ${fmtP(d.total_base, d.base_currency)}`,
+      `worst deviation ${(d.max_dev * 100).toFixed(1)}%`,
+    ];
+    if ((d.skipped || []).length) bits.push(`${d.skipped.length} skipped`);
+
+    // Say plainly whether we hit the error target. When we didn't, the
+    // backend explains WHY — capped by Max funds, or simply unreachable
+    // with the candidate funds — because those need different actions from
+    // the user, and "fit error: 12%" alone tells them neither.
+    const summary = bits.join(' · ');
+
+    // A per-facet badge each, so you can see at a glance WHICH category
+    // missed — "fit error 7%" alone doesn't tell you what to fix.
+    const badges = Object.entries(d.facets || {}).sort().map(([f, x]) =>
+      `<span class="src ${x.met ? 'cache' : 'sell'}" title="`
+      + escapeAttr(`${facetLabel(f)}: worst bucket ${(x.max_dev*100).toFixed(1)}% off, `
+                 + `tolerance ${(x.tolerance*100)}%`)
+      + `">${x.met ? '✓' : '⚠'} ${escapeHtml(facetLabel(f))} `
+      + `${(x.max_dev*100).toFixed(1)}%</span>`).join('');
+
+    status.innerHTML = badges + `<div style="margin-top:.4rem">${escapeHtml(summary)}</div>`;
+    if (!d.target_met && d.reason){
+      status.innerHTML += `<div style="margin-top:.35rem;color:var(--amber)">`
+                        + escapeHtml(d.reason) + `</div>`;
+    }
+
+    // A facet with no exposure data anywhere is a data problem, not a
+    // solver one — surface it separately so it isn't mistaken for
+    // "unreachable targets", which needs a completely different fix.
+    if ((d.facet_warnings || []).length){
+      status.innerHTML += d.facet_warnings.map(w =>
+        `<div style="margin-top:.35rem;color:var(--amber)">⚠ ${escapeHtml(w)}</div>`
+      ).join('');
+    }
+  } catch(e){
+    status.textContent = `Failed: ${e.message || e}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderOptimizerResult(d){
+  const cur = d.base_currency;
+
+  // Trades. Each row gets a cash-position dropdown — the user picks what
+  // settles it, since a portfolio can hold several pots in different
+  // currencies and the right one is a judgement call.
+  const opts = optCashPositions.map(c =>
+    `<option value="${escapeAttr(c.id)}">${escapeHtml(c.name || c.id)} `
+    + `(${fmtP(c.amount, c.currency)})</option>`).join('');
+
+  document.getElementById('optTradeCount').textContent =
+    `${d.trades.length} trade${d.trades.length === 1 ? '' : 's'}`;
+
+  document.getElementById('optTradesBody').innerHTML = d.trades.length
+    ? d.trades.map((t, i) => {
+        const buy = t.action === 'buy';
+        return `<tr>
+          <td><span class="src ${buy ? 'buy' : 'sell'}">${buy ? 'BUY' : 'SELL'}</span></td>
+          <td>${escapeHtml(t.name)}<div class="sub tk">${escapeHtml(t.ticker)}</div></td>
+          <td class="r tk">${t.current_shares.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+          <td class="r tk">${t.target_shares.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+          <td class="r tk ${buy ? 'pos' : 'neg'}">${t.shares_delta > 0 ? '+' : ''}${t.shares_delta.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+          <td class="r tk ${buy ? 'neg' : 'pos'}">${fmtP(Math.abs(t.amount_base), cur)}</td>
+          <td><select class="opt-cash" data-idx="${i}">${opts}</select></td>
+        </tr>`;
+      }).join('')
+    : `<tr><td colspan="7" style="color:var(--muted);padding:1rem">
+         Already on target — no trades needed.</td></tr>`;
+
+  // Achieved vs target, per facet. This is what makes the result
+  // trustworthy rather than a black box: you can see exactly where it
+  // still misses, and decide whether that's the solver or your targets.
+  const blocks = [];
+  for (const [facet, dev] of Object.entries(d.deviation || {})){
+    const rows = Object.entries(dev).map(([k, delta]) => {
+      const got = (d.achieved[facet] || {})[k] || 0;
+      const tgt = got - delta;
+      const off = Math.abs(delta) > 0.02;
+      return `<tr>
+        <td>${escapeHtml(k)}</td>
+        <td class="r tk">${(tgt*100).toFixed(1)}%</td>
+        <td class="r tk">${(got*100).toFixed(1)}%</td>
+        <td class="r tk ${off ? (delta>0?'pos':'neg') : ''}">${delta>0?'+':''}${(delta*100).toFixed(1)}%</td>
+      </tr>`;
+    }).join('');
+    blocks.push(`
+      <div style="margin-bottom:.9rem">
+        <div class="ct" style="font-size:.7rem">${escapeHtml(facetLabel(facet))}</div>
+        <table class="dtable">
+          <colgroup><col><col style="width:100px"><col style="width:100px"><col style="width:90px"></colgroup>
+          <thead><tr class="htitles">
+            <th class="nosort"></th>
+            <th class="nosort r">Target</th>
+            <th class="nosort r">Achieved</th>
+            <th class="nosort r">Δ</th>
+          </tr></thead><tbody>${rows}</tbody>
+        </table>
+      </div>`);
+  }
+  // Cash isn't a target bucket but people always want to know what's left.
+  blocks.push(
+    `<div class="mhint">Cash left after trades: <strong>${fmtP(d.cash_after, cur)}</strong>`
+    + ` (${(d.cash_weight*100).toFixed(1)}% of the portfolio)</div>`);
+  document.getElementById('optAchieved').innerHTML = blocks.join('');
+}
+
+async function applyOptimizerTrades(){
+  if (!optProposal || !optProposal.trades.length) return;
+
+  // Attach the chosen cash position to each trade.
+  const sels = document.querySelectorAll('#optTradesBody .opt-cash');
+  const trades = optProposal.trades.map((t, i) => ({
+    ticker:       t.ticker,
+    shares_delta: t.shares_delta,
+    cash_id:      sels[i] ? sels[i].value : null,
+  }));
+
+  const n = trades.length;
+  if (!confirm(`Apply ${n} trade${n===1?'':'s'}?\n\n`
+             + `This updates your share counts and cash balances. `
+             + `It's applied as one batch — if any leg fails, none are applied.`)) return;
+
+  const btn = document.getElementById('optApplyBtn');
+  btn.disabled = true;
+  const status = document.getElementById('optStatus');
+  status.textContent = 'Applying…';
+
+  try {
+    const r = await fetch(`${API}/portfolios/${activePid}/trades`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({trades}),
+    });
+    const d = await r.json();
+    if (!d.ok){
+      // Nothing was applied — surface every reason, not just the first.
+      status.textContent = 'Rejected — nothing applied: '
+                         + (d.errors || [d.error || 'unknown']).join('; ');
+      return;
+    }
+    status.textContent = `Applied ${d.applied.length} trade`
+      + `${d.applied.length===1?'':'s'}.`
+      + ((d.warnings||[]).length ? ' ' + d.warnings.join(' ') : '');
+
+    document.getElementById('optResult').style.display = 'none';
+    optProposal = null;
+
+    // Reload so the Funds / Cash / X-ray tabs reflect the new positions.
+    lastLoadedPid = '';
+    await refreshConfigAndPortfolios();
+  } catch(e){
+    status.textContent = `Failed: ${e.message || e}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 function switchPortfolioSubTab(name){
   // If the user has unsaved cash changes and is moving away from the
   // Cash sub-tab, confirm before navigating — otherwise it's far too
@@ -2882,7 +3321,7 @@ function switchPortfolioSubTab(name){
   const map = {funds:'pSubTabFunds', cash:'pSubTabCash',
                history:'pSubTabHistory',
                xray:'pSubTabXray', targets:'pSubTabTargets',
-               holdings:'pSubTabHoldings'};
+               holdings:'pSubTabHoldings', optimizer:'pSubTabOptimizer'};
   Object.entries(map).forEach(([k, id]) => {
     const btn = document.getElementById(id);
     if (btn) btn.classList.toggle('active', k === name);
@@ -2890,7 +3329,7 @@ function switchPortfolioSubTab(name){
   const panels = {funds:'pSubFunds', cash:'pSubCash',
                   history:'pSubHistory',
                   xray:'pSubXray', targets:'pSubTargets',
-                  holdings:'pSubHoldings'};
+                  holdings:'pSubHoldings', optimizer:'pSubOptimizer'};
   Object.entries(panels).forEach(([k, id]) => {
     const el = document.getElementById(id);
     if (el) el.style.display = (k === name) ? '' : 'none';
@@ -2909,10 +3348,18 @@ function switchPortfolioSubTab(name){
   if (name === 'targets') {
     try { renderTargetsTile(currentPortfolioView); } catch(e){ /* not ready */ }
   }
+  // Optimizer panel: stamp the base currency into the "Min trade" label
+  // so the unit is unambiguous — it's an amount, not a share count, and
+  // "Min trade: 250" alone reads just as easily as 250 shares.
+  if (name === 'optimizer') {
+    const p = portfolios.find(x => x.id === activePid);
+    const el = document.getElementById('optMinTradeCur');
+    if (el) el.textContent = p && p.base_currency ? `(${p.base_currency})` : '';
+  }
+
   // Holdings panel: fetch the aggregated rollup if we don't have a
   // current one for this portfolio.
-  if (name === 'holdings') {
-    if (portfolioHoldingsPid !== activePid || !portfolioHoldings) {
+  if (name === 'holdings') {    if (portfolioHoldingsPid !== activePid || !portfolioHoldings) {
       loadPortfolioHoldings().catch(e => console.warn('holdings rollup:', e));
     }
   }
@@ -4220,6 +4667,9 @@ async function runFundFetch(forceRefresh=false, currencyOverride=''){
 
   document.getElementById('fetchBtn').disabled = true;
   hideExploreAll();
+  // Wipe the previous fund's data immediately — don't let stale tiles
+  // sit on screen while the new fetch is in flight.
+  clearFundView();
 
   let statusMsg;
   if (forceRefresh)         statusMsg = `Reloading ${raw}…`;
@@ -4446,6 +4896,57 @@ function pickCurrency(currency){
 
 // renderLoadedFund — shared post-load rendering, used by the mode-2
 // ISIN-key path (and any other path that loads a fund out-of-band).
+// Wipe the fund detail panels back to their empty state. Called at the
+// start of any fund fetch / reload so the previous fund's tiles, holdings,
+// breakdowns, and price chart don't sit on screen with stale data while
+// the new fetch is in flight — which is especially confusing on a slow
+// network or when the new fetch fails (you'd be staring at the OLD fund
+// and think the new one loaded fine).
+function clearFundView(){
+  const hide = id => { const el = document.getElementById(id);
+                       if (el) el.style.display = 'none'; };
+  const empty = id => { const el = document.getElementById(id);
+                        if (el) el.innerHTML = ''; };
+  const text = (id, t) => { const el = document.getElementById(id);
+                            if (el) el.textContent = t || ''; };
+
+  // Hide every fund-detail container so the entire fund-detail area
+  // collapses to the empty-state placeholder during the next fetch.
+  // Each of these has its own display toggle from showFundHeader /
+  // showMetrics / renderFundBreakdowns / renderHoldings; if we miss
+  // one, that element lingers with stale data.
+  hide('fhdr');           // fund name + meta line + resolution note
+  hide('fundMetaCard');   // asset class / exchange / structure tile grid
+  hide('metrics');        // metric tile grid (yields, NAV, etc.)
+  hide('cgrid');          // price chart card
+  hide('fundBkSection');  // 4-card breakdowns grid (was the visible leftover)
+  hide('hcard');          // holdings card
+
+  empty('metrics');
+  empty('fundMetaGrid');
+  empty('postActions');
+  empty('cacheBadgeRow');
+  empty('hbody');
+  text('rnote');          // resolution note — clear it specifically
+  text('fname');          // fund name
+  text('fmeta');          // fund meta line
+
+  // Source badges should reset too, otherwise "CACHE · 0.05d" lingers
+  ['priceSrc','holdingsSrc'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el){ el.textContent = ''; el.className = 'src'; }
+  });
+
+  // Show the empty state placeholder so the panel isn't a blank rectangle
+  // while the new fetch is in progress.
+  const es = document.getElementById('emptyState');
+  if (es) es.style.display = '';
+
+  // Clear the live fund reference so add-to-portfolio / save buttons
+  // can't act on stale data.
+  lastFundData = null;
+}
+
 function renderLoadedFund(data, statusText){
   lastFundData = data;
   allPrices = data.price_history || [];
@@ -4565,6 +5066,22 @@ function fundIsInActivePortfolio(d){
 function renderPostFundActions(d){
   const box = document.getElementById('postActions');
   const btns = [];
+
+  // v0.21.0 explicit-save model: every fund response carries
+  // data.saved = true/false. When false we surface a prominent
+  // "★ Save to pre-loaded" button; when true we show a quiet
+  // "✓ Saved" pill confirming the state. Adding to a portfolio
+  // implicitly saves, so the Save button hides automatically once
+  // either action has occurred.
+  if (d.saved === false){
+    btns.push(`<button class="btn btn-p btn-sm" onclick="saveToPreloaded()" `
+            + `title="Save this fund to the pre-loaded list so its data persists across sessions">`
+            + `★ Save to pre-loaded</button>`);
+  } else if (d.saved === true){
+    btns.push(`<span class="src cache" title="This fund is saved in the pre-loaded list">`
+            + `✓ Saved</span>`);
+  }
+
   // "+ Add to portfolio" — only if not already in the active portfolio.
   // If no portfolios exist yet, prompt to create one.
   if (!portfolios.length){
@@ -4576,8 +5093,34 @@ function renderPostFundActions(d){
   // asset class, and Yahoo-sourced holdings (raw or enriched top-10).
   // Does NOT touch a manually-uploaded holdings list — that's only
   // refreshed by re-uploading.
-  btns.push(`<button class="btn btn-s btn-sm" onclick="reloadCurrentFund()" title="Re-fetch this fund live (profile, prices, sectors, and Yahoo top-10 holdings). Uploaded holdings lists are not affected — re-upload to refresh those.">↻ Reload Fund Data</button>`);
+  btns.push(`<button class="btn btn-s btn-sm" onclick="reloadCurrentFund(true)" title="Re-fetch this fund live (profile, prices, sectors, and Yahoo top-10 holdings). Uploaded holdings lists are not affected — re-upload to refresh those.">↻ Reload Fund Data</button>`);
   box.innerHTML = btns.join(' ');
+}
+
+// v0.21.0 — Explicit save of the currently-loaded fund to the
+// pre-loaded list. Re-fetches /api/fund with commit=1 so the backend
+// persists everything (profile, holdings, sectors, asset class,
+// price history) to the on-disk cache. After the round-trip we re-
+// render the fund so the Save button flips to "✓ Saved", and we
+// refresh the Pre-loaded panel in the background so the new entry
+// shows up there too without needing a manual reload.
+async function saveToPreloaded(){
+  if (!lastFundData) return;
+  const params = fundIdentityParams(lastFundData);
+  if (activePid) params.set('portfolio', activePid);
+  params.set('commit', '1');
+  try {
+    const r = await fetch(`${API}/fund?${params}`);
+    const d = await r.json();
+    if (!r.ok || d.error){
+      alert(`Save failed: ${d.error || 'unknown error'}`);
+      return;
+    }
+    renderLoadedFund(d, `Saved ${d.ticker} to pre-loaded list`);
+    refreshCacheList().catch(()=>{});
+  } catch(e){
+    alert(`Save failed: ${e.message || e}`);
+  }
 }
 
 function showMetrics(p, prices, data) {
@@ -4637,11 +5180,42 @@ function showMetrics(p, prices, data) {
     ? lastRow.volume
     : (p.regularMarketVolume != null ? p.regularMarketVolume : null);
 
+  // v0.21.0 — dividend yields. Both Yahoo fields are stored on the
+  // profile as percent values (already × 100 from the decimal source).
+  // Show as e.g. "1.57%". When the value is null/missing or zero we
+  // render a dash so an unknown isn't displayed as "0.00%".
+  function fmtYield(v){
+    if (v == null) return '—';
+    const n = parseFloat(v);
+    if (!isFinite(n) || n <= 0) return '—';
+    return n.toFixed(2) + '%';
+  }
+
+  // Human-readable label for the yield source. Trailing yield: 'yahoo'
+  // = directly from Yahoo, 'computed' = we summed actual dividends and
+  // divided by current price ourselves. Forward yield: 'yahoo' = the
+  // published yield, '5y_avg' = backstop using fiveYearAvgDividendYield.
+  // null source → no value available.
+  function fmtYieldSrc(v, src){
+    if (v == null || src == null) return 'not available from Yahoo';
+    return {
+      yahoo:    'direct from Yahoo',
+      computed: 'computed from dividend history',
+      '5y_avg': '5-year avg (Yahoo fallback)',
+    }[src] || src;
+  }
+
   const defs = [
     { l:'Last Close',    v: last!=null ? fmtP(last, cur) : '—', c:'', sub: lastSub },
     { l:'YTD Return',    v: ytdR!=null ? fmtPct(ytdR)    : '—', c: ytdR!=null ? (ytdR>=0?'pos':'neg'):'' },
     { l:'Total Return',  v: totR!=null ? fmtPct(totR)    : '—', c: totR!=null ? (totR>=0?'pos':'neg'):'' },
     { l:'Volume (last day)', v: fmtVolume(lastVol), c:'', sub: (lastVol!=null ? lastSub : '') },
+    { l:'Trailing Yield',
+      v: fmtYield(p.trailingYieldPct), c:'',
+      sub: fmtYieldSrc(p.trailingYieldPct, p.trailingYieldSrc) },
+    { l:'Forward Yield',
+      v: fmtYield(p.forwardYieldPct),  c:'',
+      sub: fmtYieldSrc(p.forwardYieldPct, p.forwardYieldSrc) },
     { l:'NAV',           v: p.navPrice != null ? fmtP(p.navPrice, cur) : '—', c:'' },
     { l:'52W High',      v: p.fiftyTwoWeekHigh != null ? fmtP(p.fiftyTwoWeekHigh, cur) : '—', c:'' },
     { l:'52W Low',       v: p.fiftyTwoWeekLow  != null ? fmtP(p.fiftyTwoWeekLow,  cur) : '—', c:'' },
@@ -4695,6 +5269,18 @@ function fmtFundStyle(v){
   }[v] || '—';
 }
 
+// v0.21.0 — display label for the distribution policy. Detected from
+// the fund name + dividend yield by the backend (see detect_distribution
+// in extractors.py); editable from the Edit Fund dialog the same way
+// as Replication and Style.
+function fmtDistribution(v){
+  return {
+    accumulating: 'Accumulating',
+    distributing: 'Distributing',
+    unknown:      '—',
+  }[v] || '—';
+}
+
 function renderFundMetaTile(data){
   const card = document.getElementById('fundMetaCard');
   const grid = document.getElementById('fundMetaGrid');
@@ -4704,7 +5290,8 @@ function renderFundMetaTile(data){
   const cur = p.currency || '';
   const ac  = (data && data.asset_class) || {};
   const fs  = (data && data.fund_structure) ||
-              { structure:'unknown', replication:'unknown', style:'unknown' };
+              { structure:'unknown', replication:'unknown', style:'unknown',
+                distribution:'unknown' };
   const isOverride = !!(data && data.fund_structure_is_override);
 
   // Asset-class chip (same coloured chip used elsewhere).
@@ -4728,6 +5315,10 @@ function renderFundMetaTile(data){
     { l:'Replication',      v: escapeHtml(fmtReplication(fs.replication)),
       sub: srcCaption, subHtml:true },
     { l:'Style',            v: escapeHtml(fmtFundStyle(fs.style)),
+      sub: srcCaption, subHtml:true },
+    // v0.21.0 — Distribution policy. Lives on the structure block so a
+    // user override applies via the same Edit Fund dialog flow.
+    { l:'Distribution',     v: escapeHtml(fmtDistribution(fs.distribution)),
       sub: srcCaption, subHtml:true },
   ];
 
@@ -5248,9 +5839,13 @@ function fundIdentityParams(data){
 // step. Returns true on success.
 async function reloadCurrentFund(forceRefresh=false){
   if (!lastFundData) return false;
+  // Capture identity BEFORE clearing — clearFundView() drops lastFundData.
   const params = fundIdentityParams(lastFundData);
   if (activePid) params.set('portfolio', activePid);
   if (forceRefresh) params.set('refresh', '1');
+  // Wipe the panels so stale tiles don't sit on-screen during the fetch.
+  clearFundView();
+  setStatus('spin', `Reloading…`);
   try {
     const r = await fetch(`${API}/fund?${params}`);
     const d = await r.json();
@@ -5848,6 +6443,24 @@ function renderHoldings(data, note) {
 //
 // For manual-upload holdings the caller uses formatHoldingsSumBadge
 // instead.
+// v0.22.0 — "last updated" pill for the holdings header. Reads the
+// canonical holdings_meta.last_updated stamp, which every write path
+// sets (manual upload, Yahoo fetch, single-row edit, enrichment). Shows
+// an absolute date (matching the metric-tile convention) with the full
+// timestamp on hover. Returns '' when there are no holdings, so the
+// pill simply doesn't appear rather than showing a dash.
+function formatHoldingsUpdatedBadge(data){
+  const ts = data?.holdings_meta?.last_updated;
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (isNaN(d)) return '';
+  const label = d.toLocaleDateString(undefined, {
+    day:'numeric', month:'short', year:'numeric'
+  });
+  const tip = `Holdings list last updated ${d.toLocaleString()}`;
+  return `<span class="src" title="${escapeAttr(tip)}">UPD ${escapeHtml(label)}</span>`;
+}
+
 function formatTop10SumBadge(data){
   const sum = data?.holdings_meta?.top10_sum_pct;
   if (sum == null) return '';
@@ -6678,9 +7291,10 @@ function openEditFundModal(fund){
   // (the effective {structure, replication, style}, Yahoo seed + any
   // stored override). Defaults to all-"unknown" when not supplied.
   const fst = fund.structure || {};
-  document.getElementById('editFundStructure').value   = fst.structure   || 'unknown';
-  document.getElementById('editFundReplication').value = fst.replication || 'unknown';
-  document.getElementById('editFundStyle').value       = fst.style       || 'unknown';
+  document.getElementById('editFundStructure').value    = fst.structure    || 'unknown';
+  document.getElementById('editFundReplication').value  = fst.replication  || 'unknown';
+  document.getElementById('editFundStyle').value        = fst.style        || 'unknown';
+  document.getElementById('editFundDistribution').value = fst.distribution || 'unknown';
   editFundState.structureIsOverride = !!fund.structureIsOverride;
   // Apply the structure/replication coupling to the initial state.
   onEditFundStructureChange();
@@ -6828,6 +7442,13 @@ async function lookupFundStructure(){
       document.getElementById('editFundStyle').value = sty;
       applied.push(`style: ${fmtFundStyle(sty)} (${d.style.confidence})`);
     }
+    // v0.21.0 — distribution policy: accumulating / distributing.
+    // justETF labels this explicitly on the profile page.
+    const dist = d.distribution && d.distribution.value;
+    if (dist){
+      document.getElementById('editFundDistribution').value = dist;
+      applied.push(`distribution: ${fmtDistribution(dist)} (${d.distribution.confidence})`);
+    }
 
     if (applied.length){
       status.className = 'structlookup-status ok';
@@ -6857,9 +7478,10 @@ async function saveEditFundModal(){
   // (Fund → Replication N/A) is already applied to the live select
   // values by onEditFundStructureChange; the server re-enforces it too.
   const structure = {
-    structure:   document.getElementById('editFundStructure').value,
-    replication: document.getElementById('editFundReplication').value,
-    style:       document.getElementById('editFundStyle').value,
+    structure:    document.getElementById('editFundStructure').value,
+    replication:  document.getElementById('editFundReplication').value,
+    style:        document.getElementById('editFundStyle').value,
+    distribution: document.getElementById('editFundDistribution').value,
   };
   // "No structure information" — every attribute unknown — is treated
   // as "clear the override" (revert to the Yahoo seed), mirroring the
@@ -6867,7 +7489,8 @@ async function saveEditFundModal(){
   const structureIsEmpty =
     structure.structure === 'unknown'
     && (structure.replication === 'unknown' || structure.replication === 'n/a')
-    && structure.style === 'unknown';
+    && structure.style === 'unknown'
+    && structure.distribution === 'unknown';
 
   const btn = document.getElementById('editFundSaveBtn');
   btn.disabled = true;
@@ -7034,6 +7657,7 @@ function renderFullHoldingsTitle(filteredRows){
     `// holdings ${countLine} ` +
     `<span class="${pillCls}">${escapeHtml(pillTxt)}</span>` +
     sumBadge +
+    formatHoldingsUpdatedBadge(s.data) +
     `<span id="holdingsSrc" class="src"></span>`;
   setSrcBadge('holdingsSrc', lastFundData?.meta?.holdings);
 }
@@ -7260,11 +7884,33 @@ function renderHoldingsUploadNotice(data) {
     const date = meta.uploaded_at
       ? new Date(meta.uploaded_at).toLocaleDateString()
       : '';
-    const filename = meta.filename ? escapeHtml(meta.filename) : '';
+
+    // v0.22.1 — show WHERE the list came from, not just a filename.
+    //   source_kind 'url'  → URL:<the url>
+    //   source_kind 'disk' → LOCAL:<the filename>
+    // Blobs uploaded before 0.22.1 have no source_kind; fall back to
+    // LOCAL:<filename> since disk was the only path in practice, and
+    // omit the line entirely if we don't even have a filename.
+    const kind = meta.source_kind || (meta.filename ? 'disk' : '');
+    let originHtml = '';
+    if (kind === 'url') {
+      const url = meta.source_value || meta.filename || '';
+      // The URL is shown in full via the title so a long issuer link
+      // doesn't blow out the card, but stays inspectable on hover.
+      originHtml = `<span class="hovr-sub">From `
+                 + `<code title="${escapeAttr(url)}">URL:${escapeHtml(url)}</code>`
+                 + `${date ? ` on ${date}` : ''}</span>`;
+    } else if (kind === 'disk') {
+      const fn = meta.filename || meta.source_value || '';
+      originHtml = `<span class="hovr-sub">From `
+                 + `<code title="${escapeAttr(meta.source_value || fn)}">LOCAL:${escapeHtml(fn)}</code>`
+                 + `${date ? ` on ${date}` : ''}</span>`;
+    }
+
     html = `<div class="hovr ok">
       <div class="hovr-msg">
         ✓ Manual upload — <strong>${rowCount}</strong> positions.
-        ${filename ? `<span class="hovr-sub">From <code>${filename}</code>${date ? ` on ${date}` : ''}</span>` : ''}
+        ${originHtml}
         <span class="hovr-sub">This list is not affected by “Reload fund data” or “Live refresh all” — to update it, upload again (the source and column mapping are remembered).</span>
       </div>
     </div>`;
@@ -7364,8 +8010,9 @@ function renderCacheConfigList(cfg){
     const ttlCell = manualOnly
       ? `<div class="ccname" style="font-family:var(--mono);font-size:.66rem;color:var(--muted);text-align:right">manual refresh only</div>
          <div class="ccunit"></div>`
-      : `<input type="number" min="0" step="1" value="${c.ttl_days}" data-cat="${cat}" class="ccttl" title="TTL in days">
-         <div class="ccunit">days</div>`;
+      : `<input type="number" min="0" step="1" value="${c.ttl_days}" data-cat="${cat}" class="ccttl"
+                title="How long cached data stays valid, in days.&#10;&#10;0 = never cached — refetched on every load (always current, slowest).&#10;1 = at most one fetch per day.&#10;7 = at most one fetch per week.">
+         <div class="ccunit">${c.ttl_days === 0 ? 'always' : 'days'}</div>`;
     return `
       <div class="ccrow" data-manual-only="${manualOnly ? '1' : '0'}">
         <input type="checkbox" data-cat="${cat}" class="ccchk" ${chkAttrs}>
@@ -7475,6 +8122,28 @@ async function confirmAddToPortfolio(){
     if (isNaN(shares) || shares < 0) { alert('Shares must be a non-negative number'); return; }
   }
 
+  // v0.21.0: adding to a portfolio implies saving. If this fund isn't
+  // already saved, force a commit fetch first so the listings cache
+  // gets populated — the add-fund endpoint requires the identity to
+  // be on disk (it pulls ISIN/exchange from there at portfolio view
+  // time).
+  if (lastFundData.saved === false){
+    const params = fundIdentityParams(lastFundData);
+    params.set('commit', '1');
+    try {
+      const sr = await fetch(`${API}/fund?${params}`);
+      const sd = await sr.json();
+      if (!sr.ok || sd.error){
+        alert(`Save failed: ${sd.error || 'unknown error'}`);
+        return;
+      }
+      lastFundData = sd;
+    } catch(e){
+      alert(`Save failed: ${e.message || e}`);
+      return;
+    }
+  }
+
   const body = {
     ticker: (lastFundData.ticker || curTicker || '').toUpperCase(),
     shares: shares,
@@ -7561,14 +8230,22 @@ async function prefillUploadSourceFromPrefs(ticker){
     if (inp && !inp.value && p.source_value) {
       inp.value = p.source_value;
     }
-    // Helper line under the input — shows the last-used filename and
-    // when it was last saved. Useful when the source string itself is
-    // a long URL and the filename clarifies which file we're talking
-    // about.
+    // Helper line under the input — shows where the last upload came
+    // from and when it was saved. Mirrors the holdings-tile format
+    // (LOCAL:<filename> / URL:<url>) so the two places agree rather
+    // than the dialog always calling it a "file".
     const hint = document.getElementById('uvSourceLastUsed');
     if (hint) {
       const bits = [];
-      if (p.filename) bits.push(`last file: ${p.filename}`);
+      // Blobs saved before 0.22.1 have no source_kind; fall back to
+      // 'disk' when we at least have a filename, since that was the
+      // only path in practice.
+      const kind = p.source_kind || (p.filename ? 'disk' : '');
+      if (kind === 'url') {
+        bits.push(`last source: URL:${p.source_value || p.filename || ''}`);
+      } else if (kind === 'disk') {
+        bits.push(`last source: LOCAL:${p.filename || p.source_value || ''}`);
+      }
       if (p.saved_at) {
         const dt = new Date(p.saved_at);
         if (!isNaN(dt)) bits.push(`saved ${dt.toLocaleDateString()}`);
@@ -7615,6 +8292,199 @@ function cancelOrCloseUpload(){
     return;
   }
   closeUploadModal();
+}
+
+// ── File picker ──────────────────────────────────────────────────────
+// In-app filesystem browser backed by GET /api/upload/browse. Returns a
+// real path (not file bytes), which is what lets the remembered-source
+// re-upload keep working — see the modal's markup comment for why a
+// native <input type="file"> can't do that.
+//
+// Paths are passed via data- attributes and read back in a delegated
+// listener — never interpolated into inline onclick handlers. A Windows
+// path (C:\Users\…) inside an inline handler would have its backslashes
+// eaten as JS escape sequences, and an apostrophe in a folder name would
+// break out of the string. data- attributes sidestep both.
+const FP_LAST_PATH_KEY = 'porxpy.filePicker.lastPath';
+let fpState = { path: '', selected: null, sep: '/' };
+
+function openFilePicker(){
+  fpState = { path: '', selected: null, sep: '/' };
+  document.getElementById('fpError').style.display = 'none';
+  document.getElementById('fpSelected').textContent = '';
+  document.getElementById('fpConfirmBtn').disabled = true;
+  document.getElementById('filePickerModal').classList.add('show');
+
+  // Where to start, in priority order:
+  //   1. The folder of whatever local path is already in the Source box
+  //      (a URL tells us nothing about the disk, so it's ignored).
+  //   2. The last folder browsed to, remembered across sessions.
+  //   3. '' → the server falls back to the user's home directory.
+  const cur = (document.getElementById('uvSourceInput').value || '').trim();
+  const looksLikePath = cur && !/^https?:\/\//i.test(cur);
+  if (looksLikePath) {
+    const cut = Math.max(cur.lastIndexOf('/'), cur.lastIndexOf('\\'));
+    fpNavigate(cut > 0 ? cur.slice(0, cut) : '');
+    return;
+  }
+  let remembered = '';
+  try { remembered = localStorage.getItem(FP_LAST_PATH_KEY) || ''; } catch(_e){}
+  fpNavigate(remembered);
+}
+
+function closeFilePicker(){
+  document.getElementById('filePickerModal').classList.remove('show');
+}
+
+async function fpNavigate(path){
+  const errBox = document.getElementById('fpError');
+  const list   = document.getElementById('fpList');
+  errBox.style.display = 'none';
+  list.innerHTML = `<div style="padding:1rem;color:var(--muted)">Loading…</div>`;
+
+  // Navigating away invalidates any selection made in the old folder.
+  fpState.selected = null;
+  document.getElementById('fpSelected').textContent = '';
+  document.getElementById('fpConfirmBtn').disabled = true;
+
+  try {
+    const r = await fetch(`${API}/upload/browse?path=${encodeURIComponent(path || '')}`);
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
+
+    fpState.path = d.path;
+    fpState.sep  = d.sep || '/';
+    document.getElementById('fpPathInput').value = d.path;
+
+    // Remember where we ended up so the next "Browse…" starts here.
+    // Written on every successful navigation, not just on confirm, so
+    // it survives a cancelled browse too.
+    try { localStorage.setItem(FP_LAST_PATH_KEY, d.path); } catch(_e){}
+
+    fpRenderList(d);
+  } catch(e){
+    list.innerHTML = '';
+    errBox.textContent = e.message || String(e);
+    errBox.style.display = '';
+
+    // A remembered path can go stale (folder renamed, USB drive gone).
+    // Rather than leaving the user stuck on an error, drop back to home
+    // — but only once, so a genuinely broken home dir can't loop.
+    if (path) {
+      try { localStorage.removeItem(FP_LAST_PATH_KEY); } catch(_e){}
+      errBox.textContent = `${e.message || e} — falling back to your home folder.`;
+      setTimeout(() => fpNavigate(''), 600);
+    }
+  }
+}
+
+function fpRenderList(d){
+  const rows = [];
+
+  // "Up" entry — omitted at a filesystem root, where there's nowhere to
+  // go (the server reports parent:null there). Single click, since it's
+  // a navigation control rather than something you'd want to select.
+  if (d.parent) {
+    rows.push(
+      `<div class="fp-row" data-kind="up" data-path="${escapeAttr(d.parent)}"
+            style="padding:.35rem .6rem;cursor:pointer;color:var(--muted)">
+         📂 <span style="margin-left:.3rem">..</span>
+       </div>`);
+  }
+
+  // Folders: single click highlights, double click opens — standard
+  // file-manager behaviour.
+  for (const dir of (d.dirs || [])) {
+    rows.push(
+      `<div class="fp-row" data-kind="dir" data-path="${escapeAttr(dir.path)}"
+            style="padding:.35rem .6rem;cursor:pointer">
+         📁 <span style="margin-left:.3rem">${escapeHtml(dir.name)}</span>
+       </div>`);
+  }
+
+  // Files: single click selects, double click selects and confirms.
+  for (const f of (d.files || [])) {
+    rows.push(
+      `<div class="fp-row" data-kind="file" data-path="${escapeAttr(f.path)}"
+            style="padding:.35rem .6rem;cursor:pointer;display:flex;
+                   justify-content:space-between;gap:1rem">
+         <span>📄 <span style="margin-left:.3rem">${escapeHtml(f.name)}</span></span>
+         <span style="color:var(--muted);flex-shrink:0">${fpFmtSize(f.size)}</span>
+       </div>`);
+  }
+
+  const list = document.getElementById('fpList');
+  if (!rows.length) {
+    // Distinguish "empty folder" from "folder with nothing we can parse"
+    // — the latter is the confusing case (a Downloads folder full of PDFs
+    // would otherwise look broken).
+    list.innerHTML =
+      `<div style="padding:1rem;color:var(--muted)">
+         No sub-folders, and no files PorxPy can parse here.
+       </div>`;
+    return;
+  }
+  list.innerHTML = rows.join('');
+}
+
+// Delegated handlers — bound once, and they read the path off the row's
+// data- attribute rather than from an interpolated inline handler.
+document.addEventListener('click', (ev) => {
+  const row = ev.target.closest('#fpList .fp-row');
+  if (!row) return;
+  const kind = row.dataset.kind;
+  const path = row.dataset.path;
+
+  if (kind === 'up') {
+    fpNavigate(path);
+  } else if (kind === 'dir') {
+    fpHighlight(row);
+    // A folder isn't a valid pick — clear any file selection so Confirm
+    // can't fire with a stale path from a previous click.
+    fpState.selected = null;
+    document.getElementById('fpSelected').textContent =
+      'Double-click to open this folder';
+    document.getElementById('fpConfirmBtn').disabled = true;
+  } else if (kind === 'file') {
+    fpHighlight(row);
+    fpState.selected = path;
+    document.getElementById('fpSelected').textContent = `Selected: ${path}`;
+    document.getElementById('fpConfirmBtn').disabled = false;
+  }
+});
+
+document.addEventListener('dblclick', (ev) => {
+  const row = ev.target.closest('#fpList .fp-row');
+  if (!row) return;
+  const kind = row.dataset.kind;
+  const path = row.dataset.path;
+
+  if (kind === 'dir' || kind === 'up') {
+    fpNavigate(path);           // open the folder
+  } else if (kind === 'file') {
+    fpState.selected = path;    // pick it and close
+    fpConfirm();
+  }
+});
+
+function fpHighlight(el){
+  document.querySelectorAll('#fpList .fp-row').forEach(r => {
+    r.style.background = '';
+  });
+  el.style.background = 'rgba(255,255,255,.08)';
+}
+
+function fpConfirm(){
+  if (!fpState.selected) return;
+  document.getElementById('uvSourceInput').value = fpState.selected;
+  closeFilePicker();
+}
+
+function fpFmtSize(bytes){
+  if (bytes == null) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function closeUploadModal(){
@@ -8175,6 +9045,23 @@ async function submitUploadCommit(){
   uploadState.commitInFlight = true;
   uploadState.abortCtl       = new AbortController();
   const tokenAtFire          = uploadState.preview.token;
+
+  // v0.21.0: uploading holdings is a commit action — make sure the
+  // listing-level cache exists too so the fund won't appear orphaned
+  // in the pre-loaded list (fund cache present but listing cache empty).
+  // Cheap if the fund is already saved (commit is a no-op for an
+  // existing entry, identity already cached).
+  if (lastFundData && lastFundData.saved === false){
+    try {
+      const sp = fundIdentityParams(lastFundData);
+      sp.set('commit', '1');
+      const sr = await fetch(`${API}/fund?${sp}`);
+      const sd = await sr.json();
+      if (sr.ok && !sd.error){
+        lastFundData = sd;
+      }
+    } catch(e){ /* non-fatal — the upload commit follows regardless */ }
+  }
 
   try {
     const body = {
@@ -9566,6 +10453,8 @@ function rerenderPortfolioFunds(){
 // one.
 async function viewFundFromPortfolio(isin, exchange, ticker, currency){
   if (!isin && !ticker) return;
+  // Wipe the stale fund data BEFORE switching to the Explore tab.
+  clearFundView();
   switchTab('explore');
   switchSubTab('loadNew');
 

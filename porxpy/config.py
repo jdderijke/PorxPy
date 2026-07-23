@@ -463,12 +463,20 @@ REPLICATION_METHODS: tuple[str, ...] = (
 # only; active ETFs and index funds both exist, so it stays editable.
 FUND_STYLES: tuple[str, ...] = ("active", "passive", "unknown")
 
+# v0.21.0: distribution policy. Detected from fund name + dividend yield
+# (see :func:`porxpy.extractors.detect_distribution`) and editable by
+# the user the same way as Replication and Style.
+DISTRIBUTION_POLICIES: tuple[str, ...] = (
+    "accumulating", "distributing", "unknown",
+)
+
 # Default Structure block for a fund with no stored override. The
 # values here are placeholders; load_fund_data overlays Yahoo-seeded
 # defaults (see _seed_fund_structure) before applying any stored
 # override on top.
 DEFAULT_FUND_STRUCTURE: dict[str, str] = {
-    "structure":   "unknown",
-    "replication": "unknown",
-    "style":       "unknown",
+    "structure":    "unknown",
+    "replication":  "unknown",
+    "style":        "unknown",
+    "distribution": "unknown",
 }

@@ -1286,7 +1286,22 @@ def _upload_commit_impl(token: str, *,
         "weight_sum_pct": round(weight_sum, 6),
         "isin_used":   isin or "",
         "uploaded_at": now_iso(),
+        # v0.22.0 — canonical "when was this list last written?" stamp.
+        # Every holdings write path sets this (upload, Yahoo fetch, row
+        # edit, enrichment) so the fund page has one field to display
+        # regardless of provenance.
+        "last_updated": now_iso(),
         "filename":    payload.get("filename"),
+        # v0.22.1 — record WHERE the upload came from, not just the
+        # filename. ``source_kind`` is "disk" (a local file the user
+        # picked) or "url" (fetched from the internet); ``source_value``
+        # is the URL for a url upload, and the local path (or just the
+        # filename) for a disk upload. The holdings card renders these
+        # as LOCAL:<filename> / URL:<url> so a user can tell at a glance
+        # whether the list came off their machine or off the issuer's
+        # website.
+        "source_kind":  payload.get("source_kind"),
+        "source_value": payload.get("source_value"),
         "weight_unit_used": unit,
         "decimal_used": decimal,
     }

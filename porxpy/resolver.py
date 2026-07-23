@@ -356,7 +356,12 @@ def build_ticker(isin: str, mic: str | None,
     # 1. Explicit hint from caller
     if known_ticker:
         note = f"Using known ticker {known_ticker} (hint from caller)"
-        print(f"[Resolve] {isin}/{mic or '?'} → {known_ticker} [hint]")
+        # Deliberately not logged. This path is a pure return — no
+        # network, no lookup — and it fires once per fund on every
+        # portfolio load, cached or not. Logging it made a fully-cached
+        # load look like it was resolving tickets over the wire, which
+        # is misleading when diagnosing slow startups. The paths below
+        # that DO cost something still log.
         return known_ticker, (mic or ""), note
 
     # 2. Any portfolio entry already has this resolved

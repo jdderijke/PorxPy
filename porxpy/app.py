@@ -20,6 +20,7 @@ from __future__ import annotations
 import math
 import re
 import uuid
+from pathlib import Path
 
 import requests
 from flask import Flask, Response, jsonify, request, send_from_directory
@@ -84,6 +85,7 @@ from porxpy.utils import (
     coerce_holdings_row,
     delete_portfolio,
     find_portfolio,
+    fx_rate,
     fund_structure_delete,
     fund_structure_get,
     fund_structure_put,
@@ -330,6 +332,10 @@ def create_app() -> Flask:
         currency = request.args.get("currency", "").strip().upper() or None
         pid      = request.args.get("portfolio", "").strip() or None
         force    = request.args.get("refresh") == "1"
+        # v0.21.0 explicit-save: viewing a fund (no commit) only writes
+        # to the cache if the fund is already saved. Add &commit=1 to
+        # the call when the user has explicitly chosen to save.
+        commit   = request.args.get("commit") == "1"
 
         if not isin and not ticker_q:
             return jsonify({"error": "isin or ticker is required"}), 400
@@ -500,6 +506,7 @@ def create_app() -> Flask:
         data = load_fund_data(
             resolved_isin, resolved_mic, cache_cfg,
             force_refresh=force, known_ticker=resolved_tkr,
+            commit=commit,
         )
 
         # ── Backfill the identity quad ─────────────────────────────────
@@ -622,6 +629,307 @@ def create_app() -> Flask:
         if not delete_portfolio(pid):
             return jsonify({"error": "portfolio not found"}), 404
         return jsonify({"deleted": pid})
+
+    @app.route("/api/portfolios/<pid>/optimize", methods=["POST"])
+    def api_portfolio_optimize(pid: str) -> Response:
+        """Propose a portfolio design (or rebalance) matching the targets.
+
+        Read-only — this *proposes*, it never mutates. The user reviews the
+        trade list and applies it via ``POST /api/portfolios/<pid>/trades``.
+        That propose/review/apply split is deliberate: an optimiser that
+        silently rearranged your portfolio would be terrifying.
+
+        The candidate universe is the pre-loaded funds (the listings cache)
+        — that is exactly what "design a portfolio from my saved funds"
+        means. Funds already in the portfolio are always included, whether
+        or not they'd otherwise be candidates, since a rebalance has to be
+        able to sell them.
+
+        Body (all optional)::
+
+            {
+              "max_funds":   10,       # cap on funds in the design
+              "min_weight":  0.01,     # drop dust positions below this
+              "min_trade":   100.0,    # suppress trades below this (base ccy)
+              "max_error": {           # tolerance PER FACET, as fractions
+                  "asset_class": 0.02, # "within 2 percentage points"
+                  "sector":      0.10,
+                  "country":     0.05,
+                  "currency":    0.15,
+              },
+              "candidates":  ["VWRL.AS", ...],   # restrict the universe
+            }
+
+        ``max_error`` also shapes the objective, not just the stopping test:
+        a facet you demand 2% on is weighted five times harder than one you
+        allow 10% on. Otherwise the solver would spread effort evenly and
+        might never satisfy the strict facet at all.
+        """
+        from porxpy.optimizer import optimise_portfolio
+        # Local imports, matching the pattern used by the other endpoints.
+        from porxpy.utils import cash_positions_get
+        # Country targets are region-keyed while fund breakdowns are
+        # country-keyed; this maps one to the other.
+        from porxpy.resources import MSTAR_TO_REGION
+
+        p = find_portfolio(pid)
+        if not p:
+            return jsonify({"error": "portfolio not found"}), 404
+
+        body      = request.get_json(force=True, silent=True) or {}
+        cache_cfg = normalise_cache_config(p.get("cache_config"))
+        base_cur  = (p.get("base_currency") or "USD").upper()
+
+        targets_pct = portfolio_targets_get(pid) or {}
+        # Targets are stored as percents (what the user typed); the solver
+        # works in fractions. Convert here so each layer speaks its natural
+        # unit.
+        targets = {
+            facet: {k: float(v) / 100.0 for k, v in (blk or {}).items()
+                    if float(v or 0) > 0}
+            for facet, blk in targets_pct.items()
+        }
+        targets = {f: b for f, b in targets.items() if b}
+        if not targets:
+            return jsonify({"ok": False,
+                            "reason": "no targets set — set some on the "
+                                      "Targets tab first"}), 200
+
+        held = {(f.get("ticker") or "").upper(): float(f.get("shares") or 0.0)
+                for f in (p.get("funds") or [])}
+
+        # Universe: explicit list, else every pre-loaded fund. Held funds
+        # are always in, so a rebalance can sell them.
+        wanted = body.get("candidates")
+        if wanted:
+            universe = {t.upper() for t in wanted} | set(held)
+        else:
+            # Every pre-loaded fund = every file in cache/listings/.
+            # The listing file's existence IS the "saved" marker
+            # (v0.21.0 explicit-save model), so this is exactly the
+            # set of funds the user has committed to.
+            universe = set(held)
+            if LISTINGS_DIR.exists():
+                universe |= {fp.stem.upper()
+                             for fp in LISTINGS_DIR.glob("*.json")}
+
+        candidates, skipped = [], []
+        for tk in sorted(universe):
+            ident = listing_identity_get(tk)
+            isin  = (ident.get("isin") or "").strip().upper()
+            if not isin:
+                skipped.append({"ticker": tk, "reason": "no cached identity"})
+                continue
+            try:
+                # commit=True: these are saved funds by definition.
+                data = load_fund_data(isin, ident.get("exchange") or None,
+                                      cache_cfg, known_ticker=tk, commit=True)
+            except Exception as exc:
+                skipped.append({"ticker": tk, "reason": f"load failed: {exc}"})
+                continue
+
+            ph = data.get("price_history") or []
+            price = None
+            for row in reversed(ph):
+                try:
+                    v = float(row.get("close"))
+                except (TypeError, ValueError):
+                    continue
+                if v > 0:
+                    price = v
+                    break
+            if not price:
+                skipped.append({"ticker": tk, "reason": "no price"})
+                continue
+
+            # Into base currency, so the solver is unit-consistent.
+            fund_cur = ((data.get("profile") or {}).get("currency") or "").upper()
+            fx = 1.0
+            if fund_cur and fund_cur != base_cur:
+                rate, _n = fx_rate(fund_cur, base_cur)
+                if not rate:
+                    skipped.append({"ticker": tk,
+                                    "reason": f"no FX {fund_cur}->{base_cur}"})
+                    continue
+                fx = rate
+
+            # Look-through exposure, already override-aware.
+            #
+            # The country facet needs a level shift. Fund breakdowns are
+            # keyed by mstar_country ("germany", "france"), but the Targets
+            # tab stores country targets by mstar_region ("europeDeveloped",
+            # "northAmerica") — see porxpy.targets, which does the same
+            # aggregation for the deviation report. Without this the target
+            # key "europeDeveloped" is compared against exposure keys that
+            # never contain it, so the country facet contributes no matching
+            # exposure at all and can never be fitted, however many funds
+            # the solver tries.
+            bks = data.get("fund_breakdowns") or {}
+            exposures = {}
+            for facet in targets:
+                items = (bks.get(facet) or {}).get("items") or []
+                blk: dict[str, float] = {}
+                for it in items:
+                    key = (it.get("key") or "").strip()
+                    if not key:
+                        continue
+                    if facet == "country":
+                        key = MSTAR_TO_REGION.get(key, key)
+                    try:
+                        w = float(it.get("weight") or 0.0)
+                    except (TypeError, ValueError):
+                        continue
+                    blk[key] = blk.get(key, 0.0) + w
+                exposures[facet] = blk
+
+            candidates.append({
+                "ticker":         tk,
+                "name":           (data.get("profile") or {}).get("longName") or tk,
+                "price_base":     price * fx,
+                "current_shares": held.get(tk, 0.0),
+                "exposures":      exposures,
+            })
+
+        # Cash: aggregate to base currency, and take its exposure from the
+        # positions themselves (a EUR savings account is not the same
+        # exposure as a USD one).
+        cash_total = 0.0
+        cash_exp: dict[str, dict[str, float]] = {}
+        for c in cash_positions_get(pid):
+            amt = float(c.get("amount") or 0.0)
+            if amt <= 0:
+                continue
+            cur = (c.get("currency") or base_cur).upper()
+            fx = 1.0
+            if cur != base_cur:
+                rate, _n = fx_rate(cur, base_cur)
+                if not rate:
+                    continue
+                fx = rate
+            v = amt * fx
+            cash_total += v
+            for facet, field in (("asset_class", "asset_class"),
+                                 ("sector", "sector"),
+                                 ("country", "country"),
+                                 ("currency", "currency")):
+                key = (c.get(field) or "").strip()
+                if facet == "currency":
+                    key = cur
+                elif facet == "country":
+                    # Same country -> region shift as the funds above; a cash
+                    # position's country is a country, but the target is a
+                    # region.
+                    key = MSTAR_TO_REGION.get(key, key)
+                if not key:
+                    continue
+                cash_exp.setdefault(facet, {})
+                cash_exp[facet][key] = cash_exp[facet].get(key, 0.0) + v
+
+        for facet, blk in cash_exp.items():
+            tot = sum(blk.values())
+            if tot > 0:
+                for k in blk:
+                    blk[k] /= tot
+        if not cash_exp:
+            cash_exp = {"asset_class": {"cash": 1.0}}
+
+        # A targeted facet for which NO candidate has any exposure data is a
+        # different failure from "targets unreachable", and needs a different
+        # fix. It usually means the facet's breakdown card is sourced from
+        # the issuer, and Yahoo publishes nothing for it — country is the
+        # usual victim. Left unexplained, the optimiser just reports a huge
+        # unreachable error and sends the user hunting for a fund that will
+        # never help, when the real fix is to switch that card to the
+        # holdings look-through.
+        facet_warnings = []
+        for facet in targets:
+            total = sum(sum((c["exposures"].get(facet) or {}).values())
+                        for c in candidates)
+            if total <= 1e-9:
+                facet_warnings.append(
+                    f"No {facet} exposure data on any candidate fund — the "
+                    f"{facet} targets cannot be fitted. Set that fund's "
+                    f"{facet} breakdown card to 'holdings' (look-through), "
+                    f"or upload holdings for the funds that lack it.")
+
+        result = optimise_portfolio(
+            candidates, targets, cash_total, cash_exp,
+            max_funds=int(body.get("max_funds") or 10),
+            min_weight=float(body.get("min_weight") or 0.01),
+            # Default 100, not 0 — a zero minimum lets the optimiser emit
+            # buy/sell suggestions of a couple of cents, which are noise.
+            min_trade_base=float(body.get("min_trade", 100.0) or 0.0),
+            # Per-facet tolerances: {"asset_class":0.02, "sector":0.10, ...}
+            # A bare float is still accepted and applied to every facet.
+            max_error=body.get("max_error") or 0.05,
+            facet_weights=body.get("facet_weights") or None,
+        )
+        result["base_currency"]   = base_cur
+        result["candidate_count"] = len(candidates)
+        result["skipped"]         = skipped
+        result["cash_before"]     = round(cash_total, 2)
+        result["facet_warnings"]  = facet_warnings
+        return jsonify(result)
+
+    @app.route("/api/portfolios/<pid>/trades", methods=["POST"])
+    def api_portfolio_trades(pid: str) -> Response:
+        """Apply a batch of trades. Atomic — all of them, or none.
+
+        Consumes the same trade shape the optimiser emits, which is the
+        whole point: the manual Buy/Sell dialog is just a batch of one, and
+        "Apply this design" is a batch of many. One execution path, so the
+        two cannot drift apart.
+
+        Body::
+
+            {"trades": [{"ticker", "shares_delta", "cash_id"}, ...]}
+        """
+        from porxpy.trades import apply_trades, price_lookup_from_cache
+
+        p = find_portfolio(pid)
+        if not p:
+            return jsonify({"error": "portfolio not found"}), 404
+
+        body   = request.get_json(force=True, silent=True) or {}
+        trades = body.get("trades") or []
+        if not isinstance(trades, list) or not trades:
+            return jsonify({"error": "no trades supplied"}), 400
+
+        cache_cfg = normalise_cache_config(p.get("cache_config"))
+
+        # A fund the optimiser picked may not be in the portfolio yet — it
+        # was only a pre-loaded candidate. Add it at zero shares so the buy
+        # has something to land on. Buying a fund is, after all, exactly
+        # what "add it to the portfolio" means.
+        existing = {(f.get("ticker") or "").upper() for f in (p.get("funds") or [])}
+        added = []
+        for t in trades:
+            tk = (t.get("ticker") or "").strip().upper()
+            if not tk or tk in existing:
+                continue
+            if not listing_identity_lookup_isin(tk):
+                return jsonify({"error": f"{tk} is not a saved fund — "
+                                         f"load and save it first"}), 400
+            p.setdefault("funds", []).append({"ticker": tk, "shares": 0.0})
+            existing.add(tk)
+            added.append(tk)
+        if added:
+            upsert_portfolio(p)
+
+        res = apply_trades(pid, trades, price_lookup_from_cache(cache_cfg))
+        res["added_funds"] = added
+
+        # Rolling back the auto-add on failure keeps the failed case a true
+        # no-op — otherwise a rejected batch would still litter the
+        # portfolio with empty positions.
+        if not res.get("ok") and added:
+            p = find_portfolio(pid)
+            p["funds"] = [f for f in (p.get("funds") or [])
+                          if (f.get("ticker") or "").upper() not in added]
+            upsert_portfolio(p)
+            res["added_funds"] = []
+
+        return jsonify(res), (200 if res.get("ok") else 400)
 
     @app.route("/api/portfolios/<pid>/funds", methods=["POST"])
     def api_portfolio_add_fund(pid: str) -> Response:
@@ -927,9 +1235,13 @@ def create_app() -> Flask:
                         "asset_class": {"class": "other"}, "price_history": []}
             else:
                 try:
+                    # Portfolio members are already saved (they have a
+                    # cache entry by definition); commit=True is the
+                    # default but stated explicitly.
                     data = load_fund_data(
                         isin, exchange, cache_cfg,
                         force_refresh=force, known_ticker=ticker_q,
+                        commit=True,
                     )
                 except Exception as exc:
                     print(f"[Portfolio view] error for {ticker_q}/{isin}: {exc}")
@@ -1767,9 +2079,12 @@ def create_app() -> Flask:
                 continue
 
             try:
+                # Portfolio members are already saved by definition;
+                # commit=True is the default but stated explicitly.
                 data = load_fund_data(
                     isin, exchange, cache_cfg,
                     force_refresh=force, known_ticker=ticker_q,
+                    commit=True,
                 )
             except Exception as exc:
                 warnings.append({"ticker": ticker_q,
@@ -2298,6 +2613,129 @@ def create_app() -> Flask:
     # Tokens live for UPLOAD_TOKEN_TTL_MIN minutes; expired tokens are
     # reaped on the next preview call.
     # ------------------------------------------------------------------
+    @app.route("/api/upload/browse", methods=["GET"])
+    def api_upload_browse() -> Response:
+        """List a directory so the frontend can render a file picker.
+
+        PorxPy is self-hosted and single-user — the server process runs on
+        the same machine as the browser — so listing the local filesystem
+        is listing the user's own disk. That's what makes the in-app
+        picker possible at all: the browser can never tell us a file's
+        path (security), but the server can read one straight off disk.
+        The picker therefore returns a real path, which keeps the whole
+        existing pipeline (resolve_source, remembered source_value,
+        one-click re-upload) working unchanged.
+
+        Query params:
+            path: Directory to list. When empty, defaults to the user's
+                home directory. On Windows, the literal string ``"/"``
+                lists the available drive letters instead (there is no
+                single filesystem root to show).
+
+        Returns:
+            ::
+
+                {
+                  "path":    "/home/jan/Downloads",   # normalised abs path
+                  "parent":  "/home/jan",             # null at the root
+                  "is_root": false,
+                  "sep":     "/",                     # or "\\\\" on Windows
+                  "dirs":  [{"name": "...", "path": "..."}, ...],
+                  "files": [{"name": "...", "path": "...",
+                             "size": 12345, "mtime": "2026-06-17T…"}, ...],
+                }
+
+            Only files with an extension the upload parser can actually
+            handle are listed (csv / tsv / txt / xlsx / xlsm) — this
+            dialog exists solely to pick a holdings file, so showing the
+            user's photos and executables would be noise. Directories are
+            always listed so navigation isn't blocked.
+
+            Unreadable entries (permission denied, broken symlinks) are
+            skipped rather than failing the whole listing.
+        """
+        import os
+        from datetime import datetime, timezone
+
+        # Extensions the upload parser understands. Kept in step with
+        # upload_preview()'s format sniffing.
+        PICKABLE_EXT = {".csv", ".tsv", ".txt", ".xlsx", ".xlsm"}
+
+        raw = (request.args.get("path") or "").strip()
+
+        # Windows drive-list pseudo-root. There's no single "/" to show,
+        # so "/" is a request for the list of drives.
+        if os.name == "nt" and raw == "/":
+            drives = []
+            for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+                d = f"{letter}:\\"
+                if os.path.exists(d):
+                    drives.append({"name": d, "path": d})
+            return jsonify({
+                "path": "/", "parent": None, "is_root": True,
+                "sep": os.sep, "dirs": drives, "files": [],
+            })
+
+        target = Path(raw).expanduser() if raw else Path.home()
+        try:
+            target = target.resolve()
+        except Exception:
+            return jsonify({"error": f"cannot resolve path: {raw}"}), 400
+
+        if not target.exists():
+            return jsonify({"error": f"no such directory: {target}"}), 404
+        if not target.is_dir():
+            return jsonify({"error": f"not a directory: {target}"}), 400
+
+        dirs, files = [], []
+        try:
+            entries = sorted(target.iterdir(),
+                             key=lambda p: p.name.lower())
+        except PermissionError:
+            return jsonify({"error": f"permission denied: {target}"}), 403
+        except Exception as exc:
+            return jsonify({"error": f"cannot list {target}: {exc}"}), 500
+
+        for p in entries:
+            # Skip dotfiles / hidden entries — they're never holdings
+            # files and they clutter the list badly on POSIX.
+            if p.name.startswith("."):
+                continue
+            try:
+                if p.is_dir():
+                    dirs.append({"name": p.name, "path": str(p)})
+                elif p.suffix.lower() in PICKABLE_EXT:
+                    st = p.stat()
+                    files.append({
+                        "name":  p.name,
+                        "path":  str(p),
+                        "size":  st.st_size,
+                        "mtime": datetime.fromtimestamp(
+                            st.st_mtime, tz=timezone.utc).isoformat(),
+                    })
+            except (OSError, PermissionError):
+                # Unreadable entry (broken symlink, denied stat) — skip
+                # it rather than blowing up the whole listing.
+                continue
+
+        # Parent. At a filesystem root, `parent` is the path itself; that
+        # would render an "Up" entry that goes nowhere, so report None.
+        # On Windows a drive root's parent is the drive-list pseudo-root.
+        parent_p = target.parent
+        if parent_p == target:
+            parent = "/" if os.name == "nt" else None
+        else:
+            parent = str(parent_p)
+
+        return jsonify({
+            "path":    str(target),
+            "parent":  parent,
+            "is_root": parent is None,
+            "sep":     os.sep,
+            "dirs":    dirs,
+            "files":   files,
+        })
+
     @app.route("/api/upload/preview", methods=["POST"])
     def api_upload_preview() -> Response:
         """Resolve a source string, parse the result, return a preview + token.
@@ -2604,6 +3042,8 @@ def create_app() -> Flask:
         hold["row_count"]      = len(rows)
         hold["weight_sum_pct"] = weight_sum
 
+        # v0.22.0 — editing a row is an update to the list.
+        hold["last_updated"] = now_iso()
         cache_write(isin, "holdings", blob)
 
         # Recompute the look-through breakdowns from the just-mutated
@@ -2725,6 +3165,9 @@ def create_app() -> Flask:
         # "enriched_at" so the holdings tile can show "last enriched X
         # ago" if it wants to.
         hold["enriched_at"] = now_iso()
+        # v0.22.0 — enrichment rewrites the rows, so it's an update
+        # to the list too.
+        hold["last_updated"] = now_iso()
         cache_write(isin, "holdings", blob)
 
         # Look-through breakdowns recomputed from the post-enrich rows.

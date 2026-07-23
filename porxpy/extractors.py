@@ -21,6 +21,7 @@ Function naming convention:
 from __future__ import annotations
 
 import math
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -564,6 +565,148 @@ def _cusip_from_isin(isin: str) -> str | None:
     return isin[2:11]   # chars 2–10 inclusive = 9-char CUSIP
 
 
+# Compiled regexes for distribution detection. Word-boundary anchored
+# so we don't false-match "Distribution" against parts of unrelated words
+# in the fund name, and we cover the common parenthesised forms.
+_DIST_ACCUMULATING = re.compile(
+    r"\b(?:accumulating|accumulation|acc|c[ ]*acc)\b",
+    re.IGNORECASE,
+)
+_DIST_DISTRIBUTING = re.compile(
+    r"\b(?:distributing|distribution|dist|inc|income|d[ ]*inc)\b",
+    re.IGNORECASE,
+)
+
+
+def detect_distribution(profile: dict, info: dict) -> str:
+    """Detect distribution policy (accumulating / distributing / unknown).
+
+    Yahoo Finance does not have a clean field for this, so we combine
+    two signals:
+
+    1. **Fund name** — most issuers tag the share class in the long or
+       short name (e.g. ``"iShares Core MSCI World UCITS ETF USD (Acc)"``
+       or ``"Vanguard FTSE All-World UCITS ETF (USD) Distributing"``).
+       This is the strongest signal when present.
+    2. **Dividend yield** — when ``trailingAnnualDividendYield`` is
+       greater than zero, the fund has paid out in the last year and
+       must be distributing. When it is zero or missing, the fund is
+       likely accumulating, but could also be a brand-new fund or an
+       equity index that simply hasn't paid yet — so this signal is
+       weaker.
+
+    Both signals are combined: if name says one thing and yield agrees
+    we return that with confidence; if they disagree we trust the name;
+    if both are silent we return ``unknown``.
+
+    Args:
+        profile: The profile dict being built. We read ``longName`` and
+            ``shortName`` from it.
+        info: The raw ``ticker.info`` dict (for the yield signal).
+
+    Returns:
+        One of ``"accumulating"``, ``"distributing"``, ``"unknown"``.
+    """
+    name_parts = [
+        (profile.get("longName")  or ""),
+        (profile.get("shortName") or ""),
+    ]
+    name = " ".join(name_parts).strip()
+
+    name_acc  = bool(_DIST_ACCUMULATING.search(name)) if name else False
+    name_dist = bool(_DIST_DISTRIBUTING.search(name)) if name else False
+
+    # Yield signal — > 0 means the fund actually paid out, so it must
+    # be distributing. < 0 is impossible; None/zero is "no signal".
+    yield_positive = False
+    try:
+        v = info.get("trailingAnnualDividendYield")
+        if v is not None and float(v) > 0:
+            yield_positive = True
+    except Exception:
+        pass
+
+    # Decision:
+    # - Both signals agree on distributing → distributing.
+    # - Both signals agree on accumulating → accumulating.
+    # - Name explicit, yield silent → trust name.
+    # - Name silent, yield positive → distributing.
+    # - Name silent, yield zero/null → unknown (could be accumulating
+    #   or a new fund that hasn't paid).
+    # - Name says both (rare) → unknown.
+    if name_acc and name_dist:
+        return "unknown"
+    if name_dist or yield_positive:
+        return "distributing"
+    if name_acc:
+        return "accumulating"
+    return "unknown"
+
+
+def _compute_trailing_yield_from_dividends(ticker, info: dict) -> float | None:
+    """Compute trailing 12-month yield from the actual dividend history.
+
+    Used when Yahoo's ``trailingAnnualDividendYield`` /
+    ``dividendYield`` / ``yield`` fields are all missing — which is
+    common for European-listed UCITS ETFs (e.g. VWRL.AS) where Yahoo
+    has the price and the dividend payments separately but never
+    computes the ratio for us.
+
+    Approach:
+      1. Sum every cash dividend paid in the last 365 days.
+      2. Divide by a sensible "current price" — preferring
+         ``regularMarketPrice``, falling back to ``previousClose``
+         then ``navPrice``.
+      3. Return the result as a percent (rounded), or ``None`` if any
+         input is missing or non-sensical.
+
+    Both the dividend series and the price come back in the listing's
+    trading currency, so the units cancel and no FX is needed.
+
+    Args:
+        ticker: yfinance Ticker (for ``.dividends``).
+        info:   The already-fetched ``ticker.info`` dict.
+
+    Returns:
+        Yield in percent (e.g. ``1.57``) or ``None``.
+    """
+    # Pick a denominator. Fall back gently — any of these is a
+    # reasonable current-price proxy.
+    price = None
+    for key in ("regularMarketPrice", "previousClose", "navPrice"):
+        v = info.get(key)
+        try:
+            f = float(v) if v is not None else None
+        except (TypeError, ValueError):
+            f = None
+        if f and f > 0:
+            price = f
+            break
+    if price is None:
+        return None
+
+    # Sum trailing-365-day dividends.
+    try:
+        divs = ticker.dividends
+    except Exception as exc:
+        print(f"[Yield/divs] {exc}")
+        return None
+    if divs is None or len(divs) == 0:
+        return None
+
+    try:
+        cutoff = pd.Timestamp.now(tz=divs.index.tz) - pd.Timedelta(days=365)
+        recent = divs[divs.index >= cutoff]
+        total = float(recent.sum())
+    except Exception as exc:
+        print(f"[Yield/divs sum] {exc}")
+        return None
+    if total <= 0:
+        return None
+
+    return round(total / price * 100, 4)
+
+
 def extract_profile(ticker: yf.Ticker) -> dict:
     """Build the fund profile dict from Yahoo metadata.
 
@@ -627,6 +770,69 @@ def extract_profile(ticker: yf.Ticker) -> dict:
         "fundInceptionDate",
     ]
     profile = {k: safe(info.get(k)) for k in keys_from_info if safe(info.get(k)) is not None}
+
+    # Dividend yields. Yahoo's API has been inconsistent here over time
+    # and across endpoints: ``trailingAnnualDividendYield`` is normally a
+    # decimal fraction (0.0157 → 1.57%), but Yahoo started returning
+    # ``dividendYield`` already in percent (1.57 → 1.57%) for some
+    # securities. We auto-detect by magnitude: any value greater than 1
+    # is treated as already-percent (no fund pays > 100% — yields above
+    # 1 are virtually always already percent-scaled); anything ≤ 1 is
+    # treated as a decimal and multiplied by 100. Either way the stored
+    # value is in percent for display.
+    def _yield_pct(raw):
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if v <= 0:
+            return None
+        # > 1 → already percent; ≤ 1 → decimal fraction
+        return round(v if v > 1 else v * 100, 4)
+
+    # Trailing yield — try fields in order of accuracy:
+    #   1. trailingAnnualDividendYield     (last 12 months, direct)
+    #   2. yield                           (fund-info yield, sometimes present)
+    #   3. computed from dividends series  (sum last 12m / current price)
+    # Most funds populate (1); when missing we fall through. ``_src``
+    # records which one landed so the UI can surface it in the tile.
+    trail_pct = None
+    trail_src = None
+    for key, src in (("trailingAnnualDividendYield", "yahoo"),
+                     ("yield",                      "yahoo")):
+        v = _yield_pct(info.get(key))
+        if v is not None:
+            trail_pct, trail_src = v, src
+            break
+    if trail_pct is None:
+        v = _compute_trailing_yield_from_dividends(ticker, info)
+        if v is not None:
+            trail_pct, trail_src = v, "computed"
+    if trail_pct is not None:
+        profile["trailingYieldPct"] = trail_pct
+        profile["trailingYieldSrc"] = trail_src
+
+    # Forward yield — try in order:
+    #   1. dividendYield                   (Yahoo's published forward yield)
+    #   2. fiveYearAvgDividendYield        (long-run average as backstop)
+    fwd_pct = None
+    fwd_src = None
+    for key, src in (("dividendYield",            "yahoo"),
+                     ("fiveYearAvgDividendYield", "5y_avg")):
+        v = _yield_pct(info.get(key))
+        if v is not None:
+            fwd_pct, fwd_src = v, src
+            break
+    if fwd_pct is not None:
+        profile["forwardYieldPct"] = fwd_pct
+        profile["forwardYieldSrc"] = fwd_src
+
+    # Distribution policy (accumulating vs distributing). Detected from
+    # the fund's long/short name + yield signal — Yahoo has no clean
+    # field for this. See :func:`detect_distribution`. The result is
+    # stored as part of the profile so it propagates through the cache
+    # category just like the rest of the profile.
+    profile["distribution"] = detect_distribution(profile, info)
 
     if overview.get("family"):       profile["fundFamily"] = overview["family"]
     if overview.get("legalType"):    profile["legalType"]  = overview["legalType"]
@@ -830,10 +1036,16 @@ def _seed_fund_structure(profile: dict) -> dict:
 
     # normalise_fund_structure re-enforces the coupling rule.
     from porxpy.utils import normalise_fund_structure
+    # v0.21.0: seed distribution from the detected value in the profile
+    # (set by detect_distribution() inside extract_profile). The
+    # detector returns "accumulating" / "distributing" / "unknown";
+    # those are exactly the values normalise_fund_structure validates.
+    distribution = (profile.get("distribution") or "unknown")
     return normalise_fund_structure({
-        "structure":   structure,
-        "replication": replication,
-        "style":       style,
+        "structure":    structure,
+        "replication":  replication,
+        "style":        style,
+        "distribution": distribution,
     })
 
 
@@ -881,13 +1093,15 @@ def lookup_fund_structure(isin: str) -> dict:
         ::
 
             {
-              "ok":          bool,     # did the page fetch + parse?
-              "source":      str,      # human-readable source label
-              "url":         str,      # the page consulted
-              "replication": {"value": <method|None>, "confidence": str},
-              "style":       {"value": <"active"|"passive"|None>,
-                              "confidence": str},
-              "note":        str,      # populated when ok is False
+              "ok":           bool,     # did the page fetch + parse?
+              "source":       str,      # human-readable source label
+              "url":          str,      # the page consulted
+              "replication":  {"value": <method|None>, "confidence": str},
+              "style":        {"value": <"active"|"passive"|None>,
+                               "confidence": str},
+              "distribution": {"value": <"accumulating"|"distributing"|None>,
+                               "confidence": str},
+              "note":         str,      # populated when ok is False
             }
 
         ``value`` is ``None`` for a facet that could not be determined.
@@ -902,12 +1116,13 @@ def lookup_fund_structure(isin: str) -> dict:
 
     isin = (isin or "").strip().upper()
     result: dict = {
-        "ok":          False,
-        "source":      "justETF",
-        "url":         "",
-        "replication": {"value": None, "confidence": "none"},
-        "style":       {"value": None, "confidence": "none"},
-        "note":        "",
+        "ok":           False,
+        "source":       "justETF",
+        "url":          "",
+        "replication":  {"value": None, "confidence": "none"},
+        "style":        {"value": None, "confidence": "none"},
+        "distribution": {"value": None, "confidence": "none"},
+        "note":         "",
     }
     if not isin:
         result["note"] = "This fund has no ISIN, so justETF cannot be queried."
@@ -970,10 +1185,30 @@ def lookup_fund_structure(isin: str) -> dict:
         # rather than stated in those words.
         result["style"] = {"value": "passive", "confidence": "low"}
 
+    # ---- Distribution policy -------------------------------------------
+    # justETF labels each fund's distribution policy explicitly in the
+    # profile (often near "Distribution policy" or in the share-class
+    # name). High-confidence matches are exact phrasings; we fall back
+    # to looser substring matches only when no explicit phrasing exists.
+    if ("distribution policy accumulating" in text
+            or "policy: accumulating" in text
+            or "fund is accumulating" in text):
+        result["distribution"] = {"value": "accumulating", "confidence": "high"}
+    elif ("distribution policy distributing" in text
+            or "policy: distributing" in text
+            or "fund is distributing" in text):
+        result["distribution"] = {"value": "distributing", "confidence": "high"}
+    elif "accumulating" in text and "distributing" not in text:
+        result["distribution"] = {"value": "accumulating", "confidence": "low"}
+    elif "distributing" in text and "accumulating" not in text:
+        result["distribution"] = {"value": "distributing", "confidence": "low"}
+
     if (result["replication"]["value"] is None
-            and result["style"]["value"] is None):
+            and result["style"]["value"] is None
+            and result["distribution"]["value"] is None):
         result["note"] = ("Reached the justETF page but could not parse "
-                           "replication or style from it — set them manually.")
+                           "replication, style, or distribution from it — "
+                           "set them manually.")
         result["ok"] = False
 
     return result
@@ -1674,8 +1909,9 @@ def top10_weight_sum_pct(top_rows: list[dict]) -> float:
 # Cached gateway
 # ---------------------------------------------------------------------------
 def get_category(yf_sym: str, isin: str, category: str, cache_cfg: dict,
-                 extractor: Callable[[], Any], *, force: bool = False
-                 ) -> tuple[Any, dict]:
+                 extractor, *, force: bool = False,
+                 commit: bool = True
+                 ):
     """Return cached data, or run the extractor and cache the result.
 
     The cache splits by category: listing-level categories
@@ -1693,11 +1929,18 @@ def get_category(yf_sym: str, isin: str, category: str, cache_cfg: dict,
             :func:`porxpy.utils.normalise_cache_config`).
         extractor: Zero-argument callable invoked on cache miss.
         force: If True, bypass the cache and always invoke ``extractor``.
+        commit: v0.21.0 explicit-save model. When False AND the cache
+            entry does not already exist, the extractor still runs but
+            the result is NOT written to disk -- it is returned in
+            memory only. When True (default), or when an entry already
+            exists (refresh of an already-saved fund), writes happen as
+            before. Rationale: the file's presence in ``cache/listings/``
+            IS the marker that the fund is saved to the pre-loaded list.
 
     Returns:
         ``(value, meta)``. ``meta.source`` is ``"cache"`` or ``"live"``.
     """
-    from porxpy.utils import cache_get   # local import to avoid surface bloat
+    from porxpy.utils import cache_get, cache_read as _cache_read
     from porxpy.config import FUND_CATEGORIES
     key = isin if category in FUND_CATEGORIES else yf_sym
     cat_cfg = cache_cfg.get(category, {})
@@ -1712,18 +1955,23 @@ def get_category(yf_sym: str, isin: str, category: str, cache_cfg: dict,
     value = extractor()
     print(f"[Live] {yf_sym}/{category} in {time.time() - t0:.2f}s")
 
-    if enabled:
+    # Decide whether to persist. Write if either the caller explicitly
+    # committed, or the entry already exists on disk (refresh of an
+    # already-saved fund). Otherwise the data flows back in memory only.
+    if enabled and (commit or bool(_cache_read(key, category))):
         meta = cache_put(key, category, value)
         return value, {
             "source": "live", "cache_enabled": True,
             "fetched_at": meta["fetched_at"], "age_days": meta["age_days"],
             "ttl_days": cat_cfg.get("ttl_days", 0),
         }
-    return value, {"source": "live", "cache_enabled": False}
+    return value, {"source": "live", "cache_enabled": enabled,
+                   "committed": False}
 
 
 def get_price_history_cached(yf_sym: str, ticker: yf.Ticker,
-                             cache_cfg: dict, *, force: bool = False
+                             cache_cfg: dict, *, force: bool = False,
+                             commit: bool = True
                              ) -> tuple[list[dict], dict]:
     """Smart price-history loader with incremental top-up.
 
@@ -1732,22 +1980,40 @@ def get_price_history_cached(yf_sym: str, ticker: yf.Ticker,
     * ``force=True`` OR no cache OR ``cache_age >
       PRICE_HISTORY_FULL_REFRESH_DAYS`` → full refresh via
       :func:`extract_price_history`.
-    * ``cache_age <= TTL`` → return cache as-is, but try to top up with
-      the live quote if today's bar is missing.
+    * ``cache_age <= TTL`` → return the cache as-is. **No network call.**
     * ``TTL < cache_age <= PRICE_HISTORY_FULL_REFRESH_DAYS`` →
       incremental: fetch bars since last cached date, append, save.
+
+    TTL semantics are strict, which makes ``ttl_days`` directly useful as
+    a "how often may this fund hit the network?" dial:
+
+    * ``ttl_days = 0`` — age is always > 0, so the cache branch is never
+      taken and every load refetches. Use this for always-current pricing.
+    * ``ttl_days = 1`` — at most one fetch per fund per day. A portfolio
+      opened repeatedly in one day costs zero network calls after the
+      first load.
 
     Args:
         yf_sym: Yahoo ticker (and cache key).
         ticker: yfinance Ticker (for the actual data calls).
         cache_cfg: Per-category cache config.
         force: Bypass cache entirely if True.
+        commit: v0.21.0 explicit-save model. When False AND no existing
+            price-history cache for this ticker, the data is fetched
+            but not written. When True (default) or when an entry
+            already exists, writes happen as before.
 
     Returns:
         ``(rows, meta)`` where ``meta.mode`` is one of ``cache_hit``,
-        ``live_quote_topup``, ``incremental``, ``full_refresh``,
-        ``full_refresh_no_real_rows``, or ``full_refresh_bad_date``.
+        ``incremental``, ``full_refresh``, ``full_refresh_no_real_rows``,
+        or ``full_refresh_bad_date``.
     """
+
+    # v0.21.0 explicit-save: only write to disk when commit=True OR an
+    # entry already exists (refresh of saved fund).
+    from porxpy.utils import cache_read as _cache_read
+    should_write = commit or bool(_cache_read(yf_sym, "price_history"))
+
     cat_cfg = cache_cfg.get("price_history", {})
     enabled = bool(cat_cfg.get("enabled"))
     ttl     = cat_cfg.get("ttl_days", 0)
@@ -1776,7 +2042,10 @@ def get_price_history_cached(yf_sym: str, ticker: yf.Ticker,
         t0 = time.time()
         value = extract_price_history(ticker)
         print(f"[Live] {yf_sym} price_history in {time.time() - t0:.2f}s ({len(value)} rows)")
-        meta = cache_put(yf_sym, "price_history", value)
+        if should_write:
+            meta  = cache_put(yf_sym, "price_history", value)
+        else:
+            meta  = {"fetched_at": now_iso(), "age_days": 0.0, "committed": False}
         return value, {
             "source":      "live",
             "cache_enabled": True,
@@ -1787,23 +2056,27 @@ def get_price_history_cached(yf_sym: str, ticker: yf.Ticker,
             "mode":        "full_refresh",
         }
 
-    # ── Cache fresh enough that we don't need a network call at all ──────
+    # ── Within TTL: pure cache hit, zero network calls ───────────────────
+    #
+    # This path used to call _maybe_topup_live() to append today's live
+    # quote when the cached series ended yesterday. That defeated the
+    # whole point of the TTL: the top-up is a network round-trip, and
+    # "today's bar is missing" is true on essentially every app start
+    # (overnight, weekends, holidays). So a portfolio of N funds fired N
+    # live-quote calls on every single load despite the cache being
+    # perfectly fresh — slow, and surprising given the user had asked for
+    # a 1-day TTL.
+    #
+    # TTL now means what it says:
+    #   ttl_days = 0  → age is always > 0, so this branch never taken;
+    #                   every load refetches (fall through to incremental).
+    #   ttl_days = 1  → one fetch per day, and nothing in between.
+    #
+    # The cost is that an intraday chart won't show today's moving price
+    # until the TTL lapses. That's the trade the TTL is *for*; a user who
+    # wants live intraday can set ttl_days = 0, or hit Reload.
     base_rows = list(cached) if isinstance(cached, list) else []
     if age is not None and age <= ttl:
-        topped, topup_meta = _maybe_topup_live(ticker, base_rows)
-        if topped is not None:
-            meta = cache_put(yf_sym, "price_history", topped)
-            return topped, {
-                "source":      "incremental",
-                "cache_enabled": True,
-                "fetched_at":  meta["fetched_at"],
-                "age_days":    meta["age_days"],
-                "ttl_days":    ttl,
-                "row_count":   len(topped),
-                "added_rows":  topup_meta["added"],
-                "mode":        "live_quote_topup",
-            }
-        # Pure cache hit — no network.
         return base_rows, {
             "source":      "cache",
             "cache_enabled": True,
@@ -1824,7 +2097,10 @@ def get_price_history_cached(yf_sym: str, ticker: yf.Ticker,
         t0 = time.time()
         value = extract_price_history(ticker)
         print(f"[Live] {yf_sym} price_history in {time.time() - t0:.2f}s ({len(value)} rows)")
-        meta = cache_put(yf_sym, "price_history", value)
+        if should_write:
+            meta  = cache_put(yf_sym, "price_history", value)
+        else:
+            meta  = {"fetched_at": now_iso(), "age_days": 0.0, "committed": False}
         return value, {
             "source":      "live",
             "cache_enabled": True,
@@ -1841,7 +2117,10 @@ def get_price_history_cached(yf_sym: str, ticker: yf.Ticker,
     except Exception as exc:
         print(f"[Price/cache] {yf_sym} bad last_date {last_date}: {exc}; full refresh")
         value = extract_price_history(ticker)
-        meta  = cache_put(yf_sym, "price_history", value)
+        if should_write:
+            meta   = cache_put(yf_sym, "price_history", value)
+        else:
+            meta   = {"fetched_at": now_iso(), "age_days": 0.0, "committed": False}
         return value, {
             "source": "live", "cache_enabled": True,
             "fetched_at": meta["fetched_at"], "age_days": meta["age_days"],
@@ -1866,7 +2145,10 @@ def get_price_history_cached(yf_sym: str, ticker: yf.Ticker,
 
     # Persist — bump fetched_at even when nothing was appended (so we don't
     # re-poll Yahoo on every page reload over a weekend/holiday).
-    meta = cache_put(yf_sym, "price_history", merged)
+    if should_write:
+        meta  = cache_put(yf_sym, "price_history", merged)
+    else:
+        meta  = {"fetched_at": now_iso(), "age_days": 0.0, "committed": False}
     return merged, {
         "source":      "incremental",
         "cache_enabled": True,
@@ -1884,7 +2166,9 @@ def get_price_history_cached(yf_sym: str, ticker: yf.Ticker,
 # ---------------------------------------------------------------------------
 def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
                    force_refresh: bool = False,
-                   known_ticker: str | None = None) -> dict:
+                   known_ticker: str | None = None,
+                   *,
+                   commit: bool = True) -> dict:
     """Compose every per-fund extractor into a single API-ready response.
 
     This is the workhorse used by both ``/api/fund`` and the per-portfolio
@@ -1901,6 +2185,13 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
             :func:`porxpy.utils.normalise_cache_config`.
         force_refresh: When True, bypass every cache and refetch live.
         known_ticker: Pre-resolved ticker — bypasses OpenFIGI entirely.
+        commit: v0.21.0 explicit-save model. When False, freshly fetched
+            data is returned to the caller in memory but NOT persisted
+            to ``cache/listings/`` or ``cache/funds/`` — so loading a
+            new fund into the viewer doesn't silently save it. When True
+            (default) writes happen as before. A refresh of a fund that
+            already has cache entries always writes, regardless of this
+            flag, because the user has already committed to it.
 
     Returns:
         Full per-fund response dict ready to be returned by the route.
@@ -1924,15 +2215,18 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
     ticker = yf.Ticker(yf_sym)
 
     profile, pmeta = get_category(yf_sym, isin, "profile", cache_cfg,
-                                  lambda: extract_profile(ticker), force=force_refresh)
+                                  lambda: extract_profile(ticker),
+                                  force=force_refresh, commit=commit)
     sectors, smeta = get_category(yf_sym, isin, "sectors", cache_cfg,
-                                  lambda: extract_sectors(ticker), force=force_refresh)
+                                  lambda: extract_sectors(ticker),
+                                  force=force_refresh, commit=commit)
     asset_allocation, aameta = get_category(
         yf_sym, isin, "asset_allocation", cache_cfg,
-        lambda: extract_asset_allocation(ticker), force=force_refresh)
+        lambda: extract_asset_allocation(ticker),
+        force=force_refresh, commit=commit)
     asset_class, ameta = get_category(yf_sym, isin, "asset_class", cache_cfg,
                                       lambda: detect_asset_class(ticker, profile or {}),
-                                      force=force_refresh)
+                                      force=force_refresh, commit=commit)
 
     # Per-fund asset-class override (the "Edit fund" dialog). The override
     # store is keyed by ticker and is NOT Yahoo-derived, so it survives a
@@ -1953,7 +2247,7 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
         asset_class["overridden"] = False
 
     price_history, phmeta = get_price_history_cached(
-        yf_sym, ticker, cache_cfg, force=force_refresh)
+        yf_sym, ticker, cache_cfg, force=force_refresh, commit=commit)
 
     # ──────────────────────────────────────────────────────────────────
     # Unified holdings slot (v0.5.0)
@@ -1985,11 +2279,32 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
         holdings_blob = {}
 
     cached_source = holdings_blob.get("source") or ""
-    have_cached   = bool(holdings_blob.get("rows")) or cached_source == "manual_upload"
     is_manual     = cached_source == "manual_upload"
 
+    # Do we already have a cached *result* for this fund?
+    #
+    # This is keyed off the presence of a cached blob (``source`` is
+    # stamped by every write path), NOT off the blob having rows.
+    #
+    # That distinction matters enormously. Yahoo publishes no top-10
+    # holdings for most European UCITS ETFs — EIMI.L, VWRL.AS and
+    # friends all come back empty. Their cached blob is therefore
+    # ``{"source": "yahoo_top10", "rows": []}``. Keying ``have_cached``
+    # off ``rows`` being non-empty meant such a fund could NEVER satisfy
+    # the cache: every portfolio load re-hit Yahoo's holdings endpoint
+    # for it, forever. With several such funds in a portfolio that's
+    # several needless network round-trips on every single app start —
+    # which is exactly the "why is this so slow every time" symptom.
+    #
+    # "Yahoo has nothing for this fund" is a perfectly good answer and
+    # is worth caching like any other. The escape hatch is unchanged:
+    # force_refresh (the ↻ Reload Fund Data button) still refetches, so
+    # a fund that later gains holdings on Yahoo can be picked up on
+    # demand.
+    have_cached = bool(cached_source)
+
     # Decide whether to (re)fetch from Yahoo. We refetch when:
-    #   * there's no usable cached blob at all, OR
+    #   * there's no cached result at all, OR
     #   * force_refresh is set AND the cached blob is NOT a manual upload
     #     (manual uploads survive a forced refresh — they're user data).
     refetch = (not have_cached) or (force_refresh and not is_manual)
@@ -2095,15 +2410,30 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
             "row_count":     len(rows),
             "weight_sum_pct": round(weight_sum, 6),
             "fetched_at":    now_iso(),
+            # v0.22.0 — canonical last-written stamp (see upload.py).
+            "last_updated":  now_iso(),
             "enrichment":    dict(enrichment_meta),
         }
-        meta = cache_put(isin, "holdings", holdings_blob)
-        hmeta = {
-            "source":     "live",
-            "fetched_at": meta["fetched_at"],
-            "age_days":   meta["age_days"],
-            "ttl_days":   None,
-        }
+        # v0.21.0 explicit-save: only persist holdings when commit=True
+        # OR a holdings cache already exists for this ISIN. Otherwise the
+        # blob is returned in memory only (consistent with the listing).
+        from porxpy.utils import cache_read as _cache_read
+        if commit or bool(_cache_read(isin, "holdings")):
+            meta = cache_put(isin, "holdings", holdings_blob)
+            hmeta = {
+                "source":     "live",
+                "fetched_at": meta["fetched_at"],
+                "age_days":   meta["age_days"],
+                "ttl_days":   None,
+            }
+        else:
+            hmeta = {
+                "source":     "live",
+                "fetched_at": now_iso(),
+                "age_days":   0.0,
+                "ttl_days":   None,
+                "committed":  False,
+            }
         cached_source = blob_source
         is_manual     = False
 
@@ -2254,6 +2584,21 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
         # Manual-upload provenance — null for Yahoo-sourced blobs.
         "uploaded_at":    holdings_blob.get("uploaded_at") if is_manual_upload else None,
         "filename":       holdings_blob.get("filename")    if is_manual_upload else None,
+        # v0.22.1 — upload provenance: "disk" (local file) or "url"
+        # (fetched from the internet), plus the URL / path it came from.
+        # Null for Yahoo-sourced blobs, and for manual blobs cached
+        # before 0.22.1 (which recorded only the filename).
+        "source_kind":    holdings_blob.get("source_kind")  if is_manual_upload else None,
+        "source_value":   holdings_blob.get("source_value") if is_manual_upload else None,
+        # v0.22.0 — unified "when was this holdings list last written?".
+        # ``last_updated`` is stamped by every write path (upload, Yahoo
+        # fetch, row edit, enrichment). The ``uploaded_at`` / ``fetched_at``
+        # fallbacks cover blobs cached before 0.22.0, which have only the
+        # path-specific key. Null only when there are no holdings at all.
+        "last_updated":   (holdings_blob.get("last_updated")
+                           or holdings_blob.get("uploaded_at")
+                           or holdings_blob.get("fetched_at")
+                           or None),
         # Top-coverage sum (frontend holdings-header badge) + enrichment
         # decision. For a manual upload, enrichment is not a concept —
         # ``applied`` is False and ``reason`` empty.
@@ -2261,8 +2606,16 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
         "enrichment":     enrichment_meta,
     }
 
+    # v0.21.0 explicit-save: a fund is "saved" when its listing-level
+    # profile cache file exists on disk. This is the truth-of-state for
+    # the pre-loaded list (no separate flag — the file's presence IS
+    # the marker). The frontend uses this to drive the Save button.
+    from porxpy.utils import listing_exists as _listing_exists
+    saved = _listing_exists(yf_sym)
+
     return {
         "ticker":        yf_sym,
+        "saved":         saved,
         "resolved_mic":  resolved_mic,
         "resolution":    note,
         "profile":       profile or {},
