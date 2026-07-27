@@ -392,7 +392,18 @@
   /* Targets tab — per-facet section + editor rows */
   .tg-facet{padding:.6rem 0;border-top:1px dashed var(--border);}
   .tg-facet:first-child{border-top:0;}
-  .tg-facet-head{display:flex;align-items:baseline;justify-content:space-between;
+  .tg-group-head{
+  display:flex; align-items:baseline; gap:.6rem; flex-wrap:wrap;
+  margin:1.1rem 0 .45rem; padding-bottom:.3rem;
+  border-bottom:1px solid rgba(255,255,255,.08);
+}
+.tg-group-head:first-child{ margin-top:0 }
+.tg-group-label{
+  font-family:var(--mono); font-size:.78rem; letter-spacing:.06em;
+  text-transform:uppercase; color:var(--fg);
+}
+.tg-group-note{ font-size:.66rem; color:var(--muted) }
+.tg-facet-head{display:flex;align-items:baseline;justify-content:space-between;
     font-family:var(--mono);font-size:.72rem;color:var(--text);
     margin-bottom:.5rem;letter-spacing:.04em;text-transform:uppercase;}
   .tg-facet-sum{font-size:.62rem;color:var(--muted);font-weight:normal;
@@ -1104,6 +1115,29 @@
           </div>
           <div class="pleg" id="pCurLeg"></div>
         </div>
+        <!-- v0.28.0 — the two metadata facets. One-hot per fund, so
+             there is no look-through variant and no source selector:
+             these render identically in both breakdown modes. -->
+        <div class="cc">
+          <div class="ct">
+            // market cap
+            <span class="bkcov" id="mcCov"></span>
+          </div>
+          <div style="position:relative;width:100%;height:190px">
+            <canvas id="pMcChart"></canvas>
+          </div>
+          <div class="pleg" id="pMcLeg"></div>
+        </div>
+        <div class="cc">
+          <div class="ct">
+            // equity style
+            <span class="bkcov" id="sbCov"></span>
+          </div>
+          <div style="position:relative;width:100%;height:190px">
+            <canvas id="pSbChart"></canvas>
+          </div>
+          <div class="pleg" id="pSbLeg"></div>
+        </div>
       </div>
       </div><!-- /pSubXray -->
 
@@ -1650,6 +1684,11 @@
         title="Look up replication method, style, and distribution policy from justETF (by ISIN)">
         ⌕ Look up on justETF
       </button>
+      <button class="btn-lookup" id="editFundYahooBtn"
+        onclick="reloadStructureFromYahoo()"
+        title="Re-derive Asset class, Distribution, Market cap and Equity style from Yahoo, discarding your edits to those fields. Nothing is saved until you press Save.">
+        ↻ Reload from Yahoo
+      </button>
       <span class="structlookup-status" id="editFundLookupStatus"></span>
     </div>
     <div class="fgrp" style="grid-template-columns:1fr 1fr 1fr 1fr;margin-top:.4rem">
@@ -1688,7 +1727,78 @@
         </select>
       </div>
     </div>
+
+    <!-- Optimiser metadata. Market cap and equity style are derived from
+         Yahoo but overridable here; focus is purely user-set. All four are
+         used by the optimiser: the first two as target facets, focus to
+         prefer purpose-built funds when filling a target. -->
+    <div class="fgrp" style="grid-template-columns:1fr 1fr 1fr 1fr;margin-top:.4rem">
+      <div class="field">
+        <label class="mfl" style="font-size:.6rem">Market cap</label>
+        <select id="editFundMarketCap">
+          <option value="large">Large cap</option>
+          <option value="mid">Mid cap</option>
+          <option value="small">Small cap</option>
+          <option value="mixed">Mixed</option>
+          <option value="unknown">— Unknown —</option>
+          <option value="n/a">Not applicable</option>
+        </select>
+      </div>
+      <div class="field">
+        <label class="mfl" style="font-size:.6rem">Equity style</label>
+        <select id="editFundStyleBox">
+          <option value="growth">Growth</option>
+          <option value="blend">Blend</option>
+          <option value="value">Value</option>
+          <option value="unknown">— Unknown —</option>
+        </select>
+      </div>
+      <div class="field">
+        <label class="mfl" style="font-size:.6rem">Focus</label>
+        <select id="editFundFocusType" onchange="onEditFundFocusTypeChange()">
+          <option value="none">— None —</option>
+          <option value="region">Region</option>
+          <option value="sector">Sector</option>
+          <option value="thematic">Thematic</option>
+        </select>
+      </div>
+      <div class="field">
+        <label class="mfl" style="font-size:.6rem">Focus detail</label>
+        <select id="editFundFocusDetail"></select>
+        <input id="editFundFocusText" type="text" style="display:none"
+               placeholder="e.g. Artificial Intelligence" autocomplete="off">
+      </div>
+    </div>
     <div class="mhint" id="editFundStructNote" style="margin:.3rem 0 1rem;color:var(--muted)"></div>
+
+    <!-- v0.33.0 — profile figures. Unlike the Structure selects above,
+         these have no closed vocabulary and no derived seed to fall back
+         to beyond Yahoo's own number, so each shows Yahoo's value and a
+         revert control rather than a "— unknown —" option. Blank means
+         "no override": the field tracks Yahoo. -->
+    <label class="mfl">Figures</label>
+    <div class="fgrp" style="grid-template-columns:1fr 1fr">
+      <div class="field">
+        <label class="mfl" style="font-size:.6rem">TER (%)</label>
+        <div style="display:flex;gap:6px;align-items:center">
+          <input id="editFundTer" type="number" step="0.01" min="0" max="100"
+                 placeholder="from Yahoo" autocomplete="off" style="flex:1">
+          <button class="btn btn-s btn-sm" id="editFundTerRevert" title="Revert to Yahoo"
+                  onclick="revertOverrideField('expenseRatioPct','editFundTer')">↺</button>
+        </div>
+        <div class="mhint" id="editFundTerNote" style="font-size:.58rem;color:var(--muted)"></div>
+      </div>
+      <div class="field">
+        <label class="mfl" style="font-size:.6rem">Total net assets</label>
+        <div style="display:flex;gap:6px;align-items:center">
+          <input id="editFundTna" type="number" step="1" min="0"
+                 placeholder="from Yahoo" autocomplete="off" style="flex:1">
+          <button class="btn btn-s btn-sm" id="editFundTnaRevert" title="Revert to Yahoo"
+                  onclick="revertOverrideField('totalNetAssets','editFundTna')">↺</button>
+        </div>
+        <div class="mhint" id="editFundTnaNote" style="font-size:.58rem;color:var(--muted)"></div>
+      </div>
+    </div>
 
     <label class="mfl">In portfolios</label>
     <div id="editFundPortfolios" class="efplist" style="margin-bottom:1rem"></div>
@@ -2355,6 +2465,10 @@ let portfolioCountryGranularity = 'country';
 // cached. Empty until loaded; regroupToRegion() falls back gracefully
 // (every country to its own bucket) if the fetch hasn't completed.
 let REGION_MAP = {};
+// v0.28.0 — the declared focus vocabulary (regions + super regions) from
+// regions.csv. Distinct from REGION_MAP, which is the measured country→
+// region taxonomy the breakdown cards regroup with.
+let FOCUS_REGIONS = [];
 
 // v0.13.0 reference data — fetched from the four /api/resources/*
 // endpoints on first need (currently: opening the edit-holding modal).
@@ -2430,6 +2544,7 @@ async function loadRegionMap(){
     if (!r.ok) return;
     const d = await r.json();
     if (d.country_to_region) REGION_MAP = d.country_to_region;
+    if (d.focus_regions)     FOCUS_REGIONS = d.focus_regions;
   } catch(e) { /* ignore — Country/Region toggle falls back to per-country */ }
 }
 
@@ -2530,10 +2645,56 @@ async function refreshConfigAndPortfolios(){
 // ── Cached funds (Pre-Loaded sub-tab) ──────────────────────────────────────
 let cacheListData = [];
 
+// ── Scroll preservation across list re-renders ────────────────────────────
+// Every list here re-renders by replacing innerHTML, which destroys the
+// scrolled element and recreates it at the top. That is fine when the user
+// asked for new content and maddening when they ticked a checkbox on row
+// 80 — the edit is applied, but they are now looking at row 1 and have to
+// find their place again.
+//
+// Containers are matched by their index among the page's scrollers rather
+// than by element identity, precisely because the elements themselves do
+// not survive the render. The set of scrollers doesn't change shape during
+// a same-panel re-render, so the index is stable.
+//
+// Restoring a scrollTop the browser can no longer honour (the list got
+// shorter) is harmless — it clamps. Zero is skipped: there is nothing to
+// restore, and writing it would fight a list that is legitimately at top.
+const SCROLLERS_SEL = '.dtwrap, .hfullwrap, .pleg';
+
+function _snapshotScroll(){
+  return {
+    win: [window.scrollX, window.scrollY],
+    els: Array.from(document.querySelectorAll(SCROLLERS_SEL)).map(el => el.scrollTop),
+  };
+}
+
+function _restoreScroll(snap){
+  document.querySelectorAll(SCROLLERS_SEL).forEach((el, i) => {
+    if (snap.els[i]) el.scrollTop = snap.els[i];
+  });
+  if (snap.win[1]) window.scrollTo(snap.win[0], snap.win[1]);
+}
+
+// Wraps a render — sync or async. An async render restores once it
+// settles, including on failure: an error message that also throws the
+// user back to the top of the page is two problems, not one.
+function preserveScroll(render){
+  const snap = _snapshotScroll();
+  const out  = render();
+  if (out && typeof out.then === 'function'){
+    return out.then(
+      v => { _restoreScroll(snap); return v; },
+      e => { _restoreScroll(snap); throw e; });
+  }
+  _restoreScroll(snap);
+  return out;
+}
+
 async function refreshCacheList(skipFetch=false){
   if (skipFetch){
     // Re-render in place using the already-loaded cacheListData
-    renderCachePanel();
+    preserveScroll(renderCachePanel);
     return;
   }
   try {
@@ -2541,11 +2702,11 @@ async function refreshCacheList(skipFetch=false){
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
     cacheListData = data.cached || [];
-    renderCachePanel();
+    preserveScroll(renderCachePanel);
   } catch (e) {
     console.warn('cache list error:', e);
     cacheListData = [];
-    renderCachePanel();
+    preserveScroll(renderCachePanel);
   }
 }
 
@@ -2592,6 +2753,7 @@ function renderCachePanel(){
           <col>                       <!-- Name (flex) -->
           <col style="width:110px">  <!-- Holdings -->
           <col style="width:150px">  <!-- Portfolios -->
+          <col style="width:48px">   <!-- Incl (optimiser opt-in) -->
           <col style="width:54px">   <!-- Actions (delete only) -->
         </colgroup>
         <thead>
@@ -2602,6 +2764,8 @@ function renderCachePanel(){
             <th data-key="name"     onclick="onCacheSort('name')">Name<span class="sortarr" data-arr="name"></span></th>
             <th data-key="holdings" onclick="onCacheSort('holdings')">Holdings<span class="sortarr" data-arr="holdings"></span></th>
             <th class="nosort">Portfolios</th>
+            <th data-key="incl" onclick="onCacheSort('incl')"
+                title="Include in optimiser. Unticked, the optimiser will neither buy nor sell this fund. A holding you already have still counts toward your targets — it is simply left alone, which may put some targets out of reach.">incl<span class="sortarr" data-arr="incl"></span></th>
             <th class="r nosort"></th>
           </tr>
           <tr class="dtfilters">
@@ -2620,6 +2784,11 @@ function renderCachePanel(){
               <option value="__none__"${cacheFilterState.portfolio==='__none__' ? ' selected' : ''}>(not in any)</option>
               ${portfolioOptionsHtml}
             </select></th>
+            <th><select id="cfIncl" onchange="onCacheFilterChange()">
+              <option value="">All</option>
+              <option value="yes"${cacheFilterState.incl==='yes' ? ' selected' : ''}>Incl only</option>
+              <option value="no"${cacheFilterState.incl==='no'  ? ' selected' : ''}>Excl only</option>
+            </select></th>
             <th></th>
           </tr>
         </thead>
@@ -2630,7 +2799,7 @@ function renderCachePanel(){
   if (!sorted.length){
     list.innerHTML = header;
     document.getElementById('cacheBody').innerHTML =
-      `<tr><td colspan="7" style="padding:18px;text-align:center;color:var(--muted);
+      `<tr><td colspan="8" style="padding:18px;text-align:center;color:var(--muted);
               font-family:var(--mono);font-size:.72rem">
         No funds match the current filters.</td></tr>`;
     updateCacheHeaderIndicators();
@@ -2697,6 +2866,14 @@ function renderCachePanel(){
       <td class="wrap" style="color:var(--text)" title="${escapeAttr(c.name||'')}">${escapeHtml(c.name || '—')}</td>
       <td>${holdingsCell}</td>
       <td onclick="event.stopPropagation()">${portfoliosTrigger}</td>
+      <td style="text-align:center" onclick="event.stopPropagation()">
+        <input type="checkbox" class="inclbox" ${c.include_in_optimizer === false ? '' : 'checked'}
+               ${c.has_isin ? '' : 'disabled'}
+               title="${c.has_isin
+                 ? 'Include this fund in optimiser buy/sell suggestions'
+                 : 'No ISIN on record — the flag is stored per fund (by ISIN), so it cannot be set from here'}"
+               onchange="setInclInOptimizer('${escapeAttr(c.ticker)}', this)">
+      </td>
       <td class="r" style="white-space:nowrap">
         <button class="btn btn-d btn-sm" title="Delete cache file"
                 onclick="event.stopPropagation(); deleteCachedFund('${escapeAttr(c.ticker)}', ${(c.portfolios || []).length})">✕</button>
@@ -2714,8 +2891,8 @@ function renderCachePanel(){
 // ── Pre-Loaded list filter + sort state ─────────────────────────────────
 // Module-scoped so render → wire → re-render keeps state across re-renders.
 let cacheFilterState = {
-  search: '', holdings: '', portfolio: '',
-  sortKey: 'ticker',     // 'ticker' | 'name' | 'holdings'
+  search: '', holdings: '', portfolio: '', incl: '',
+  sortKey: 'ticker',     // 'ticker' | 'name' | 'holdings' | 'incl'
   sortDir: 'asc',
 };
 
@@ -2743,6 +2920,10 @@ function applyCacheFilters(rows){
     } else if (s.portfolio){
       if (!(c.portfolios || []).some(p => p.name === s.portfolio)) return false;
     }
+    // Optimiser opt-in. Absent means included — the flag is only stored
+    // when it diverges from the default.
+    if (s.incl === 'yes' && c.include_in_optimizer === false) return false;
+    if (s.incl === 'no'  && c.include_in_optimizer !== false) return false;
     return true;
   });
 }
@@ -2767,6 +2948,9 @@ function sortCacheList(rows){
         if (hs.source === 'yahoo_top10')     return 1_000_000 + cnt;
         return 0;
       }
+      // Excluded funds sort first ascending, so one click surfaces the
+      // handful you have opted out of.
+      case 'incl':   return (c.include_in_optimizer === false) ? 0 : 1;
       default: return '';
     }
   };
@@ -2821,12 +3005,14 @@ function clearCacheFilters(){
   cacheFilterState.search = '';
   cacheFilterState.holdings = '';
   cacheFilterState.portfolio = '';
+  cacheFilterState.incl = '';
   rerenderCacheList();
 }
 
 function onCacheFilterChange(){
   cacheFilterState.holdings  = document.getElementById('cfHoldings').value;
   cacheFilterState.portfolio = document.getElementById('cfPortfolio').value;
+  cacheFilterState.incl      = document.getElementById('cfIncl').value;
   rerenderCacheList();
 }
 
@@ -2836,8 +3022,10 @@ function wireCacheFilterEvents(){
   // Apply active highlights for filter dropdowns (recreated on each render)
   const hSel = document.getElementById('cfHoldings');
   const pSel = document.getElementById('cfPortfolio');
+  const iSel = document.getElementById('cfIncl');
   if (hSel) hSel.classList.toggle('active', !!cacheFilterState.holdings);
   if (pSel) pSel.classList.toggle('active', !!cacheFilterState.portfolio);
+  if (iSel) iSel.classList.toggle('active', !!cacheFilterState.incl);
   // Debounced search input — rerender + restore focus + caret
   if (search.dataset.wired) return;
   search.dataset.wired = '1';
@@ -2851,6 +3039,43 @@ function wireCacheFilterEvents(){
       if (fresh){ fresh.focus(); fresh.setSelectionRange(fresh.value.length, fresh.value.length); }
     }, 80);
   });
+}
+
+// Toggle a fund's optimiser opt-in from the list.
+//
+// Optimistic: the checkbox has already moved, so on success we just
+// update the cached row in place rather than re-fetching the whole list —
+// a full refresh would re-sort under the cursor mid-click. On failure the
+// checkbox is put back, because a control that silently disagrees with
+// the server is worse than no control.
+async function setInclInOptimizer(ticker, el){
+  const want = !!el.checked;
+  el.disabled = true;
+  try {
+    const r = await fetch(`${API}/funds/${encodeURIComponent(ticker)}/include_in_optimizer`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({include: want}),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    const row = cacheListData.find(c => c.ticker === ticker);
+    if (row) row.include_in_optimizer = d.include_in_optimizer;
+    // Both listings of a dual-listed fund share one ISIN and therefore
+    // one flag; keep the other row's checkbox honest without a refetch.
+    if (row && row.isin){
+      cacheListData.forEach(c => {
+        if (c.isin === row.isin) c.include_in_optimizer = d.include_in_optimizer;
+      });
+      rerenderCacheList();
+      return;
+    }
+  } catch (e) {
+    el.checked = !want;
+    setStatus('err', `Could not update "incl" for ${ticker}: ${e.message}`);
+  } finally {
+    el.disabled = false;
+  }
 }
 
 // Re-render only — no /api/cache/list re-fetch. Used when the user
@@ -3170,6 +3395,36 @@ async function runOptimizer(){
     if (!d.target_met && d.reason){
       status.innerHTML += `<div style="margin-top:.35rem;color:var(--amber)">`
                         + escapeHtml(d.reason) + `</div>`;
+    }
+
+    // Frozen holdings. Worth stating on every run, not just failed ones:
+    // a design that leaves a chunk of the portfolio untouched looks wrong
+    // until you remember you asked for that. The backend's `reason` gives
+    // a count when a target is missed; this names the funds.
+    const fz = d.frozen || {};
+    if ((fz.tickers || []).length){
+      status.innerHTML +=
+        `<div style="margin-top:.35rem;color:var(--muted);font-size:.7rem">`
+        + `Left untouched (incl. unchecked): ${escapeHtml(fz.tickers.join(', '))}`
+        + ` — ${(fz.share*100).toFixed(1)}% of the portfolio. Their exposure`
+        + ` still counts toward the targets.`
+        + `</div>`;
+    }
+
+    // Where each facet's exposure data came from. The optimiser prefers the
+    // holdings look-through and falls back to the issuer card, so a run that
+    // mixes them is worth seeing — the two aren't always on the same basis,
+    // and a fund can win or lose on how it's described rather than what it
+    // holds. Only shown when a facet actually mixes sources.
+    const mixBits = Object.entries(d.source_mix || {})
+      .filter(([, mix]) => Object.keys(mix).length > 1)
+      .map(([f, mix]) => `${facetLabel(f)}: `
+        + Object.entries(mix).sort().map(([src, n]) => `${n}×${src}`).join(', '));
+    if (mixBits.length){
+      status.innerHTML +=
+        `<div style="margin-top:.35rem;color:var(--muted);font-size:.7rem">`
+        + `Mixed data sources — ${escapeHtml(mixBits.join(' · '))}`
+        + `</div>`;
     }
 
     // A facet with no exposure data anywhere is a data problem, not a
@@ -3982,7 +4237,10 @@ async function loadPortfolioHoldings(forceRefresh){
     portfolioHoldings    = data;
     portfolioHoldingsPid = activePid;
     portfolioHoldingsState.rows = data.rows || [];
-    renderPortfolioHoldings();
+    // Full rebuild — it recreates the .hfullwrap itself, unlike the
+    // sort/filter path, which only swaps #phbody and so keeps its place
+    // for free.
+    preserveScroll(renderPortfolioHoldings);
   } catch(e){
     if (wrap) {
       wrap.innerHTML =
@@ -5080,6 +5338,14 @@ function renderPostFundActions(d){
   } else if (d.saved === true){
     btns.push(`<span class="src cache" title="This fund is saved in the pre-loaded list">`
             + `✓ Saved</span>`);
+    // v0.27.0 — optimiser opt-out. Only meaningful for a saved fund, since
+    // the optimiser's universe is the pre-loaded list. ISIN-keyed, so this
+    // covers every listing of the fund.
+    const inOpt = d.include_in_optimizer !== false;
+    btns.push(`<button class="btn btn-s btn-sm" onclick="toggleIncludeInOptimizer()" `
+            + `title="${inOpt ? 'This fund is offered to the optimiser. Click to exclude it.'
+                              : 'This fund is excluded from the optimiser. Click to include it.'}">`
+            + `${inOpt ? '⚙ In optimizer' : '⃠ Excluded'}</button>`);
   }
 
   // "+ Add to portfolio" — only if not already in the active portfolio.
@@ -5104,6 +5370,23 @@ function renderPostFundActions(d){
 // render the fund so the Save button flips to "✓ Saved", and we
 // refresh the Pre-loaded panel in the background so the new entry
 // shows up there too without needing a manual reload.
+// v0.27.0 — flip the optimiser opt-out for the current fund.
+async function toggleIncludeInOptimizer(){
+  if (!lastFundData || !lastFundData.ticker) return;
+  const next = !(lastFundData.include_in_optimizer !== false);
+  try {
+    const r = await fetch(`${API}/funds/${encodeURIComponent(lastFundData.ticker)}/include_in_optimizer`, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({include: next}),
+    });
+    const d = await r.json();
+    if (!r.ok || d.error){ alert(d.error || `HTTP ${r.status}`); return; }
+    lastFundData.include_in_optimizer = d.include_in_optimizer;
+    renderPostFundActions(lastFundData);
+    refreshCacheList().catch(()=>{});
+  } catch(e){ alert(`Failed: ${e.message || e}`); }
+}
+
 async function saveToPreloaded(){
   if (!lastFundData) return;
   const params = fundIdentityParams(lastFundData);
@@ -5128,6 +5411,7 @@ function showMetrics(p, prices, data) {
   const last    = lastRow ? lastRow.close : null;
   const lastDt  = lastRow ? lastRow.date  : null;
   const first   = prices.length ? prices[0].close : null;
+  const firstDt = prices.length ? prices[0].date  : null;
   const curY    = new Date().getFullYear();
   const ytdPt   = prices.find(pt => new Date(pt.date).getFullYear() === curY);
   const ytdR    = (ytdPt && last) ? (last - ytdPt.close) / ytdPt.close * 100 : null;
@@ -5137,12 +5421,7 @@ function showMetrics(p, prices, data) {
   let erStr='—', toStr='—', tnaStr='—';
   if (p.expenseRatioPct != null) erStr = parseFloat(p.expenseRatioPct).toFixed(2) + '%';
   if (p.turnoverPct     != null) toStr = parseFloat(p.turnoverPct).toFixed(1) + '%';
-  if (p.totalNetAssets  != null) {
-    const v = parseFloat(p.totalNetAssets);
-    if (v >= 1e6)      tnaStr = '$' + (v/1e9).toFixed(2) + 'B';
-    else if (v >= 1e3) tnaStr = '$' + (v/1e6).toFixed(2) + 'B';
-    else               tnaStr = '$' + v.toFixed(0) + 'M';
-  }
+  if (p.totalNetAssets  != null) tnaStr = fmtFundSize(p.totalNetAssets, cur);
 
   // Asset-class tile: render the same coloured `.actag` chip we used to
   // show under the fund name, plus a sub-line with the confidence label.
@@ -5162,17 +5441,26 @@ function showMetrics(p, prices, data) {
 
   // Format the last-close date as e.g. "2026-05-09" → "9 May 2026"
   // for the sub-line. Falls back gracefully on bad / missing data.
-  let lastSub = '';
-  if (lastDt){
-    const d = new Date(lastDt);
-    if (!isNaN(d)){
-      lastSub = d.toLocaleDateString(undefined, {
-        day:'numeric', month:'short', year:'numeric'
-      });
-    } else {
-      lastSub = String(lastDt);
-    }
+  // Short date for the tile sub-lines. Falls back to the raw string
+  // rather than showing "Invalid Date" if Yahoo hands us something odd.
+  function fmtDay(v){
+    if (!v) return '';
+    const d = new Date(v);
+    return isNaN(d)
+      ? String(v)
+      : d.toLocaleDateString(undefined, {day:'numeric', month:'short', year:'numeric'});
   }
+
+  const lastSub = fmtDay(lastDt);
+
+  // Total Return is measured from the first bar of the cached price
+  // series, NOT from fund inception — the series covers whatever period
+  // was fetched. Without the start date on the tile the number is
+  // uninterpretable: "+38%" means nothing until you know whether that is
+  // over ten years or over eight months, and the window differs per fund
+  // depending on when it was first loaded and how much history Yahoo
+  // returned.
+  const totSub = (totR != null && firstDt) ? `since ${fmtDay(firstDt)}` : '';
 
   // Last trading day's volume: prefer the last price-history bar (already
   // cached, no extra fetch) and fall back to Yahoo's regularMarketVolume.
@@ -5208,7 +5496,7 @@ function showMetrics(p, prices, data) {
   const defs = [
     { l:'Last Close',    v: last!=null ? fmtP(last, cur) : '—', c:'', sub: lastSub },
     { l:'YTD Return',    v: ytdR!=null ? fmtPct(ytdR)    : '—', c: ytdR!=null ? (ytdR>=0?'pos':'neg'):'' },
-    { l:'Total Return',  v: totR!=null ? fmtPct(totR)    : '—', c: totR!=null ? (totR>=0?'pos':'neg'):'' },
+    { l:'Total Return',  v: totR!=null ? fmtPct(totR)    : '—', c: totR!=null ? (totR>=0?'pos':'neg'):'', sub: totSub },
     { l:'Volume (last day)', v: fmtVolume(lastVol), c:'', sub: (lastVol!=null ? lastSub : '') },
     { l:'Trailing Yield',
       v: fmtYield(p.trailingYieldPct), c:'',
@@ -5269,6 +5557,86 @@ function fmtFundStyle(v){
   }[v] || '—';
 }
 
+// v0.27.0 — Focus is a dependent pair: the type picks which vocabulary
+// the detail comes from. Region and Sector are closed lists (reusing the
+// reference data already loaded for the holdings editor); Thematic is
+// free text, because nothing can enumerate every investment theme.
+function onEditFundFocusTypeChange(){
+  const type = document.getElementById('editFundFocusType').value;
+  const sel  = document.getElementById('editFundFocusDetail');
+  const txt  = document.getElementById('editFundFocusText');
+
+  if (type === 'thematic'){
+    sel.style.display = 'none';
+    txt.style.display = '';
+    return;
+  }
+  txt.style.display = 'none';
+  sel.style.display = (type === 'none') ? 'none' : '';
+  if (type === 'none') { sel.innerHTML = ''; return; }
+
+  // Preserve the current selection across a rebuild — the reference data
+  // loads asynchronously, so this can run twice (once with an empty list,
+  // again once the fetch lands) and the second pass must not wipe what
+  // the user or the stored override already chose.
+  const keep = sel.value;
+
+  let opts = [];
+  if (type === 'region'){
+    // Distinct regions from the country→region map.
+    // Regions AND super regions — a fund can be built for "europe" even
+    // though no holding is ever located there. See /api/regions.
+    opts = (FOCUS_REGIONS || []).map(r => r.key);
+  } else if (type === 'sector'){
+    // SECTORS_ROWS are keyed "sector" — not "value"/"label". Getting this
+    // wrong yielded undefined for every row, which .filter(Boolean) then
+    // silently swallowed, leaving an empty dropdown with no error.
+    opts = ((RES_SECTORS && RES_SECTORS.rows) || [])
+             .map(r => r.sector || r.value || r.label)
+             .filter(Boolean).sort();
+  }
+
+  sel.innerHTML = '<option value="">— Select —</option>'
+                + opts.map(o => `<option value="${escapeAttr(o)}">${escapeHtml(o)}</option>`).join('');
+  if (keep) sel.value = keep;
+
+  // The reference CSVs load non-blocking at startup, so a user who opens
+  // Edit fund immediately can beat them. Fetch on demand and rebuild.
+  const needSectors = (type === 'sector' && !opts.length);
+  const needRegions = (type === 'region' && !opts.length);
+  if (needSectors || needRegions){
+    const jobs = [];
+    if (needSectors) jobs.push(loadHoldingClassResources());
+    if (needRegions) jobs.push(loadRegionMap());
+    Promise.all(jobs.map(p => p.catch(()=>{})))
+      .then(() => {
+        // Only rebuild if the user hasn't since changed the type.
+        if (document.getElementById('editFundFocusType').value === type){
+          onEditFundFocusTypeChange();
+        }
+      });
+  }
+}
+
+// v0.27.0 — labels for the optimiser metadata. Market cap and style box
+// are one-hot classifications derived from Yahoo (median market cap, and
+// P/B/earnings-growth vs the fund's category average); focus is user-set,
+// since nothing in Yahoo says a fund exists to track "Artificial
+// Intelligence".
+function fmtMarketCap(v){
+  return {large:'Large cap', mid:'Mid cap', small:'Small cap',
+          mixed:'Mixed', unknown:'—', 'n/a':'n/a'}[v] || '—';
+}
+function fmtStyleBox(v){
+  return {growth:'Growth', blend:'Blend', value:'Value', unknown:'—'}[v] || '—';
+}
+function fmtFocus(fs){
+  const t = fs.focus_type || 'none';
+  if (t === 'none' || !fs.focus_detail) return '—';
+  const label = {region:'Region', sector:'Sector', thematic:'Thematic'}[t] || t;
+  return `${label}: ${fs.focus_detail}`;
+}
+
 // v0.21.0 — display label for the distribution policy. Detected from
 // the fund name + dividend yield by the backend (see detect_distribution
 // in extractors.py); editable from the Edit Fund dialog the same way
@@ -5291,19 +5659,31 @@ function renderFundMetaTile(data){
   const ac  = (data && data.asset_class) || {};
   const fs  = (data && data.fund_structure) ||
               { structure:'unknown', replication:'unknown', style:'unknown',
-                distribution:'unknown' };
-  const isOverride = !!(data && data.fund_structure_is_override);
+                distribution:'unknown', market_cap:'unknown',
+                style_box:'unknown', focus_type:'none', focus_detail:'' };
+  // Per-field provenance. The old single caption labelled the whole block
+  // "user-set" if ANY field was overridden, so a Market Cap that came
+  // straight from Yahoo still read as user input — which is exactly what
+  // made the override state impossible to reason about.
+  const fsSrc = (data && data.fund_structure_sources) || {};
+  // v0.28.0: four provenances, not two. "name" is a value inferred from
+  // the fund's own name — a weaker signal than Yahoo's numbers, so it
+  // says so rather than passing itself off as measured data.
+  const FS_SRC_LABEL = {
+    user:    ['override', 'user-set'],
+    yahoo:   ['',         'seeded from Yahoo'],
+    name:    ['inferred', 'inferred from fund name'],
+    default: ['',         'not set'],
+  };
+  const capFor = (field) => {
+    const [cls, txt] = FS_SRC_LABEL[fsSrc[field]] || FS_SRC_LABEL.yahoo;
+    return `<div class="fmi-src ${cls}">${txt}</div>`;
+  };
 
   // Asset-class chip (same coloured chip used elsewhere).
   const acHtml = ac.class
     ? `<span class="actag ${ac.class}">◈ ${fmtAssetClass(ac.class)}</span>`
     : '<span class="muted">—</span>';
-
-  // The Structure source caption: a stored override applies to all
-  // three attributes together, so one caption covers the block.
-  const srcCaption = isOverride
-    ? `<div class="fmi-src override">user-set</div>`
-    : `<div class="fmi-src">seeded from Yahoo</div>`;
 
   const items = [
     { l:'Asset Class', v: acHtml, isHtml:true,
@@ -5311,15 +5691,24 @@ function renderFundMetaTile(data){
     { l:'Exchange',         v: escapeHtml(fmtExchange(p.exchange) || '—') },
     { l:'Trading Currency', v: escapeHtml(cur || '—') },
     { l:'Fund Structure',   v: escapeHtml(fmtFundStructure(fs.structure)),
-      sub: srcCaption, subHtml:true },
+      sub: capFor('structure'), subHtml:true },
     { l:'Replication',      v: escapeHtml(fmtReplication(fs.replication)),
-      sub: srcCaption, subHtml:true },
+      sub: capFor('replication'), subHtml:true },
     { l:'Style',            v: escapeHtml(fmtFundStyle(fs.style)),
-      sub: srcCaption, subHtml:true },
+      sub: capFor('style'), subHtml:true },
     // v0.21.0 — Distribution policy. Lives on the structure block so a
     // user override applies via the same Edit Fund dialog flow.
     { l:'Distribution',     v: escapeHtml(fmtDistribution(fs.distribution)),
-      sub: srcCaption, subHtml:true },
+      sub: capFor('distribution'), subHtml:true },
+    // v0.27.0 — optimiser metadata. Like Asset Class, these are single
+    // classifications that are ALSO targetable; the optimiser matches
+    // against them one-hot until per-holding look-through arrives.
+    { l:'Market Cap',       v: escapeHtml(fmtMarketCap(fs.market_cap)),
+      sub: capFor('market_cap'), subHtml:true },
+    { l:'Equity Style',     v: escapeHtml(fmtStyleBox(fs.style_box)),
+      sub: capFor('style_box'), subHtml:true },
+    { l:'Focus',            v: escapeHtml(fmtFocus(fs)),
+      sub: capFor('focus_type'), subHtml:true },
   ];
 
   grid.innerHTML = items.map(it=>{
@@ -6073,6 +6462,9 @@ async function renderBdUploadResolution() {
     for (const u of _bdUploadState.unresolvedKeys) {
       (byFacet[u.facet] = byFacet[u.facet] || []).push(u);
     }
+    // The four breakdown-card facets only — an uploaded CSV resolves
+    // sector/country/currency/asset_class keys. The metadata facets are
+    // not uploadable and have no unresolved-key concept.
     for (const facet of ['asset_class','sector','country','currency']) {
       if (!byFacet[facet]) continue;
       const canon = _bdUploadState.canonicalCache[facet] || [];
@@ -7295,6 +7687,17 @@ function openEditFundModal(fund){
   document.getElementById('editFundReplication').value  = fst.replication  || 'unknown';
   document.getElementById('editFundStyle').value        = fst.style        || 'unknown';
   document.getElementById('editFundDistribution').value = fst.distribution || 'unknown';
+  // v0.27.0 optimiser metadata.
+  document.getElementById('editFundMarketCap').value  = fst.market_cap || 'unknown';
+  document.getElementById('editFundStyleBox').value   = fst.style_box  || 'unknown';
+  _fillOverrideFigures();
+  document.getElementById('editFundFocusType').value  = fst.focus_type || 'none';
+  onEditFundFocusTypeChange();            // build the dependent list first
+  if (fst.focus_type === 'thematic'){
+    document.getElementById('editFundFocusText').value = fst.focus_detail || '';
+  } else if (fst.focus_detail){
+    document.getElementById('editFundFocusDetail').value = fst.focus_detail;
+  }
   editFundState.structureIsOverride = !!fund.structureIsOverride;
   // Apply the structure/replication coupling to the initial state.
   onEditFundStructureChange();
@@ -7388,6 +7791,80 @@ function onEditFundStructureChange(){
 // values and clicks Save to persist them. Facets justETF couldn't
 // determine are left untouched, so a partial result never clobbers a
 // value the user already set.
+// v0.27.3 — re-derive the Yahoo-seeded metadata and drop it into the
+// dialog, discarding whatever the user previously stored for those fields.
+//
+// This closes a real trap: once a fund_structure override exists, the
+// stored values beat the Yahoo seed forever, so a field saved as "unknown"
+// (easy to do accidentally — save the dialog before a fund has been
+// reloaded and every new field is unknown) could never recover on its own.
+// Deleting the whole override was the only way back, which also threw away
+// the deliberate edits worth keeping.
+//
+// It populates the form but does NOT save, matching the justETF lookup:
+// you see what changed, and Cancel still walks away.
+async function reloadStructureFromYahoo(){
+  if (!lastFundData) return;
+  const btn    = document.getElementById('editFundYahooBtn');
+  const status = document.getElementById('editFundLookupStatus');
+  btn.disabled = true;
+  status.textContent = 'Re-deriving from Yahoo…';
+
+  try {
+    // refresh=1 forces extract_profile to run again rather than serving a
+    // cached profile — without it, a profile cached before these fields
+    // existed would simply hand back the same blanks.
+    const params = fundIdentityParams(lastFundData);
+    params.set('refresh', '1');
+    const r = await fetch(`${API}/fund?${params}`);
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
+
+    // fund_structure_seed is the Yahoo-derived block with NO override
+    // applied — exactly what we want to reset these fields to.
+    const seed = d.fund_structure_seed || {};
+    const applied = [];
+    const set = (id, val, fmt) => {
+      const el = document.getElementById(id);
+      if (!el || !val) return;
+      el.value = val;
+      applied.push(`${fmt(val)}`);
+    };
+    set('editFundStructure',    seed.structure,    fmtFundStructure);
+    set('editFundReplication',  seed.replication,  fmtReplication);
+    set('editFundStyle',        seed.style,        fmtFundStyle);
+    set('editFundDistribution', seed.distribution, fmtDistribution);
+    set('editFundMarketCap',    seed.market_cap,   fmtMarketCap);
+    set('editFundStyleBox',     seed.style_box,    fmtStyleBox);
+    onEditFundStructureChange();   // re-apply the structure/replication coupling
+
+    // Asset class lives in its OWN override, not in fund_structure, so it
+    // needs resetting separately — otherwise "Reload from Yahoo" silently
+    // leaves the one field users most often override untouched.
+    // asset_class.detected_class is Yahoo's own answer, before any override.
+    const detected = (d.asset_class || {}).detected_class;
+    const acSel = document.getElementById('editFundAssetClass');
+    if (acSel && detected){
+      acSel.value = detected;
+      applied.push(fmtAssetClass ? fmtAssetClass(detected) : detected);
+    }
+
+    // Focus is deliberately untouched: it is purely user-set, so there is
+    // no Yahoo value to restore and clobbering it would lose real input.
+    status.textContent = applied.length
+      ? `From Yahoo: ${applied.join(', ')} — press Save to keep.`
+      : 'Yahoo returned nothing for this fund.';
+
+    // Keep the in-memory copy current so a later Save diffs against the
+    // refreshed data rather than the pre-refresh copy.
+    lastFundData = d;
+  } catch(e){
+    status.textContent = `Yahoo reload failed: ${e.message || e}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function lookupFundStructure(){
   if (!editFundState || !editFundState.ticker) return;
   const btn    = document.getElementById('editFundLookupBtn');
@@ -7469,6 +7946,128 @@ function showEditFundError(msg){
   if (err){ err.textContent = msg; err.style.display = ''; }
 }
 
+// v0.33.0 — the two profile figures, which go through the generic
+// per-field override store rather than the Structure block.
+//
+// The input shows the EFFECTIVE value (override if set, else Yahoo's) and
+// the note underneath says which it is. That way the box is never
+// mysteriously empty for a fund Yahoo does have a TER for, and the user
+// can see what they are diverging from before they diverge from it.
+const _OVERRIDE_FIGURES = [
+  {field:'expenseRatioPct', input:'editFundTer', note:'editFundTerNote', dp:2},
+  {field:'totalNetAssets',  input:'editFundTna', note:'editFundTnaNote', dp:0},
+];
+
+// The derived value behind a field, whatever is currently on top of it.
+// profile[field] holds the EFFECTIVE value — the server writes overrides
+// into the same slot — so when a field is overridden the Yahoo number is
+// only in override_seed.
+function _seedValueFor(field){
+  const prof = (lastFundData && lastFundData.profile) || {};
+  const srcs = (lastFundData && lastFundData.override_sources) || {};
+  const seed = (lastFundData && lastFundData.override_seed) || {};
+  return srcs[field] ? seed[field] : prof[field];
+}
+
+function _fillOverrideFigures(){
+  const prof = (lastFundData && lastFundData.profile) || {};
+  const srcs = (lastFundData && lastFundData.override_sources) || {};
+  for (const f of _OVERRIDE_FIGURES){
+    const el   = document.getElementById(f.input);
+    const note = document.getElementById(f.note);
+    if (!el) continue;
+    const v = prof[f.field];
+    el.value = (v == null) ? '' : Number(v).toFixed(f.dp);
+
+    const overridden = !!srcs[f.field];
+    const seedVal    = _seedValueFor(f.field);
+    if (note){
+      if (overridden){
+        note.textContent = seedVal == null
+          ? `overridden (${srcs[f.field]}) — Yahoo has no value`
+          : `overridden (${srcs[f.field]}) — Yahoo says ${Number(seedVal).toFixed(f.dp)}`;
+      } else {
+        note.textContent = (v == null)
+          ? 'Yahoo has no value for this fund'
+          : 'from Yahoo';
+      }
+    }
+    el.classList.toggle('active', overridden);
+    const rev = document.getElementById(f.input + 'Revert');
+    if (rev) rev.disabled = !overridden;
+  }
+}
+
+// Withdraw one assertion. Deletion IS "revert" — nothing is stored that
+// means "unset", so removing the entry restores Yahoo's value with no
+// refetch.
+async function revertOverrideField(field, inputId){
+  if (!editFundState || !editFundState.ticker) return;
+  try {
+    const r = await fetch(
+      `${API}/funds/${encodeURIComponent(editFundState.ticker)}/override/${field}`,
+      { method:'DELETE' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+
+    // Put the derived value back into the live payload before redrawing.
+    // Blanking the input and leaving the caption alone was the old
+    // behaviour, and it left the row reading "overridden (user)" straight
+    // after a successful revert — the one moment it is certainly false.
+    if (lastFundData){
+      const seedVal = _seedValueFor(field);
+      if (lastFundData.profile) lastFundData.profile[field] = seedVal;
+      if (lastFundData.override_sources) delete lastFundData.override_sources[field];
+      if (lastFundData.override_seed)    delete lastFundData.override_seed[field];
+    }
+    _fillOverrideFigures();
+    // Redraw the tiles so the change is visible behind the dialog rather
+    // than waiting for a reload the user has no reason to expect.
+    if (lastFundData) showMetrics(lastFundData.profile, allPrices, lastFundData);
+    showEditFundError('');
+  } catch(e){
+    showEditFundError(`Could not revert ${field}: ${e.message}`);
+  }
+}
+
+// Save the figures. A blank box means "no opinion" → withdraw; a value
+// equal to Yahoo's is agreement, not an assertion → also withdraw, so the
+// field keeps tracking Yahoo. Same rule the Structure block follows.
+async function _saveOverrideFigures(ticker){
+  const srcs = (lastFundData && lastFundData.override_sources) || {};
+  for (const f of _OVERRIDE_FIGURES){
+    const el = document.getElementById(f.input);
+    if (!el) continue;
+    const raw = el.value.trim();
+    const url = `${API}/funds/${encodeURIComponent(ticker)}/override/${f.field}`;
+
+    // Compare at DISPLAY precision, not full precision.
+    //
+    // The input is filled with toFixed(dp), so a Yahoo TER of 0.207 shows
+    // as "0.21" and a seed of 4474.38 shows as "4474". Comparing the
+    // rounded string against the unrounded seed made them differ, so
+    // merely opening the dialog and pressing Save stored a phantom
+    // override of the rounded number — attributed to the user, who had
+    // typed nothing. Rounding both sides makes an untouched field a
+    // guaranteed no-op.
+    const seedVal = _seedValueFor(f.field);
+    const agrees  = raw !== '' && seedVal != null
+                    && raw === Number(seedVal).toFixed(f.dp);
+
+    if (raw === '' || agrees){
+      if (srcs[f.field]) await fetch(url, {method:'DELETE'});
+      continue;
+    }
+    const r = await fetch(url, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({value: Number(raw)}),
+    });
+    if (!r.ok){
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.error || `HTTP ${r.status}`);
+    }
+  }
+}
+
 async function saveEditFundModal(){
   if (!editFundState || !editFundState.ticker) return;
   const ticker   = editFundState.ticker;
@@ -7482,6 +8081,12 @@ async function saveEditFundModal(){
     replication:  document.getElementById('editFundReplication').value,
     style:        document.getElementById('editFundStyle').value,
     distribution: document.getElementById('editFundDistribution').value,
+    market_cap:   document.getElementById('editFundMarketCap').value,
+    style_box:    document.getElementById('editFundStyleBox').value,
+    focus_type:   document.getElementById('editFundFocusType').value,
+    focus_detail: document.getElementById('editFundFocusType').value === 'thematic'
+                    ? document.getElementById('editFundFocusText').value.trim()
+                    : document.getElementById('editFundFocusDetail').value,
   };
   // "No structure information" — every attribute unknown — is treated
   // as "clear the override" (revert to the Yahoo seed), mirroring the
@@ -7490,7 +8095,10 @@ async function saveEditFundModal(){
     structure.structure === 'unknown'
     && (structure.replication === 'unknown' || structure.replication === 'n/a')
     && structure.style === 'unknown'
-    && structure.distribution === 'unknown';
+    && structure.distribution === 'unknown'
+    && structure.market_cap === 'unknown'
+    && structure.style_box === 'unknown'
+    && structure.focus_type === 'none';
 
   const btn = document.getElementById('editFundSaveBtn');
   btn.disabled = true;
@@ -7524,8 +8132,33 @@ async function saveEditFundModal(){
       return;
     }
 
+    // 3) Profile figures via the generic per-field override endpoint.
+    try {
+      await _saveOverrideFigures(ticker);
+    } catch(e){
+      showEditFundError(e.message);
+      btn.disabled = false; btn.textContent = 'Save changes';
+      return;
+    }
+
+    // Update the in-memory fund from the PUT response so the tile
+    // reflects the save immediately. Previously this depended entirely on
+    // the reload below — which is .catch()-swallowed, so any hiccup there
+    // left the old values on screen and looked like the save had failed.
+    if (lastFundData && stData && stData.fund_structure){
+      lastFundData.fund_structure            = stData.fund_structure;
+      lastFundData.fund_structure_sources    = stData.fund_structure_sources || {};
+      lastFundData.fund_structure_seed       = stData.fund_structure_seed || {};
+      lastFundData.fund_structure_is_override =
+        Object.values(stData.fund_structure_sources || {}).includes('user');
+    }
+    if (lastFundData && acData && acData.asset_class !== undefined){
+      lastFundData.asset_class = acData.asset_class || lastFundData.asset_class;
+    }
+
     closeEditFundModal();
     setStatus('ok', `Fund metadata for ${ticker} saved.`);
+    if (lastFundData) renderFundMetaTile(lastFundData);
 
     // The override(s) changed the fund's effective metadata everywhere.
     // Refresh whatever view is showing it: the Pre-Loaded list, the
@@ -10022,6 +10655,13 @@ async function reloadPortfolio(forceRefresh){
   // of the Cash sub-tab back to Funds.
   const pidChanged = (lastLoadedPid !== activePid);
 
+  // Switching portfolio SHOULD land you at the top — it's new content.
+  // Refreshing the one you're already looking at should not, because it
+  // is the same list and you were reading part of it. The loading row
+  // below collapses the table to a single line, so the snapshot has to be
+  // taken before that happens.
+  const _scrollSnap = pidChanged ? null : _snapshotScroll();
+
   document.getElementById('pTitle').textContent = 'Loading…';
   document.getElementById('pSub').textContent = '';
   document.getElementById('pfundsBody').innerHTML =
@@ -10064,6 +10704,8 @@ async function reloadPortfolio(forceRefresh){
     document.getElementById('pfundsBody').innerHTML =
       `<tr><td colspan="10" style="padding:20px;text-align:center;color:var(--red)">Error: ${escapeHtml(e.message)}</td></tr>`;
     document.getElementById('pTitle').textContent = 'Error';
+  } finally {
+    if (_scrollSnap) _restoreScroll(_scrollSnap);
   }
 }
 
@@ -10648,11 +11290,15 @@ function renderAllBreakdowns(view){
     renderSectorBreakdownLT(view);
     renderCountryBreakdownLT(view);
     renderCurrencyBreakdownLT(view);
+    renderMarketCapBreakdown(view);
+    renderStyleBoxBreakdown(view);
   } else {
     renderAssetClassBreakdownYM(view);
     renderSectorBreakdownYM(view);
     renderCountryBreakdownYM(view);
     renderCurrencyBreakdownYM(view);
+    renderMarketCapBreakdown(view);
+    renderStyleBoxBreakdown(view);
   }
 }
 
@@ -10672,16 +11318,35 @@ function setBreakdownMode(mode){
 
 // Per-facet Chart.js instances. Indexed by facet name so we can destroy
 // before re-creating (Chart.js complains when two charts share a canvas).
-let _tgCharts = { asset_class: null, sector: null, country: null, currency: null };
+let _tgCharts = { asset_class: null, sector: null, country: null, currency: null,
+                  market_cap: null, style_box: null };
+
+// v0.28.0 — six facets, in two groups. The split is not cosmetic: the
+// first four are look-through distributions measured from holdings, with
+// a coverage caveat; the last two are fund-level classifications with an
+// unclassified residual. Grouping lets that caveat be stated once per
+// group instead of repeated on every section.
+const _TG_GROUPS = [
+  { key:'exposure', label:'Exposure',
+    note:'Measured from holdings, aggregated to portfolio level.',
+    facets:['asset_class','sector','country','currency'] },
+  { key:'style', label:'Style',
+    note:'Fund-level classifications — one bucket per fund, not a look-through. Unclassified funds show as "unknown".',
+    facets:['market_cap','style_box'] },
+];
+const _TG_ALL_FACETS = _TG_GROUPS.flatMap(g => g.facets);
 
 // Editor state — populated in openTargetsEditor, written by saveTargetsEditor.
 // Shape: {asset_class: {key: pct, ...}, sector: {...}, country: {...}, currency: {...}}
 let _tgEditorState = null;
 // Available canonical values per facet, lazy-fetched + cached across opens.
-let _tgCanonical = { asset_class: null, sector: null, country: null, currency: null };
+let _tgCanonical = { asset_class: null, sector: null, country: null, currency: null,
+                     market_cap: null, style_box: null };
 
 // Friendly facet labels (used in headers and tooltips).
 const _TG_FACET_LABELS = {
+  market_cap:  'Market cap',
+  style_box:   'Equity style',
   asset_class: 'Asset class',
   sector:      'Sector',
   country:     'Region',         // country facet is shown as REGIONS
@@ -10701,7 +11366,7 @@ function renderTargetsTile(view){
     emptyEl.style.display = '';
     tileEl.style.display  = 'none';
     // Destroy any old charts to free Chart.js instances.
-    for (const facet of ['asset_class','sector','country','currency']) {
+    for (const facet of _TG_ALL_FACETS) {
       if (_tgCharts[facet]) { _tgCharts[facet].destroy(); _tgCharts[facet] = null; }
     }
     return;
@@ -10713,7 +11378,18 @@ function renderTargetsTile(view){
   // Render one section per facet, in canonical order.
   const root = document.getElementById('pTargetsFacets');
   root.innerHTML = '';
-  for (const facet of ['asset_class','sector','country','currency']) {
+  let _tgGroupSeen = null;
+  for (const facet of _TG_ALL_FACETS) {
+    // Group header, once per group, at the point its first facet renders.
+    const grp = _TG_GROUPS.find(g => g.facets.includes(facet));
+    if (grp && grp.key !== _tgGroupSeen) {
+      _tgGroupSeen = grp.key;
+      const gh = document.createElement('div');
+      gh.className = 'tg-group-head';
+      gh.innerHTML = `<span class="tg-group-label">${escapeHtml(grp.label)}</span>` +
+                     `<span class="tg-group-note">${escapeHtml(grp.note)}</span>`;
+      root.appendChild(gh);
+    }
     const block = (td.facets || {})[facet] || {has_targets:false, items:[]};
     const section = document.createElement('div');
     section.className = 'tg-facet';
@@ -10998,7 +11674,7 @@ async function openTargetsEditor(){
 
   // Lazy-fetch canonical values for the four facets (regions for
   // country) the first time the editor is opened, then cache them.
-  await Promise.all(['asset_class','sector','country','currency'].map(_tgFetchCanonical));
+  await Promise.all(_TG_ALL_FACETS.map(_tgFetchCanonical));
   _renderTgEditorBody();
 }
 
@@ -11017,6 +11693,10 @@ async function _tgFetchCanonical(facet){
       // vocabulary ("bond"). This is what makes target-vs-actual
       // comparison line up. See Fund_class_definitions.csv.
       url = `${API}/targets/asset_classes`;
+    } else if (facet === 'market_cap' || facet === 'style_box') {
+      // Closed config vocabulary, minus the values that cannot carry a
+      // target ("unknown", "n/a"). See /api/targets/meta.
+      url = `${API}/targets/meta/${facet}`;
     } else {
       url = `${API}/uploaded_breakdowns/canonical/${facet}`;
     }
@@ -11045,7 +11725,17 @@ function closeTargetsEditor(){
 function _renderTgEditorBody(){
   const root = document.getElementById('targetsEditorBody');
   root.innerHTML = '';
-  for (const facet of ['asset_class','sector','country','currency']) {
+  let _tgeGroupSeen = null;
+  for (const facet of _TG_ALL_FACETS) {
+    const grp = _TG_GROUPS.find(g => g.facets.includes(facet));
+    if (grp && grp.key !== _tgeGroupSeen) {
+      _tgeGroupSeen = grp.key;
+      const gh = document.createElement('div');
+      gh.className = 'tg-group-head';
+      gh.innerHTML = `<span class="tg-group-label">${escapeHtml(grp.label)}</span>` +
+                     `<span class="tg-group-note">${escapeHtml(grp.note)}</span>`;
+      root.appendChild(gh);
+    }
     const block = _tgEditorState[facet] || {};
     const canonical = _tgCanonical[facet] || [];
     const usedKeys  = new Set(Object.keys(block));
@@ -11532,6 +12222,62 @@ function renderCurrencyBreakdownYM(view){
   }).join('');
 }
 
+// ── Meta facets: market cap / equity style ───────────────────────────────
+// One renderer per facet, used in BOTH breakdown modes. These facets are
+// fund-level classifications rather than look-through distributions —
+// there is nothing to aggregate from holdings, so the Yahoo/look-through
+// toggle has no meaning here and the card would only lie if it changed.
+//
+// "unknown" and "n/a" are drawn as real slices. Rendering the classified
+// remainder normalised to 100% would make a half-classified portfolio
+// look fully classified, which is the one thing this card must not do.
+function renderMetaFacetBreakdown(view, facet, cfg){
+  const items = (view?.fundlevel_breakdowns?.[facet]) || [];
+  const cov   = view?.fundlevel_coverage?.[facet];
+  const base  = view?.base_currency || view?.portfolio?.base_currency || '';
+  setCoverageBadge(cfg.covId, cov != null ? cov*100 : null, 'yahoo');
+
+  if (!items.length){
+    return renderBreakdownEmpty({
+      chartVar: cfg.chartVar, canvasId: cfg.canvasId, legId: cfg.legId,
+      message: 'No funds valued yet.',
+    });
+  }
+  // Grey out the two non-answers so the eye reads them as residual
+  // rather than as another category competing on equal terms.
+  const isResidual = k => (k === 'unknown' || k === 'n/a');
+  const colorAt = (it, i) => isResidual(it.key) ? UNDEFINED_COLOUR : SCOL[i % SCOL.length];
+  const colors  = items.map(colorAt);
+  makeBreakdownChart({
+    chartVar: cfg.chartVar, canvasId: cfg.canvasId, items,
+    labelFn: it => cfg.fmt(it.key),
+    colorFn: (it, i) => colors[i],
+  });
+  document.getElementById(cfg.legId).innerHTML = items.map((it,i)=>{
+    const valStr = it.value != null ? ` \u00b7 ${fmtMoney(it.value, base)}` : '';
+    return `
+      <div class="lr">
+        <div class="ls" style="background:${colors[i]}"></div>
+        <span class="ln">${escapeHtml(cfg.fmt(it.key))}</span>
+        <span class="lp">${(it.weight*100).toFixed(2)}%${valStr}</span>
+      </div>`;
+  }).join('');
+}
+
+function renderMarketCapBreakdown(view){
+  renderMetaFacetBreakdown(view, 'market_cap', {
+    covId:'mcCov', chartVar:'pMcChart', canvasId:'pMcChart', legId:'pMcLeg',
+    fmt: k => (k === 'unknown' ? 'Unknown' : fmtMarketCap(k)),
+  });
+}
+
+function renderStyleBoxBreakdown(view){
+  renderMetaFacetBreakdown(view, 'style_box', {
+    covId:'sbCov', chartVar:'pSbChart', canvasId:'pSbChart', legId:'pSbLeg',
+    fmt: k => (k === 'unknown' ? 'Unknown' : fmtStyleBox(k)),
+  });
+}
+
 function renderCurrencyBreakdownLT(view){
   const items   = (view?.lookthrough_breakdowns?.currency) || [];
   const cov     = view?.lookthrough_coverage?.currency;
@@ -11859,6 +12605,27 @@ function fmtP(v,cur){
   try{return new Intl.NumberFormat('en-US',{style:'currency',currency:cur||'USD',minimumFractionDigits:2,maximumFractionDigits:2}).format(v);}
   catch{return v.toFixed(2);}
 }
+// Fund size. Millions is the working unit for fund AUM — it is how
+// factsheets and screeners quote it — so that is the floor, and we only
+// scale up once the number would otherwise need four digits.
+//
+// The previous version was wrong in three separate ways: it divided by
+// 1e9 for anything above a million (so a EUR 5m fund read "0.01B"),
+// labelled the 1e3–1e6 branch "B" while dividing by 1e6, and hardcoded a
+// dollar sign regardless of the fund's actual currency.
+function fmtFundSize(v, cur){
+  const n = parseFloat(v);
+  if (v == null || !isFinite(n)) return '—';
+  const code = (cur || '').toUpperCase();
+  const pre  = code ? code + ' ' : '';
+  const abs  = Math.abs(n);
+  // Thresholds are on the *unscaled* value, so 999.9M stays in millions
+  // and 1,000M becomes 1.00B — no gap and no overlap at the boundary.
+  if (abs >= 1e12) return pre + (n/1e12).toFixed(2) + 'T';
+  if (abs >= 1e9)  return pre + (n/1e9 ).toFixed(2) + 'B';
+  return pre + (n/1e6).toFixed(2) + 'M';
+}
+
 function fmtMoney(v, cur){
   if (v == null || isNaN(v)) return '—';
   const curCode = (cur || 'USD').toUpperCase();

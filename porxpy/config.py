@@ -90,6 +90,14 @@ FUND_CLASS_FP         = RESOURCES_DIR / "Fund_class_definitions.csv"
 # `matches` column. Drives the Sector dropdown and the upload-side
 # coercion of issuer spellings ("Information Technology" → "technology").
 SECTORS_FP            = RESOURCES_DIR / "sectors.csv"
+
+# v0.28.0: region + super-region vocabulary. Region-keyed, unlike the
+# country-keyed country_codes.csv that MSTAR_TO_REGION is built from —
+# a super_regions column there would repeat the same value across every
+# country row of a region, with no single place to read the vocabulary.
+# Used ONLY to seed focus_type / focus_detail from a fund name; the
+# country/region breakdown facet does not consult it.
+REGIONS_FP            = RESOURCES_DIR / "regions.csv"
 # ISO 4217 currency master list with display names and a `matches`
 # column for alternative spellings ("yen" → "JPY"). Drives the Currency
 # dropdown — separate from country_currency.csv which is a per-country
@@ -470,6 +478,66 @@ DISTRIBUTION_POLICIES: tuple[str, ...] = (
     "accumulating", "distributing", "unknown",
 )
 
+# v0.27.0 — fund metadata used by the optimiser.
+#
+# These sit alongside structure/replication/style/distribution in the same
+# override block: they are fund metadata, derived from Yahoo with a user
+# override, exactly like distribution policy.
+#
+# They are also *targetable*. That mirrors asset_class, which is likewise
+# both a metadata classification (detect_asset_class → "equity") and a
+# target facet. See TARGET_FACETS below.
+
+# Market-cap bucket. Derived from Yahoo's ``medianMarketCap`` for the
+# fund's equity sleeve, using the thresholds in MARKET_CAP_BUCKETS.
+# v0.28.0: "mixed" and "n/a" join the three buckets.
+#   mixed   — the fund is built to span buckets (a total-market tracker,
+#             a "Small & Mid Cap" fund). An intention, so targetable.
+#   unknown — missing data. Not targetable.
+#   n/a     — market cap is not a meaningful concept for this position.
+#             In practice: cash. Bond funds are NOT n/a — a bond issuer
+#             has a market cap; we usually just don't know it, which is
+#             what "unknown" is for.
+MARKET_CAPS: tuple[str, ...] = (
+    "large", "mid", "small", "mixed", "unknown", "n/a",
+)
+
+# Threshold table, in USD, evaluated top-down: the first bucket whose
+# ``min_usd`` the fund's median market cap meets wins. Kept here rather
+# than in a resource CSV because it is three numbers that essentially
+# never change; promote it to a CSV if that stops being true.
+MARKET_CAP_BUCKETS: tuple[tuple[str, float], ...] = (
+    ("large", 10_000_000_000.0),   # >= $10bn
+    ("mid",    2_000_000_000.0),   # >= $2bn
+    ("small",          0.0),       # anything above zero
+)
+
+# Morningstar-style equity style box axis. NOTE the deliberate naming:
+# ``style`` already means active-vs-passive (FUND_STYLES above), so the
+# growth/value axis is ``style_box`` to avoid a collision in storage,
+# in the API and on the fund meta tile.
+# No "n/a" here and no "mixed": "blend" already IS the mixed case, and
+# every asset class has a position on this axis — a bond fund's return
+# comes from coupons rather than capital appreciation, which is "value"
+# by any reading. Cash likewise.
+STYLE_BOXES: tuple[str, ...] = ("growth", "blend", "value", "unknown")
+
+# Which values of each meta facet may carry a target. "unknown" is a
+# data gap rather than an intention, and "n/a" duplicates the cash
+# target you would already set on asset_class — neither belongs in the
+# Targets dropdown. Both still appear as buckets in the X-ray card and
+# in the deviation report's untargeted summary.
+META_FACET_TARGETABLE: dict[str, tuple[str, ...]] = {
+    "market_cap": ("large", "mid", "small", "mixed"),
+    "style_box":  ("growth", "blend", "value"),
+}
+
+# What a fund is built to concentrate on. ``focus_detail`` is validated
+# against a different vocabulary depending on this: regions for
+# "region", the sectors CSV for "sector", and free text for "thematic"
+# (nothing can infer "Artificial Intelligence" from Yahoo).
+FOCUS_TYPES: tuple[str, ...] = ("none", "region", "sector", "thematic")
+
 # Default Structure block for a fund with no stored override. The
 # values here are placeholders; load_fund_data overlays Yahoo-seeded
 # defaults (see _seed_fund_structure) before applying any stored
@@ -479,4 +547,136 @@ DEFAULT_FUND_STRUCTURE: dict[str, str] = {
     "replication":  "unknown",
     "style":        "unknown",
     "distribution": "unknown",
+    "market_cap":   "unknown",
+    "style_box":    "unknown",
+    "focus_type":   "none",
+    "focus_detail": "",
 }
+
+# Whether a fund is offered to the optimiser at all. Stored per fund
+# (ISIN-keyed, like the rest of this block) rather than per listing,
+# since two listings of the same fund are the same investment decision.
+DEFAULT_INCLUDE_IN_OPTIMIZER: bool = True
+
+# ---------------------------------------------------------------------------
+# Facet taxonomy
+# ---------------------------------------------------------------------------
+# Three names, because two distinct things were previously conflated:
+#
+#   BREAKDOWN_FACETS — have breakdown *cards* on the fund page, with a
+#       selectable source (issuer / holdings look-through / CSV upload).
+#   META_FACETS      — derived from fund metadata; one-hot per fund. There
+#       is no "issuer market-cap breakdown" to choose between, so these
+#       get no card and no source selector.
+#   TARGET_FACETS    — everything you can set a target on, and therefore
+#       everything the optimiser and the deviation report work across.
+#
+# When look-through market-cap data arrives later (per-holding marketCap
+# via the existing holdings-enrichment path), market_cap can graduate to
+# a real distribution — exactly as asset_allocation supersedes the
+# asset_class scalar today — without changing this taxonomy.
+META_FACETS: tuple[str, ...] = ("market_cap", "style_box")
+
+TARGET_FACETS: tuple[str, ...] = BREAKDOWN_FACETS + META_FACETS
+
+
+# ---------------------------------------------------------------------------
+# Overridable field registry (v0.33.0)
+# ---------------------------------------------------------------------------
+# One table describing every fund attribute the user may assert a value
+# for. Replaces four purpose-built override sub-structures in
+# overrides.json (asset_class, breakdown_source, include_in_optimizer,
+# fund_structure), each of which had its own storage shape, its own
+# validation and its own answer to "what does absent mean".
+#
+# The single most useful property of the new store is that it is SPARSE:
+# a field is present exactly when the user has asserted something about
+# it, and absent otherwise. That makes "no opinion" unrepresentable as a
+# stored value, which is what the v0.27 override bug was — a block that
+# always wrote all eight structure fields, so a stored "unknown" could
+# not be told apart from an untouched one, and saving the Edit dialog
+# once pinned every field to a snapshot of Yahoo.
+#
+# ``neutral`` exists only to migrate the old dense blocks: a legacy value
+# equal to its neutral was never an assertion and is dropped rather than
+# carried across. Nothing writes a neutral value from here on.
+#
+# Per-entry keys:
+#   type      "enum" | "number" | "bool" | "str"
+#   vocab     allowed values, for type "enum"
+#   vocab_fn  name of a resolver in porxpy.resources, for vocabularies
+#             that depend on another field's value (focus_detail). Looked
+#             up lazily so config stays free of resource-CSV imports.
+#   min/max   inclusive bounds, for type "number"
+#   unit      "%" | "currency" — display only
+#   label     what the UI calls it
+#   neutral   the legacy "no opinion" value (migration only)
+#   target    dotted path into the /api/fund payload where the effective
+#             value is written. Optional: fields whose consumer reads
+#             them directly (breakdown sources, include_in_optimizer)
+#             have no payload slot to write into.
+OVERRIDABLE_FIELDS: dict[str, dict] = {
+    "asset_class": {
+        "type": "enum", "vocab": tuple(ASSET_CLASSES), "neutral": None,
+        "label": "Asset class",
+    },
+    "structure": {
+        "type": "enum", "vocab": FUND_STRUCTURES, "neutral": "unknown",
+        "label": "Fund structure", "target": "fund_structure.structure",
+    },
+    "replication": {
+        # "n/a" IS meaningful here (a non-ETF fund), so only "unknown"
+        # counts as the absence of an opinion.
+        "type": "enum", "vocab": REPLICATION_METHODS, "neutral": "unknown",
+        "label": "Replication", "target": "fund_structure.replication",
+    },
+    "style": {
+        "type": "enum", "vocab": FUND_STYLES, "neutral": "unknown",
+        "label": "Management style", "target": "fund_structure.style",
+    },
+    "distribution": {
+        "type": "enum", "vocab": DISTRIBUTION_POLICIES, "neutral": "unknown",
+        "label": "Distribution", "target": "fund_structure.distribution",
+    },
+    "market_cap": {
+        "type": "enum", "vocab": MARKET_CAPS, "neutral": "unknown",
+        "label": "Market cap", "target": "fund_structure.market_cap",
+    },
+    "style_box": {
+        "type": "enum", "vocab": STYLE_BOXES, "neutral": "unknown",
+        "label": "Equity style", "target": "fund_structure.style_box",
+    },
+    "focus_type": {
+        "type": "enum", "vocab": FOCUS_TYPES, "neutral": "none",
+        "label": "Focus", "target": "fund_structure.focus_type",
+    },
+    "focus_detail": {
+        # Validated against regions ∪ super-regions, the sector list, or
+        # nothing at all, depending on the pending focus_type — the one
+        # cross-field rule in the table.
+        "type": "str", "vocab_fn": "focus_detail_vocabulary", "neutral": "",
+        "label": "Focus detail", "target": "fund_structure.focus_detail",
+    },
+    "include_in_optimizer": {
+        "type": "bool", "neutral": DEFAULT_INCLUDE_IN_OPTIMIZER,
+        "label": "Include in optimiser",
+    },
+    "expenseRatioPct": {
+        "type": "number", "min": 0.0, "max": 100.0, "unit": "%",
+        "label": "TER", "target": "profile.expenseRatioPct",
+    },
+    "totalNetAssets": {
+        "type": "number", "min": 0.0, "unit": "currency",
+        "label": "Total net assets", "target": "profile.totalNetAssets",
+    },
+}
+
+# The four breakdown-source selectors are one registry entry each, built
+# here rather than typed out, so a new breakdown facet cannot be added
+# without its override coming along.
+for _facet in BREAKDOWN_FACETS:
+    OVERRIDABLE_FIELDS[f"breakdown_source.{_facet}"] = {
+        "type": "enum", "vocab": BREAKDOWN_SOURCES, "neutral": "fund",
+        "label": f"{_facet} card source",
+    }
+del _facet

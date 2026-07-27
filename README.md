@@ -28,6 +28,19 @@ weights them by your allocation, and shows you the merged reality:
 - How much is equity vs fixed income vs cash, after looking through
   every fund?
 
+### Design a portfolio, don't just measure one
+
+Set your targets, and PorxPy will propose the trades that get you there:
+which funds to buy, which to sell, and how much. It works from the funds
+you have already loaded, cannot overdraw your cash, and shows the residual
+error per facet so you can see exactly where the design still misses and
+decide whether to relax a target or go find another fund.
+
+Any fund can be opted out with the **incl** checkbox in the pre-loaded
+list. A holding you have opted out of is left alone — but its exposure
+still counts toward your targets, so the optimiser designs around it
+rather than pretending it isn't there.
+
 ### Compare against your own targets
 
 You set target allocations per facet (e.g. "40% North America, 25%
@@ -35,6 +48,14 @@ Europe, 20% Asia, 15% emerging markets"). PorxPy compares your
 portfolio against them and shows signed deviation bars — green for
 overweight, red for underweight — so you can see at a glance where
 you're off your plan.
+
+Targets come in two groups. **Exposure** — asset class, sector, region,
+currency — is measured by looking through your funds to what they
+actually hold. **Style** — market cap and equity style — is a
+classification of each fund as a whole, so a fund nobody has classified
+shows up as "unknown" rather than being quietly dropped from the
+denominator. Both groups are targetable; "unknown" is not, because it is
+a gap in the data rather than something you can aim for.
 
 ### Manage funds and portfolios
 
@@ -45,9 +66,12 @@ you're off your plan.
 - Upload full holdings CSVs or Excel files when the fund issuer
   publishes them (top-10 from Yahoo is often not enough for a real
   X-ray).
-- Override anything that's wrong at the source (asset class,
-  replication method, breakdown source) and the override sticks across
-  every portfolio that holds the fund.
+- Override anything that's wrong at the source — asset class,
+  replication method, breakdown source, TER, total net assets — and the
+  override sticks across every portfolio that holds the fund and
+  survives every refetch. Overrides are a view over the fetched data,
+  never a mutation of it, so clearing one restores the original value
+  without a round-trip.
 
 ### Handle messy real-world data
 
@@ -90,11 +114,15 @@ porxpy/
   resolver.py         Ticker variant generation and resolution chain
   breakdowns.py       Holdings roll-up → per-facet weighted breakdown
   targets.py          Target-vs-actual deviation computation
+  optimizer.py        Greedy portfolio design against exposure targets
+  trades.py           Atomic trade execution (cash ↔ fund positions)
   upload.py           Holdings file parsing, column mapping, enrichment
   utils.py            Cache I/O, portfolio data, coercion helpers
   resources.py        Reference data loading (countries, currencies, ...)
 fund_explorer.html    Single-file frontend (HTML + JS, no framework)
 resources/            Reference CSVs (shipped with the project)
+                      countries, currencies, sectors, regions,
+                      holdings + fund class definitions
 ```
 
 ### Data layout
@@ -102,7 +130,8 @@ resources/            Reference CSVs (shipped with the project)
 ```
 portfolios.json       Your portfolios (name, funds, shares, targets)
 settings.json         App-level settings
-overrides.json        Per-fund overrides, keyed by ISIN
+overrides.json        Per-fund overrides, keyed by ISIN, then by field
+                      ({value, source, ts, note} per assertion)
 isin_map.json         Cached ISIN → ticker resolutions (from OpenFIGI)
 cache/
   listings/<ticker>.json    Per-listing data (price history, profile)
@@ -204,7 +233,7 @@ You should see a startup banner:
 
 ```
 =======================================================
-  PorxPy  v0.20.5  (built 2026-05-29)
+  PorxPy  v0.33.8  (built 2026-07-26)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -246,6 +275,6 @@ There are no telemetry, analytics, or update checks.
 
 ## Version
 
-Current release: **0.20.5** (2026-05-29)
+Current release: **0.33.8** (2026-07-26)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

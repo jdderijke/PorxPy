@@ -46,6 +46,7 @@ from porxpy.config import (
     FUND_CLASS_FP,
     HOLDINGS_CLASS_FP,
     SECTORS_FP,
+    REGIONS_FP,
 )
 
 
@@ -133,6 +134,9 @@ RESOURCE_VERSIONS: dict[str, int] = {
     # v0.15.9: country_codes.csv now uses the versioned format with a
     # matches column, on equal footing with the other resource files.
     "countries":        0,
+    # v0.28.0: regions.csv — region + super-region vocabulary for
+    # name-derived fund focus.
+    "regions":          0,
 }
 
 
@@ -163,6 +167,22 @@ def _split_matches(s: str | None) -> list[str]:
     if not s:
         return []
     return [tok.strip() for tok in s.split("|") if tok.strip()]
+
+
+def _norm_phrase(s: str | None) -> str:
+    """Normalise a phrase for free-text matching against a fund name.
+
+    Lowercases, reduces every non-alphanumeric run to a single space, and
+    collapses whitespace — so the CSV entry ``"oil & gas"`` and the fund
+    name fragment ``"Oil & Gas"`` reduce to the same token, and the CSV
+    can stay in natural spelling. Both sides go through this.
+    """
+    if not s:
+        return ""
+    out = []
+    for ch in str(s).lower():
+        out.append(ch if ch.isalnum() else " ")
+    return " ".join("".join(out).split())
 
 
 def _normalise_key(s: str | None) -> str:
@@ -707,19 +727,43 @@ def list_fund_asset_classes() -> list[dict]:
 #   SECTOR_ALIASES   alternative spelling (lowercase) → canonical sector
 
 
-def _load_sectors() -> tuple[list[dict], dict[str, str]]:
+def _load_sectors() -> tuple[list[dict], dict[str, str], dict[str, str]]:
     """Load sectors.csv into the lookup structures.
 
+    Two vocabularies, deliberately separate (v0.31.0):
+
+    * ``matches`` → :data:`SECTOR_ALIASES`. Whatever spelling turns up in
+      an uploaded holdings row, coerced to a canonical sector. Built for
+      recall: it carries ``"other"``, ``"it"``, ``"cash"`` and a tail of
+      one-off spellings seen in real issuer files.
+    * ``style_match`` → :data:`SECTOR_STYLE_ALIASES`. Phrases that, found
+      in a *fund name*, mean the fund is built around that sector. Built
+      for precision.
+
+    Reusing one column for both jobs does not work, and the failure is not
+    hypothetical: ``"other"`` is a legitimate holdings alias for real
+    estate, so "MSCI World Ex Other Sectors" resolved to a property fund;
+    and ``"communication"`` is a legitimate holdings alias for technology,
+    so "MSCI World Communication Services" matched two sectors at once and
+    resolved to neither. The two vocabularies want opposite tolerances.
+
+    A blank ``style_match`` cell is normal — the canonical sector name is
+    always a match on its own, and for most rows that is enough. It is
+    also how a row opts out entirely: "cash and/or derivatives" is a
+    holdings residual bucket, not a thing a fund is *for*, and no fund
+    name will ever contain the phrase.
+
     Returns:
-        ``(rows, aliases)``. Empty if the file is missing.
+        ``(rows, aliases, style_aliases)``. Empty if the file is missing.
     """
     rows: list[dict] = []
     aliases: dict[str, str] = {}
+    style_aliases: dict[str, str] = {}
 
     if not SECTORS_FP.exists():
         print(f"[Resources] {SECTORS_FP.name} not found — sector "
               f"normalisation will be a no-op.")
-        return rows, aliases
+        return rows, aliases, style_aliases
 
     version, raw_rows = parse_versioned_csv(SECTORS_FP)
     RESOURCE_VERSIONS["sectors"] = version
@@ -732,6 +776,7 @@ def _load_sectors() -> tuple[list[dict], dict[str, str]]:
             "super_sector": (raw.get("super_sector") or "").strip().lower(),
             "description":  (raw.get("description")  or "").strip(),
             "matches":      _split_matches(raw.get("matches")),
+            "style_match":  _split_matches(raw.get("style_match")),
         }
         rows.append(row)
 
@@ -740,6 +785,13 @@ def _load_sectors() -> tuple[list[dict], dict[str, str]]:
             k = m.strip().lower()
             if k and k not in aliases:
                 aliases[k] = sec
+
+        # The canonical name is always its own style match; the column
+        # only adds to it.
+        for m in [sec, *row["style_match"]]:
+            k = _norm_phrase(m)
+            if k and k not in style_aliases:
+                style_aliases[k] = sec
 
     # Surface a present-but-unreadable file as a loud warning. A
     # silent empty list usually means the CSV's first column header
@@ -754,12 +806,13 @@ def _load_sectors() -> tuple[list[dict], dict[str, str]]:
               f"Header keys seen: {sorted(first.keys())!r}. "
               f"Expected a 'sector' column.")
 
-    return rows, aliases
+    return rows, aliases, style_aliases
 
 
-SECTORS_ROWS:   list[dict]
-SECTOR_ALIASES: dict[str, str]
-SECTORS_ROWS, SECTOR_ALIASES = _load_sectors()
+SECTORS_ROWS:         list[dict]
+SECTOR_ALIASES:       dict[str, str]
+SECTOR_STYLE_ALIASES: dict[str, str]
+SECTORS_ROWS, SECTOR_ALIASES, SECTOR_STYLE_ALIASES = _load_sectors()
 
 
 def resolve_sector(raw: str | None) -> str | None:
@@ -775,6 +828,155 @@ def resolve_sector(raw: str | None) -> str | None:
     if not raw:
         return None
     return SECTOR_ALIASES.get(raw.strip().lower())
+
+
+# ---------------------------------------------------------------------------
+# Regions and super regions (v0.28.0)
+# ---------------------------------------------------------------------------
+# regions.csv is region-keyed, one row per mstar_region plus one row per
+# super region. Two kinds in one file because a super region declares
+# nothing but its own aliases — membership is expressed the other way
+# round, by each region's ``super_regions`` cell.
+#
+# The alias column is named ``style_match``, matching sectors.csv. Unlike
+# sectors.csv there is no second, looser ``matches`` column here: nothing
+# normalises a free-text region the way uploaded holdings rows normalise
+# a free-text sector, so this file has only the one job.
+#
+# Scope note, because the name invites the wrong assumption: this
+# vocabulary exists ONLY to seed a fund's ``focus_type`` /
+# ``focus_detail`` from its name. The country/region breakdown facet is
+# built from MSTAR_TO_REGION (country_codes.csv) and does not consult
+# any of this. "MSCI Europe" getting ``focus_detail: europe`` says what
+# the fund is *for*; it says nothing about where its holdings sit, which
+# is the facet's job and is measured, not inferred from a name.
+#
+# Lookup tables:
+#   REGION_ROWS         ordered list of dicts (both kinds)
+#   REGION_KEYS         the mstar_region keys
+#   SUPER_REGION_KEYS   the super-region keys
+#   REGION_ALIASES      normalised style_match phrase → key (either kind)
+#   SUPER_REGION_MEMBERS  super key → set of member region keys
+#
+# There is deliberately no "global"/"world" entry. A global fund is not
+# focused on a region; it is the absence of a regional focus, which is
+# what ``focus_type: none`` already says.
+
+def _load_regions() -> tuple[list[dict], dict[str, str], dict[str, set]]:
+    """Load regions.csv into the region/super-region lookup structures.
+
+    Returns:
+        ``(rows, aliases, super_members)``. All empty if the file is
+        missing — name-derived focus then becomes a no-op, which is the
+        correct degradation: focus simply stays at its default.
+    """
+    rows: list[dict] = []
+    aliases: dict[str, str] = {}
+    super_members: dict[str, set] = {}
+
+    if not REGIONS_FP.exists():
+        print(f"[Resources] {REGIONS_FP.name} not found — name-derived "
+              f"fund focus will be a no-op.")
+        return rows, aliases, super_members
+
+    version, raw_rows = parse_versioned_csv(REGIONS_FP)
+    RESOURCE_VERSIONS["regions"] = version
+
+    for raw in raw_rows:
+        key = (raw.get("key") or "").strip()
+        if not key:
+            continue
+        kind = (raw.get("kind") or "region").strip().lower()
+        if kind not in ("region", "super"):
+            kind = "region"
+        row = {
+            "key":           key,
+            "kind":          kind,
+            "label":         (raw.get("label") or key).strip(),
+            "super_regions": _split_matches(raw.get("super_regions")),
+            "style_match":   _split_matches(raw.get("style_match")),
+        }
+        rows.append(row)
+
+        # The key itself is always an alias for itself.
+        for token in [key, *row["style_match"]]:
+            norm = _norm_phrase(token)
+            if norm and norm not in aliases:
+                aliases[norm] = key
+
+        if kind == "region":
+            for sup in row["super_regions"]:
+                super_members.setdefault(sup, set()).add(key)
+
+    if raw_rows and not rows:
+        first = raw_rows[0] if raw_rows else {}
+        print(f"[Resources] WARNING: {REGIONS_FP.name} parsed "
+              f"{len(raw_rows)} row(s) but yielded 0 regions. "
+              f"Header keys seen: {sorted(first.keys())!r}. "
+              f"Expected a 'key' column.")
+
+    return rows, aliases, super_members
+
+
+REGION_ROWS:          list[dict]
+REGION_ALIASES:       dict[str, str]
+SUPER_REGION_MEMBERS: dict[str, set]
+REGION_ROWS, REGION_ALIASES, SUPER_REGION_MEMBERS = _load_regions()
+
+REGION_KEYS:       tuple[str, ...] = tuple(
+    r["key"] for r in REGION_ROWS if r["kind"] == "region")
+SUPER_REGION_KEYS: tuple[str, ...] = tuple(
+    r["key"] for r in REGION_ROWS if r["kind"] == "super")
+
+
+def focus_region_vocabulary() -> tuple[str, ...]:
+    """Every legal ``focus_detail`` value when ``focus_type`` is "region".
+
+    Regions and super regions both qualify: a fund can be built for
+    Japan (a region) or for Europe (a super region spanning developed
+    Europe, emerging Europe and the UK), and both are real answers to
+    "what is this fund for".
+    """
+    return REGION_KEYS + SUPER_REGION_KEYS
+
+
+def focus_detail_vocabulary(context: dict | None = None):
+    """Allowed ``focus_detail`` values for a given ``focus_type``.
+
+    The one cross-field rule in the override registry: what counts as a
+    valid detail depends entirely on the type being set alongside it.
+
+    Args:
+        context: The other field values in the same edit. Only
+            ``focus_type`` is consulted.
+
+    Returns:
+        A tuple of allowed values, or ``None`` meaning "free text is
+        valid here" — which is the honest answer for a thematic focus,
+        since nothing can enumerate "Artificial Intelligence" ahead of
+        time. ``focus_type: none`` allows only the empty string.
+    """
+    ftype = ((context or {}).get("focus_type") or "none").strip().lower()
+    if ftype == "region":
+        return focus_region_vocabulary()
+    if ftype == "sector":
+        return tuple(r["sector"] for r in SECTORS_ROWS)
+    if ftype == "thematic":
+        return None
+    return ("",)
+
+
+def resolve_region_alias(raw: str | None) -> str | None:
+    """Coerce any spelling of a region or super region to its key.
+
+    Args:
+        raw: Free-form region string (e.g. ``"Emerging Markets"`` →
+            ``"emerging"``, ``"Nikkei"`` → ``"japan"``).
+
+    Returns:
+        Canonical key, or ``None`` if no match.
+    """
+    return REGION_ALIASES.get(_norm_phrase(raw))
 
 
 # ---------------------------------------------------------------------------
@@ -865,14 +1067,20 @@ def reload_holdings_class_resources() -> tuple[int, int, int]:
     global HOLDINGS_CLASS_ROWS, HOLDINGS_CLASS_INDEX
     global HOLDINGS_SUB_ALIASES, HOLDINGS_AC_ALIASES
     global FUND_CLASS_ROWS, FUND_CLASS_ALIASES
-    global SECTORS_ROWS, SECTOR_ALIASES
+    global SECTORS_ROWS, SECTOR_ALIASES, SECTOR_STYLE_ALIASES
     global CURRENCY_ROWS, CURRENCY_ALIASES
+    global REGION_ROWS, REGION_ALIASES, SUPER_REGION_MEMBERS
+    global REGION_KEYS, SUPER_REGION_KEYS
 
     (HOLDINGS_CLASS_ROWS, HOLDINGS_CLASS_INDEX,
      HOLDINGS_SUB_ALIASES, HOLDINGS_AC_ALIASES) = _load_holdings_classes()
     (FUND_CLASS_ROWS, FUND_CLASS_ALIASES) = _load_fund_classes()
-    SECTORS_ROWS,   SECTOR_ALIASES   = _load_sectors()
+    SECTORS_ROWS, SECTOR_ALIASES, SECTOR_STYLE_ALIASES = _load_sectors()
     CURRENCY_ROWS,  CURRENCY_ALIASES = _load_currencies()
+    (REGION_ROWS, REGION_ALIASES, SUPER_REGION_MEMBERS) = _load_regions()
+    REGION_KEYS = tuple(r["key"] for r in REGION_ROWS if r["kind"] == "region")
+    SUPER_REGION_KEYS = tuple(r["key"] for r in REGION_ROWS
+                              if r["kind"] == "super")
     return (len(HOLDINGS_CLASS_ROWS), len(SECTORS_ROWS), len(CURRENCY_ROWS))
 
 

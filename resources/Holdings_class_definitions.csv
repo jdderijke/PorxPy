@@ -1,4 +1,4 @@
-Version=6
+Version=7
 asset_class,asset_class_desc,sub_class,sub_class_desc,matches
 equity,Shares of publicly traded companies,shares,Regular equity,
 bond,"Bonds, deposit accnts, money market",corporate bond,,
@@ -22,4 +22,5 @@ other,"Futures, Crypto, Financial constructs",index swap,for synthetic replicati
 other,"Futures, Crypto, Financial constructs",credit default swap,,
 other,"Futures, Crypto, Financial constructs",buy-back agreements,,
 other,"Futures, Crypto, Financial constructs",debts/claims,,
+other,"Futures, Crypto, Financial constructs",ForEx constructs,"Exchange Rate hedge, forwards, swaps and options",
 other,"Futures, Crypto, Financial constructs",unknown,,undefined

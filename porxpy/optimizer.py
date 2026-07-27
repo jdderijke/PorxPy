@@ -379,6 +379,7 @@ def optimise_portfolio(candidates: list[dict],
               "name":           "Vanguard FTSE All-World",
               "price_base":     102.34,   # per share, in BASE currency
               "current_shares": 0.0,      # what's held right now
+              "include":        True,     # may the optimiser trade it?
               "exposures": {              # look-through, fractions 0–1
                   "asset_class": {"equity": 1.0},
                   "country":     {"northAmerica": 0.62, ...},
@@ -388,6 +389,15 @@ def optimise_portfolio(candidates: list[dict],
 
             Funds with a missing or non-positive ``price_base`` are dropped
             (we cannot size a trade without a price).
+
+            ``include`` defaults to True. A held fund with ``include``
+            False is *frozen*: its exposure still counts toward every
+            target and toward the portfolio denominator, but it is never
+            bought, sold or selected, and its value is not part of the
+            budget. An unheld fund with ``include`` False is simply not
+            a candidate. Freezing constrains what is reachable — that is
+            the point of it — so ``reason`` says so when a target is
+            missed and frozen holdings are in play.
 
         targets: ``{facet: {bucket: fraction}}``. Sparse — a facet with no
             targets is ignored entirely. Fractions, not percents.
@@ -429,8 +439,9 @@ def optimise_portfolio(candidates: list[dict],
                                 "current_shares", "target_shares"}, ...],
               "positions":    [{"ticker", "name", "weight",
                                 "target_shares", "amount_base"}, ...],
-              "cash_weight":  float,
+              "cash_weight":  float,        # of the WHOLE portfolio
               "cash_after":   float,
+              "frozen":       {"share", "base", "tickers"},
               "selected":     [ticker, ...],   # in selection order
               "achieved":     {facet: {bucket: fraction}},
               "deviation":    {facet: {bucket: achieved - target}},
@@ -449,26 +460,63 @@ def optimise_portfolio(candidates: list[dict],
     # Drop unpriceable candidates — a fund we can't price is a fund we
     # can't trade, and silently weighting it would produce a design the
     # user cannot actually execute.
-    usable = [c for c in (candidates or [])
-              if float(c.get("price_base") or 0.0) > 0.0]
+    priceable = [c for c in (candidates or [])
+                 if float(c.get("price_base") or 0.0) > 0.0]
 
     if not any((targets or {}).values()):
         return {"ok": False, "reason": "no targets set",
                 "trades": [], "positions": [], "selected": []}
 
-    # Total investable = what the funds are worth now + cash. Rebalancing
-    # can sell as well as buy, so held value is part of the budget.
+    # ---- Frozen positions (v0.30.0) -------------------------------------
+    # A fund with ``include`` False is excluded from the optimiser's
+    # *decisions*, not from the portfolio. That distinction is the whole
+    # point of the flag, and getting it wrong in either direction gives a
+    # wrong answer:
+    #
+    #   * Dropping it entirely would optimise a portfolio the user does
+    #     not have — the exposure is real and still dilutes every target.
+    #   * Treating it as tradeable would let the optimiser sell the very
+    #     position the user marked as not-to-be-touched.
+    #
+    # So it contributes a fixed baseline to the achieved exposure, its
+    # value is removed from the tradeable budget, and it is never bought,
+    # sold or selected. A held position with no shares is not frozen in
+    # any meaningful sense — there is nothing to freeze — so it is simply
+    # dropped rather than carried as a zero-weight constraint.
+    usable, frozen = [], []
+    for c in priceable:
+        if c.get("include", True):
+            usable.append(c)
+        elif float(c.get("current_shares") or 0.0) > 0.0:
+            frozen.append(c)
+
+    # Total investable = every fund's current worth + cash. Rebalancing
+    # can sell as well as buy, so held value is part of the budget —
+    # except for the frozen part, which is held value we may not touch.
     held_base = sum(float(c.get("current_shares") or 0.0)
                     * float(c.get("price_base") or 0.0)
                     for c in usable)
-    total_base = held_base + float(cash_base or 0.0)
+    frozen_base = sum(float(c.get("current_shares") or 0.0)
+                      * float(c.get("price_base") or 0.0)
+                      for c in frozen)
+    total_base = held_base + frozen_base + float(cash_base or 0.0)
+    free_base  = held_base + float(cash_base or 0.0)
 
     if total_base <= 0:
         return {"ok": False, "reason": "nothing to invest (no cash, no holdings)",
                 "trades": [], "positions": [], "selected": []}
     if not usable:
-        return {"ok": False, "reason": "no priceable candidate funds",
+        return {"ok": False,
+                "reason": ("no priceable candidate funds" if not frozen else
+                           "every priceable fund is excluded from the "
+                           "optimiser (incl. unchecked)"),
                 "trades": [], "positions": [], "selected": []}
+    if free_base <= 0:
+        return {"ok": False,
+                "reason": "nothing tradeable — all value sits in excluded funds",
+                "trades": [], "positions": [], "selected": []}
+
+    frozen_share = frozen_base / total_base if total_base > 0 else 0.0
 
     # Normalise the tolerance to a per-facet dict.
     if isinstance(max_error, (int, float)):
@@ -486,22 +534,64 @@ def optimise_portfolio(candidates: list[dict],
         lo = min(inv.values()) if inv else 1.0
         facet_weights = {f: v / lo for f, v in inv.items()}
 
+    # Frozen funds get columns too, so their exposure is expressed in
+    # exactly the same row space and scaling as everything else. They are
+    # simply never selectable: `_greedy_select` is told there are only
+    # `len(usable)` candidates, and `usable` comes first in the column
+    # order.
     A, t, rows, A_raw, t_raw, mask, row_facet = _build_facet_matrix(
-        usable, cash_exposure, targets, facet_weights)
+        usable + frozen, cash_exposure, targets, facet_weights)
     if A.shape[0] == 0:
         return {"ok": False, "reason": "no targets set",
                 "trades": [], "positions": [], "selected": []}
 
     cash_idx = A.shape[1] - 1
 
+    # ---- Reduce to the free sub-problem ---------------------------------
+    # The frozen funds contribute a fixed vector f of whole-portfolio
+    # exposure. The free part carries the rest, and its own weights sum to
+    # 1 within itself, so:
+    #
+    #     f + (1 - phi) * (A_free @ w) = t        with phi = frozen share
+    #     =>          A_free @ w = (t - f) / (1 - phi)
+    #
+    # Components of the reduced target can go negative — that happens when
+    # the frozen holdings already overshoot a bucket. Least squares on the
+    # simplex handles it correctly: it reads as "put as little here as
+    # you can", which is exactly right, since the overshoot cannot be
+    # sold off.
+    phi  = frozen_share
+    free = max(1.0 - phi, 1e-9)
+    if frozen:
+        fz_w = np.zeros(A.shape[1])
+        for k, c in enumerate(frozen):
+            col = len(usable) + k
+            fz_w[col] = (float(c.get("current_shares") or 0.0)
+                         * float(c.get("price_base") or 0.0)) / total_base
+        f_scaled = A     @ fz_w
+        f_raw    = A_raw @ fz_w
+        t_free     = (t     - f_scaled) / free
+        t_raw_free = (t_raw - f_raw)    / free
+        # The user's tolerance is in whole-portfolio points, but the
+        # solver now measures residuals inside the free sub-portfolio,
+        # where the same money is a larger fraction. Divide the tolerance
+        # by the same factor so the stopping test means what it meant
+        # before.
+        tol_free = {fct: v / free for fct, v in tol.items()}
+    else:
+        f_scaled = np.zeros(A.shape[0])
+        f_raw    = np.zeros(A_raw.shape[0]) if A_raw.shape[0] else np.zeros(0)
+        t_free, t_raw_free, tol_free = t, t_raw, tol
+
     # 1. Choose a small fund set — adding funds until the fit is good
     #    enough, not until it stops improving.
     sel, _devs, target_met = _greedy_select(
-        A, t, A_raw, t_raw, mask, row_facet, len(usable), max_funds, tol)
+        A, t_free, A_raw, t_raw_free, mask, row_facet,
+        len(usable), max_funds, tol_free)
 
     # 2. Solve weights on that set (+ cash).
     cols = sel + [cash_idx]
-    w, _ = _solve_weights(A[:, cols], t)
+    w, _ = _solve_weights(A[:, cols], t_free)
 
     # 3. Prune dust and re-solve, so the pruned weight is redistributed
     #    properly rather than just dropped on the floor.
@@ -509,12 +599,17 @@ def optimise_portfolio(candidates: list[dict],
     if len(keep) < len(sel):
         sel = [sel[i] for i in keep]
         cols = sel + [cash_idx]
-        w, _ = _solve_weights(A[:, cols], t)
+        w, _ = _solve_weights(A[:, cols], t_free)
 
+    # These are weights *within the free sub-portfolio*, so they sum to 1
+    # across the selected funds plus cash — not across the whole
+    # portfolio, which also contains the frozen part.
     fund_w = {sel[i]: float(w[i]) for i in range(len(sel))}
     cash_w = float(w[-1])
 
-    # 4. Weights → target shares → trades.
+    # 4. Weights → target shares → trades. Money is sized against the free
+    #    budget; the reported weight is of the whole portfolio, because
+    #    that is the number the user compares against a target.
     trades, positions = [], []
     for j, c in enumerate(usable):
         weight   = fund_w.get(j, 0.0)
@@ -522,7 +617,7 @@ def optimise_portfolio(candidates: list[dict],
             weight = 0.0
         price    = float(c["price_base"])
         cur      = float(c.get("current_shares") or 0.0)
-        amount   = weight * total_base
+        amount   = weight * free_base
         tgt_sh   = amount / price
         delta    = tgt_sh - cur
 
@@ -530,7 +625,7 @@ def optimise_portfolio(candidates: list[dict],
             positions.append({
                 "ticker":        c["ticker"],
                 "name":          c.get("name") or c["ticker"],
-                "weight":        round(weight, 6),
+                "weight":        round(weight * free, 6),
                 "target_shares": round(tgt_sh, 6),
                 "amount_base":   round(amount, 2),
             })
@@ -550,16 +645,41 @@ def optimise_portfolio(candidates: list[dict],
             "target_shares":  round(tgt_sh, 6),
         })
 
+    # Frozen holdings are part of the proposed portfolio — they are just
+    # not part of the proposal. Listing them keeps the position table
+    # reconciling to 100% instead of quietly summing to (1 - phi), and
+    # the flag lets the UI grey them out.
+    for c in frozen:
+        amt = (float(c.get("current_shares") or 0.0)
+               * float(c.get("price_base") or 0.0))
+        positions.append({
+            "ticker":        c["ticker"],
+            "name":          c.get("name") or c["ticker"],
+            "weight":        round(amt / total_base, 6) if total_base else 0.0,
+            "target_shares": round(float(c.get("current_shares") or 0.0), 6),
+            "amount_base":   round(amt, 2),
+            "frozen":        True,
+        })
+
     positions.sort(key=lambda p: -p["weight"])
     trades.sort(key=lambda x: -abs(x["amount_base"]))
 
     # 5. Diagnostics: what exposure did we actually achieve, and where are
     #    we still off? This is what makes the result trustworthy rather
     #    than a black box — the user can see the residual error per bucket.
+    # Whole-portfolio weights: the free design scaled back down by
+    # (1 - phi), plus the frozen part at its actual size. Everything from
+    # here on is reported against the portfolio the user will actually
+    # hold, not against the slice the solver was allowed to move.
     w_full = np.zeros(A.shape[1])
     for j, weight in fund_w.items():
-        w_full[j] = weight
-    w_full[cash_idx] = cash_w
+        w_full[j] = weight * free
+    w_full[cash_idx] = cash_w * free
+    for k, c in enumerate(frozen):
+        w_full[len(usable) + k] = (
+            (float(c.get("current_shares") or 0.0)
+             * float(c.get("price_base") or 0.0)) / total_base
+            if total_base else 0.0)
 
     achieved: dict[str, dict[str, float]] = {}
     deviation: dict[str, dict[str, float]] = {}
@@ -570,11 +690,13 @@ def optimise_portfolio(candidates: list[dict],
         for key in sorted(tgt.keys()):
             got = sum(w_full[j] * float(((c.get("exposures") or {})
                                          .get(facet) or {}).get(key, 0.0))
-                      for j, c in enumerate(usable))
-            got += cash_w * float(((cash_exposure or {}).get(facet) or {})
-                                  .get(key, 0.0))
-            achieved[facet][key]  = round(got, 6)
-            deviation[facet][key] = round(got - float(tgt[key]), 6)
+                      for j, c in enumerate(usable + frozen))
+            got += w_full[cash_idx] * float(
+                ((cash_exposure or {}).get(facet) or {}).get(key, 0.0))
+            # float() because `got` is a numpy scalar here, and the
+            # Flask JSON encoder does not know what to do with one.
+            achieved[facet][key]  = round(float(got), 6)
+            deviation[facet][key] = round(float(got) - float(tgt[key]), 6)
 
     # Errors, per facet, in real percentage points on the buckets the user
     # actually targeted — the same numbers the deviation table shows, so the
@@ -609,6 +731,15 @@ def optimise_portfolio(candidates: list[dict],
             reason = (f"Not reachable with the funds available — {detail}. "
                       f"Adding more funds does not help: these targets need "
                       f"exposure none of your candidate funds have.")
+        # Say so when the user's own exclusions are part of the reason.
+        # Otherwise "not reachable" reads as an optimiser failure, when in
+        # fact a chunk of the portfolio was placed off-limits by hand and
+        # the remaining free money cannot compensate for it.
+        if frozen:
+            reason += (f" Note that {phi*100:.0f}% of the portfolio is held "
+                       f"in {len(frozen)} fund(s) excluded from the optimiser "
+                       f"(incl. unchecked), whose exposure counts toward "
+                       f"these targets but cannot be traded.")
 
     return {
         "ok":          True,
@@ -617,11 +748,16 @@ def optimise_portfolio(candidates: list[dict],
         "total_base":  round(total_base, 2),
         "trades":      trades,
         "positions":   positions,
-        "cash_weight": round(cash_w, 6),
-        "cash_after":  round(cash_w * total_base, 2),
+        "cash_weight": round(cash_w * free, 6),
+        "cash_after":  round(cash_w * free_base, 2),
         "selected":    [usable[j]["ticker"] for j in sel],
         "achieved":    achieved,
         "deviation":   deviation,
         "facets":      facet_report,   # {facet: {max_dev, tolerance, met}}
+        "frozen": {
+            "share":   round(phi, 6),
+            "base":    round(frozen_base, 2),
+            "tickers": [c["ticker"] for c in frozen],
+        },
         "max_dev":     round(max(devs.values()), 6) if devs else 0.0,
     }

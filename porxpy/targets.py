@@ -16,6 +16,15 @@ Design summary (per the design discussion captured in
 * The country facet is region-keyed at the target level. The portfolio
   rollup is at the mstar_country level, so this module aggregates the
   rollup up to mstar_region before comparing.
+* v0.28.0 adds the two metadata facets (``market_cap``, ``style_box``)
+  to the same machinery. They arrive from the rollup already reshaped
+  into one-hot distributions, so nothing here special-cases them. Two
+  of their values — ``unknown`` and ``n/a`` — cannot carry a target
+  (:data:`porxpy.config.META_FACET_TARGETABLE`), so they always land in
+  the untargeted summary. That is the intended reading: an unclassified
+  slice of the portfolio is a fact worth showing, but it is not a miss
+  against a target the user never set, and renormalising it away would
+  make a half-classified portfolio look fully classified.
 * Cash positions (``portfolio.cash_positions``) are already folded
   into the Fund/ETF-level rollup as synthetic enriched entries by the
   caller (``api_portfolio_view``); they show up as ``asset_class:cash``
@@ -29,7 +38,7 @@ Design summary (per the design discussion captured in
 
 from __future__ import annotations
 
-from porxpy.config import BREAKDOWN_FACETS
+from porxpy.config import TARGET_FACETS
 
 
 def _to_fraction(pct: float) -> float:
@@ -125,9 +134,11 @@ def compute_target_deviations(fundlevel_breakdowns: dict,
                     "untargeted_items":  [{"key": str, "actual": fraction}, ...],
                     "target_sum_pct":    fraction,  # sum of targets for this facet
                 },
-                "sector":   {...},
-                "country":  {...},   # items keyed by mstar_region
-                "currency": {...},
+                "sector":     {...},
+                "country":    {...},   # items keyed by mstar_region
+                "currency":   {...},
+                "market_cap": {...},
+                "style_box":  {...},
               },
               "any_targets": bool,
             }
@@ -149,7 +160,7 @@ def compute_target_deviations(fundlevel_breakdowns: dict,
     out_facets: dict[str, dict] = {}
     any_targets = False
 
-    for facet in BREAKDOWN_FACETS:
+    for facet in TARGET_FACETS:
         # Pull the relevant item list, aggregating country → region.
         raw_items = (fundlevel_breakdowns or {}).get(facet) or []
         if facet == "country":

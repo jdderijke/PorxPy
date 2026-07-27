@@ -30,6 +30,9 @@ import pandas as pd
 import yfinance as yf
 
 from porxpy.config import (
+    BREAKDOWN_FACETS,
+    DEFAULT_FUND_STRUCTURE,
+    DEFAULT_INCLUDE_IN_OPTIMIZER,
     ENRICHABLE_FIELDS,
     HISTORY_PERIOD_FALLBACKS,
     PRICE_HISTORY_FULL_REFRESH_DAYS,
@@ -707,6 +710,155 @@ def _compute_trailing_yield_from_dividends(ticker, info: dict) -> float | None:
     return round(total / price * 100, 4)
 
 
+def _norm_metric_label(s: str) -> str:
+    """Reduce a metric label to a comparison key (lowercase alphanumerics)."""
+    return "".join(ch for ch in str(s).lower() if ch.isalnum())
+
+
+# Accepted spellings per metric, normalised.
+#
+# yfinance indexes equity_holdings by *display label*, and those are not
+# mechanical transforms of Yahoo's API keys — "priceToBook" is shown as
+# "Price/Book" (the "to" vanishes) and "threeYearEarningsGrowth" as
+# "3 Year Earnings Growth" (word becomes digit). Normalising case and
+# punctuation is therefore not enough to bridge them, so each metric
+# lists every spelling we accept.
+#
+# "medianMarketCap" ↔ "Median Market Cap" happens to normalise to the
+# same string, which is why an earlier version appeared to work for
+# market cap while silently failing for both style signals.
+_METRIC_ALIASES: dict[str, tuple[str, ...]] = {
+    "medianMarketCap": ("medianmarketcap",),
+    "priceToBook": ("pricetobook", "pricebook", "pb"),
+    "priceToEarnings": ("pricetoearnings", "priceearnings", "pe"),
+    "threeYearEarningsGrowth": ("threeyearearningsgrowth",
+                                "3yearearningsgrowth"),
+}
+
+
+def _equity_metric(ticker: yf.Ticker, key: str):
+    """Read one equity-holdings metric as ``(fund_value, category_average)``.
+
+    yfinance returns ``funds_data.equity_holdings`` as a frame indexed by
+    *display label* — ``"Median Market Cap"``, ``"Price/Book"``,
+    ``"3 Year Earnings Growth"`` — not by Yahoo's camelCase API keys, with
+    columns ``[<symbol>, "Category Average"]``.
+
+    We match on a normalised form of the label so either convention
+    resolves. Hardcoding the display strings would work today and break
+    silently the moment yfinance relabels a row — which is exactly how the
+    first cut of this failed: every lookup missed and every fund came back
+    "unknown", with no error to show for it.
+
+    Returns:
+        ``(value, category_average)``, either of which may be ``None``.
+    """
+    try:
+        eh = ticker.funds_data.equity_holdings
+        if eh is None or eh.empty:
+            return None, None
+        wanted = set(_METRIC_ALIASES.get(key, ()))
+        wanted.add(_norm_metric_label(key))
+        for label in eh.index:
+            if _norm_metric_label(label) not in wanted:
+                continue
+            row = eh.loc[label]
+            vals = []
+            for v in (row.tolist() if hasattr(row, "tolist") else [row]):
+                try:
+                    f = float(v)
+                except (TypeError, ValueError):
+                    vals.append(None)
+                    continue
+                vals.append(f if math.isfinite(f) else None)
+            fund_val = vals[0] if vals else None
+            cat_val  = vals[1] if len(vals) > 1 else None
+            return fund_val, cat_val
+    except Exception as exc:
+        print(f"[EquityMetric] {key}: {exc}")
+    return None, None
+
+
+def detect_market_cap(ticker: yf.Ticker) -> str:
+    """Classify a fund into a market-cap bucket from Yahoo's median.
+
+    Reads ``funds_data.equity_holdings["medianMarketCap"]`` — the median
+    market cap of the fund's *equity* sleeve — and buckets it against
+    :data:`porxpy.config.MARKET_CAP_BUCKETS`.
+
+    Note what this is and isn't. It is a single scalar, so the resulting
+    classification is one-hot: a fund is "large" or "mid", never 70/30.
+    A large-cap fund does of course hold some mid caps; that nuance is
+    lost until per-holding market caps arrive via the holdings-enrichment
+    path, at which point this can become a real distribution the way
+    asset_allocation already is.
+
+    Returns:
+        One of ``"large"``, ``"mid"``, ``"small"``, ``"unknown"``.
+        Bond and cash funds have no equity sleeve and return ``"unknown"``
+        — correctly, since market cap is an equity concept.
+    """
+    from porxpy.config import MARKET_CAP_BUCKETS
+    val, _cat = _equity_metric(ticker, "medianMarketCap")
+    if val is None:
+        return "unknown"
+    if not val or val <= 0 or not math.isfinite(val):
+        return "unknown"
+    for bucket, floor in MARKET_CAP_BUCKETS:
+        if val >= floor:
+            return bucket
+    return "unknown"
+
+
+def detect_style_box(ticker: yf.Ticker, profile: dict) -> str:
+    """Classify a fund on the value–blend–growth axis.
+
+    Yahoo publishes no style-box field, so this reads the fund's equity
+    metrics *relative to its own category average* — which Yahoo helpfully
+    supplies alongside each value as a ``…Cat`` row. Relative comparison
+    matters: a P/B of 3.0 is growthy for a value fund and unremarkable for
+    a tech fund, so an absolute threshold would misclassify whole
+    categories.
+
+    Two signals, both classic style-box axes:
+
+    * **Price/Book** — growth stocks trade at a premium to book value.
+    * **3-year earnings growth** — growth companies grow earnings faster.
+
+    Each votes growth or value if it is more than 10% away from the
+    category average; agreement gives that answer, disagreement or
+    silence gives ``"blend"``. The dividend yield we already extract is
+    deliberately *not* used as a third signal: high yield correlates with
+    value, but a distributing share class of a growth index would then be
+    mislabelled, and share-class policy has nothing to do with the
+    underlying holdings.
+
+    Returns:
+        ``"growth"``, ``"blend"``, ``"value"``, or ``"unknown"`` when the
+        fund has no equity metrics at all (bond and cash funds).
+    """
+    votes = []
+    for key in ("priceToBook", "threeYearEarningsGrowth"):
+        val, cat = _equity_metric(ticker, key)
+        if val is None or not cat or cat <= 0:
+            continue
+        ratio = val / cat
+        if ratio >= 1.10:
+            votes.append("growth")
+        elif ratio <= 0.90:
+            votes.append("value")
+        else:
+            votes.append("blend")
+
+    if not votes:
+        return "unknown"
+    if all(v == "growth" for v in votes):
+        return "growth"
+    if all(v == "value" for v in votes):
+        return "value"
+    return "blend"
+
+
 def extract_profile(ticker: yf.Ticker) -> dict:
     """Build the fund profile dict from Yahoo metadata.
 
@@ -740,25 +892,117 @@ def extract_profile(ticker: yf.Ticker) -> dict:
 
     ops = extract_fund_operations(ticker)
 
-    expense_pct = None
-    if ops["expenseRatioRaw"] is not None:
-        try: expense_pct = round(float(ops["expenseRatioRaw"]) * 100, 4)
-        except Exception: pass
-    if expense_pct is None:
-        v = info.get("netExpenseRatio")
-        if v is not None:
-            try: expense_pct = round(float(v), 4)
-            except Exception: pass
+    # ---- Fees and size ---------------------------------------------------
+    # Yahoo carries these in two unrelated places, and which one is
+    # populated depends on the listing rather than on anything sensible.
+    # The quoteSummary "fundProfile" module (-> fund_operations) is the
+    # richer source but is empty for a large share of European UCITS
+    # ETFs; the flat `.info` blob often has the same numbers under
+    # different keys for exactly those listings. So each figure walks a
+    # chain rather than trusting one source.
+    #
+    # Units differ per key, which is where the bugs live:
+    #   fund_operations.annualReportExpenseRatio -> fraction (0.002)
+    #   info.netExpenseRatio                     -> already percent (0.20)
+    #   info.annualReportExpenseRatio            -> fraction (0.002)
+    # _pct_from() takes the expected unit explicitly rather than guessing
+    # by magnitude — a 0.20% TER and a 0.20 fraction are indistinguishable
+    # by size, so magnitude sniffing silently mangles cheap trackers.
 
-    turnover_pct = None
-    if ops["turnoverRaw"] is not None:
-        try: turnover_pct = round(float(ops["turnoverRaw"]) * 100, 2)
-        except Exception: pass
+    def _num(v):
+        """float(v) or None, without raising on Yahoo's odd sentinels."""
+        if v is None:
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return None if (f != f or f in (float("inf"), float("-inf"))) else f
+
+    def _pct_from(v, *, is_fraction: bool):
+        """Positive percent from a source, or None.
+
+        Zero is treated as ABSENT, not as a measurement. Yahoo returns
+        0.0 for "we have no fee data" on a large share of European UCITS
+        ETFs rather than omitting the key — IE00BDVPNG13 and many like
+        it report a 0.00% TER and 0.0% turnover that no such fund has.
+
+        Genuinely zero-fee funds do exist (Fidelity's ZERO index funds),
+        so this rule does cost something. It is still the right default:
+        a spurious 0.00% is worse than a blank, because a cost-aware
+        optimiser reads it as "this fund is free" and prefers it over
+        every real competitor. A blank merely says we don't know. And
+        the loss is recoverable — a holder of a genuinely free fund can
+        assert 0.0 through the override store, which is exactly the kind
+        of "the source is wrong about this one fund" case it exists for.
+        """
+        f = _num(v)
+        if f is None or f <= 0:
+            return None
+        return round(f * 100, 4) if is_fraction else round(f, 4)
+
+    # Each chain walks on past a zero rather than stopping at it, so a
+    # source that reports 0.0 cannot mask a later source that has the
+    # real number.
+    expense_pct = (_pct_from(ops["expenseRatioRaw"], is_fraction=True)
+                   or _pct_from(info.get("netExpenseRatio"), is_fraction=False)
+                   or _pct_from(info.get("annualReportExpenseRatio"),
+                                is_fraction=True))
+
+    # Turnover keeps the documented fraction convention (0.03 -> 3%). Two
+    # caveats worth knowing before trusting it:
+    #   * Unlike total net assets, the category column for turnover comes
+    #     back <NA>, so the fund column does appear to be fund-specific.
+    #   * The unit is NOT independently confirmed. VDIV.DE reports 1.155,
+    #     which is 115.5% under the documented convention and 1.155% if
+    #     the value is already a percent. Both are defensible for a
+    #     dividend index tracker and nothing in the response settles it.
+    # Left on the documented reading rather than guessed at again; check
+    # one fund's KIID or annual report against the tile to confirm.
+    turnover_pct = (_pct_from(ops["turnoverRaw"], is_fraction=True)
+                    or _pct_from(info.get("annualHoldingsTurnover"),
+                                 is_fraction=True))
+
+    # ---- Total assets ----------------------------------------------------
+    # fund_operations.totalNetAssets is NOT this fund's size. It is the
+    # Morningstar CATEGORY aggregate, quoted in millions, and Yahoo
+    # returns the same number in the fund column and the category-average
+    # column. VDIV.DE makes it unmissable once you look:
+    #
+    #   Total Net Assets    84138.9100        84138.91
+    #                       ^ VDIV.DE         ^ Category Average
+    #
+    # 84,138.91m is ~EUR 84bn across the category; the fund itself holds
+    # ~EUR 8.13bn. That is the source of every wrong figure in 0.33.1
+    # through 0.33.6, and of two failed attempts to rescue it by scaling.
+    # There was no scale factor to find, because it was never this fund's
+    # number.
+    #
+    # info.netAssets and info.totalAssets ARE fund-level and in plain
+    # currency units — 8,130,660,900 EUR for VDIV.DE. So they are the
+    # whole chain now, and fund_operations is not consulted for size at
+    # all. It stays the primary source for the expense ratio, where the
+    # category column comes back <NA> and the fund column is genuinely
+    # fund-specific (0.0038 -> 0.38%, matching the issuer exactly).
+    #
+    # The floor stays as a guard rather than a heuristic: it catches a
+    # figure that cannot describe a real fund instead of publishing a
+    # confident "0.08M". It should no longer fire on normal listings.
+    TOTAL_ASSETS_FLOOR = 1e6
 
     total_assets = None
-    if ops["totalNetAssets"] is not None:
-        try: total_assets = float(ops["totalNetAssets"])
-        except Exception: pass
+    tna_source   = None
+    for cand, label in ((info.get("netAssets"), "info.netAssets"),
+                        (info.get("totalAssets"), "info.totalAssets")):
+        f = _num(cand)
+        if f is None or f <= 0:
+            continue
+        if f < TOTAL_ASSETS_FLOOR:
+            print(f"[Profile] {label} total assets {f:g} below plausibility "
+                  f"floor; treating as unknown")
+            continue
+        total_assets, tna_source = f, label
+        break
 
     keys_from_info = [
         "longName", "shortName", "symbol", "currency", "exchange",
@@ -834,13 +1078,25 @@ def extract_profile(ticker: yf.Ticker) -> dict:
     # category just like the rest of the profile.
     profile["distribution"] = detect_distribution(profile, info)
 
+    # v0.27.0 — market-cap bucket and style box. Both are fund metadata in
+    # the same sense asset_class is: a single classification, derived with
+    # a user override, and also targetable.
+    profile["market_cap"] = detect_market_cap(ticker)
+    profile["style_box"]  = detect_style_box(ticker, profile)
+
     if overview.get("family"):       profile["fundFamily"] = overview["family"]
     if overview.get("legalType"):    profile["legalType"]  = overview["legalType"]
     if overview.get("categoryName"): profile["category"]   = overview["categoryName"]
 
     if expense_pct is not None:  profile["expenseRatioPct"] = expense_pct
     if turnover_pct is not None: profile["turnoverPct"]     = turnover_pct
-    if total_assets is not None: profile["totalNetAssets"]  = total_assets
+    if total_assets is not None:
+        profile["totalNetAssets"]    = total_assets
+        # Which Yahoo key supplied it. The three disagree in both value
+        # and apparent unit, so "where did this come from" is not a
+        # curiosity — it is the first question to ask when a figure looks
+        # wrong, and it was unanswerable before.
+        profile["totalNetAssetsSrc"] = tna_source
 
     isin = extract_isin_from_ticker(ticker, info)
     if isin:
@@ -996,8 +1252,225 @@ def _quotetype_to_asset_class(quote_type: str | None) -> str:
     return ""
 
 
-def _seed_fund_structure(profile: dict) -> dict:
-    """Derive Yahoo-seeded defaults for the fund "Structure" block.
+# ---------------------------------------------------------------------------
+# Name-derived fund metadata (v0.28.0)
+# ---------------------------------------------------------------------------
+# Yahoo is silent on style box for most funds, silent on market cap for
+# anything without an equity sleeve, and silent on focus always. But
+# issuers encode all three in the fund's own name, because the name is
+# marketing copy and these are exactly the things being marketed:
+# "iShares MSCI Europe Small Cap UCITS ETF" is telling you it is a
+# European small-cap fund in so many words.
+#
+# This is a weaker signal than Yahoo's numbers, so it fills gaps only —
+# never overrides a Yahoo-derived value, let alone a user override — and
+# it is tagged with its own provenance ("name") so the meta tile can say
+# where the guess came from rather than passing it off as data.
+
+# Market-cap words. Order matters only for readability; a name matching
+# two different buckets resolves to "mixed", not to whichever came first.
+_NAME_MARKET_CAP: tuple[tuple[str, str], ...] = (
+    ("large cap",   "large"),
+    ("largecap",    "large"),
+    ("large",       "large"),
+    ("mid cap",     "mid"),
+    ("midcap",      "mid"),
+    ("mid",         "mid"),
+    ("small cap",   "small"),
+    ("smallcap",    "small"),
+    ("small",       "small"),
+    ("smid",        "mixed"),      # small+mid in one word
+    ("total market", "mixed"),
+    ("all cap",     "mixed"),
+    ("allcap",      "mixed"),
+)
+
+# Style-box words. Dividend and yield both signal value: a fund built to
+# harvest income is buying cash-generative companies priced on today's
+# earnings, which is the value end of the axis by definition.
+_NAME_STYLE_BOX: tuple[tuple[str, str], ...] = (
+    ("dividend",    "value"),
+    ("yield",       "value"),
+    ("income",      "value"),
+    ("value",       "value"),
+    ("growth",      "growth"),
+    ("momentum",    "growth"),
+)
+
+
+def _name_tokens(name: str) -> str:
+    """Normalise a fund name for phrase matching.
+
+    Lowercases and reduces every non-alphanumeric run to a single space,
+    then pads with a leading and trailing space so a caller can test for
+    ``" small "`` and get word-boundary semantics for free — without
+    which "smaller" reads as small-cap and "enlarged" as large-cap.
+    """
+    from porxpy.resources import _norm_phrase
+    return f" {_norm_phrase(name)} "
+
+
+def _match_phrases(padded: str,
+                   table: tuple[tuple[str, str], ...]) -> set[str]:
+    """Collect the distinct values whose phrase appears in ``padded``."""
+    return {value for phrase, value in table
+            if f" {phrase} " in padded}
+
+
+def _derive_focus_from_name(padded: str) -> tuple[str, str]:
+    """Derive ``(focus_type, focus_detail)`` from a normalised fund name.
+
+    Sector beats region, per the design call: a sector fund inside a
+    region ("MSCI Europe Information Technology") is a sector fund, and
+    the region is the qualifier rather than the point.
+
+    Multiple hits within one vocabulary mean the name is describing
+    something we have no single value for, so we decline rather than
+    guess — with one exception. Several *region* hits that all sit
+    inside one super region collapse to that super region, because that
+    is precisely what super regions are for: "Europe ex UK" hits both
+    ``europe`` and ``unitedKingdom``, and ``europe`` is the honest
+    answer.
+
+    Returns:
+        ``("sector"|"region"|"none", detail)``. ``("none", "")`` when
+        nothing matches or the matches are irreconcilable.
+    """
+    from porxpy.resources import (
+        SECTOR_STYLE_ALIASES, REGION_ALIASES, SUPER_REGION_MEMBERS,
+        SUPER_REGION_KEYS,
+    )
+
+    # --- Sector first ---------------------------------------------------
+    # SECTOR_STYLE_ALIASES, not SECTOR_ALIASES: the latter is the
+    # holdings-normalisation vocabulary and is far too permissive for
+    # free text. See _load_sectors for what went wrong when this used it.
+    sectors = {canon for alias, canon in SECTOR_STYLE_ALIASES.items()
+               if alias and f" {alias} " in padded}
+    if len(sectors) == 1:
+        return "sector", sectors.pop()
+    if len(sectors) > 1:
+        return "none", ""
+
+    # --- Region ---------------------------------------------------------
+    regions = {key for alias, key in REGION_ALIASES.items()
+               if alias and f" {alias} " in padded}
+    if not regions:
+        return "none", ""
+    if len(regions) == 1:
+        return "region", regions.pop()
+
+    supers = regions & set(SUPER_REGION_KEYS)
+    for sup in supers:
+        members = SUPER_REGION_MEMBERS.get(sup, set())
+        # Every other hit must be this super region's own member, or
+        # the super region itself. "Emerging Markets Asia" hits two
+        # super regions with no containment either way — decline.
+        if regions - {sup} <= members:
+            return "region", sup
+    return "none", ""
+
+
+def derive_structure_from_name(name: str | None) -> dict:
+    """Derive what a fund's *name* says about its metadata.
+
+    Pure function of the name — no Yahoo call, no I/O beyond the
+    already-loaded resource tables. Returns only the fields it can
+    actually derive, so the caller can merge it as a gap-filler without
+    having to know which keys count as "no opinion".
+
+    Args:
+        name: The fund's long name (``profile["longName"]``).
+
+    Returns:
+        A dict with any of ``market_cap``, ``style_box``, ``focus_type``,
+        ``focus_detail``. Keys the name says nothing about are absent.
+        ``focus_type`` and ``focus_detail`` always travel together.
+    """
+    padded = _name_tokens(name or "")
+    if not padded.strip():
+        return {}
+
+    out: dict[str, str] = {}
+
+    caps = _match_phrases(padded, _NAME_MARKET_CAP)
+    if len(caps) == 1:
+        out["market_cap"] = caps.pop()
+    elif len(caps) > 1:
+        # "Small & Mid Cap" names a fund that is genuinely both. That is
+        # what "mixed" is for, and it beats throwing the signal away.
+        out["market_cap"] = "mixed"
+
+    boxes = _match_phrases(padded, _NAME_STYLE_BOX)
+    if len(boxes) == 1:
+        out["style_box"] = boxes.pop()
+    # Two conflicting style words ("Dividend Growth") are a real
+    # ambiguity with no blend-shaped answer available from a name, so
+    # leave it for Yahoo's numbers or the user.
+
+    focus_type, focus_detail = _derive_focus_from_name(padded)
+    if focus_type != "none":
+        out["focus_type"]   = focus_type
+        out["focus_detail"] = focus_detail
+
+    return out
+
+
+def _merge_fund_structure(seed: dict, stored: dict | None,
+                          seed_origins: dict | None = None):
+    """Merge stored assertions over the derived seed, per field.
+
+    v0.33.0: ``stored`` is now a sparse map of field → override envelope,
+    straight from the per-field store. A field is present exactly when
+    somebody asserted it, so the merge is a plain presence test.
+
+    That is the point of the sparse store. Previously the override was a
+    dense eight-key block, so a stored "unknown" could not be told apart
+    from a field the user had never touched, and a neutral-value table
+    existed to guess. Guessing wrongly was the v0.27 bug: saving the Edit
+    dialog once pinned every field to a snapshot of Yahoo, and no amount
+    of re-fetching could dislodge it. With presence as the signal, that
+    bug is no longer expressible.
+
+    Args:
+        seed: The derived structure block.
+        stored: ``{field: {"value", "source", ...}}`` envelopes for the
+            structure fields, from :func:`porxpy.utils.overrides_for`.
+        seed_origins: Per-field provenance of the seed.
+
+    Returns:
+        ``(effective, sources)`` where ``sources`` maps each field to the
+        asserting source (``"user"``, ``"justetf"``) or, where nothing was
+        asserted, the seed's own origin (``"yahoo"``, ``"name"``,
+        ``"default"``) — so the UI can caption each row honestly instead
+        of labelling the whole block by whether *any* override exists.
+    """
+    from porxpy.utils import normalise_fund_structure
+    seed = normalise_fund_structure(seed or {})
+    stored = stored or {}
+
+    merged, sources = {}, {}
+    for field, seed_val in seed.items():
+        env = stored.get(field)
+        if isinstance(env, dict) and "value" in env:
+            merged[field]  = env["value"]
+            sources[field] = env.get("source") or "user"
+        else:
+            merged[field]  = seed_val
+            # v0.28.0: the seed is no longer uniformly Yahoo-derived —
+            # some fields are inferred from the fund's name. Caption the
+            # row with where the value actually came from, so an
+            # inferred value isn't presented as a measured one.
+            sources[field] = (seed_origins or {}).get(field, "yahoo")
+
+    # Re-normalise so the structure/replication coupling is re-applied to
+    # the blended result, not just to each source separately.
+    return normalise_fund_structure(merged), sources
+
+
+def _seed_fund_structure(profile: dict,
+                         asset_class: str | None = None) -> tuple[dict, dict]:
+    """Derive seeded defaults for the fund "Structure" block.
 
     Yahoo's ``quoteType`` (and, as a fallback, ``legalType``) tells us
     whether a fund is an ETF or a plain open-ended fund — but Yahoo
@@ -1019,10 +1492,16 @@ def _seed_fund_structure(profile: dict) -> dict:
 
     Args:
         profile: The fund profile dict from :func:`extract_profile`.
+        asset_class: The fund's detected asset class (``"equity"``,
+            ``"fixed_income"``, ``"cash"``, ...), used by the v0.28.0
+            gap-fillers below. Optional: omitting it costs only those
+            two inferences.
 
     Returns:
-        A normalised ``{structure, replication, style}`` dict suitable
-        as the default before any user override is applied.
+        ``(seed, origins)``. ``seed`` is a normalised structure block;
+        ``origins`` maps each field to ``"yahoo"`` (a real signal from
+        Yahoo, or derived from one), ``"name"`` (inferred from the fund
+        name) or ``"default"`` (nothing known — the neutral value).
     """
     qt = (profile.get("quoteType") or "").strip().upper()
     lt = (profile.get("legalType") or "").strip().upper()
@@ -1041,12 +1520,61 @@ def _seed_fund_structure(profile: dict) -> dict:
     # detector returns "accumulating" / "distributing" / "unknown";
     # those are exactly the values normalise_fund_structure validates.
     distribution = (profile.get("distribution") or "unknown")
-    return normalise_fund_structure({
+
+    seed = {
         "structure":    structure,
         "replication":  replication,
         "style":        style,
         "distribution": distribution,
-    })
+        # v0.27.0 metadata. Derived in extract_profile (which has the
+        # Ticker) and carried on the profile so the seed stays a pure
+        # function of it.
+        "market_cap":   profile.get("market_cap") or "unknown",
+        "style_box":    profile.get("style_box")  or "unknown",
+        "focus_type":   "none",
+        "focus_detail": "",
+    }
+    origins = {k: ("default" if v in ("unknown", "none", "") else "yahoo")
+               for k, v in seed.items()}
+
+    # ---- v0.28.0 gap-fillers -------------------------------------------
+    # Each of these only speaks where Yahoo was silent, and each records
+    # its own provenance so the meta tile can distinguish a measured
+    # value from an inferred one.
+
+    ac = (asset_class or "").strip().lower()
+
+    # Cash has no market cap — not "we don't know it", but "the concept
+    # doesn't apply". Bonds are deliberately NOT included: a bond issuer
+    # has a market cap, we just rarely learn it from Yahoo, and that is
+    # what "unknown" already says.
+    if seed["market_cap"] == "unknown" and ac == "cash":
+        seed["market_cap"] = "n/a"
+        origins["market_cap"] = "yahoo"
+
+    # A fixed-income fund's return comes from coupons rather than
+    # capital appreciation. That is the value end of the style axis on
+    # any reading of it. Money-market funds land here for the same
+    # reason, and it keeps a cash *fund* consistent with the cash
+    # *position* the rollup synthesises.
+    if seed["style_box"] == "unknown" and ac in ("fixed_income", "cash"):
+        seed["style_box"] = "value"
+        origins["style_box"] = "yahoo"
+
+    # Last: what the issuer wrote on the tin. Weakest of the three, so
+    # it fills only what is still empty.
+    from_name = derive_structure_from_name(profile.get("longName")
+                                           or profile.get("shortName"))
+    for field, value in from_name.items():
+        if seed.get(field) in ("unknown", "none", ""):
+            seed[field] = value
+            origins[field] = "name"
+    # focus_detail travels with focus_type: if the type came from the
+    # name, so did the detail, even though "" is its neutral value.
+    if origins.get("focus_type") == "name":
+        origins["focus_detail"] = "name"
+
+    return normalise_fund_structure(seed), origins
 
 
 # justETF states replication as one of a few phrasings; map each to our
@@ -2234,8 +2762,8 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
     # live, and we deliberately override it again here. Applying it before
     # the holdings work below means enriched/top-10 holdings rows inherit
     # the overridden class via ``default_holding_asset_class`` too.
-    from porxpy.utils import asset_class_override_get   # local: avoid cycle
-    ac_override = asset_class_override_get(isin)
+    from porxpy.utils import override_get               # local: avoid cycle
+    ac_override = override_get(isin, "asset_class")
     if asset_class is None:
         asset_class = {"class": "other", "confidence": "low", "signals": []}
     asset_class["detected_class"] = asset_class.get("class")
@@ -2516,9 +3044,15 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
     # forced refresh.
     # ──────────────────────────────────────────────────────────────────
     from porxpy.utils import (   # local: avoid cycle
-        breakdown_overrides_get, uploaded_breakdowns_get,
+        override_get, uploaded_breakdowns_get,
     )
-    bd_overrides    = breakdown_overrides_get(isin)
+    # Per-facet card source. One registry field per facet now, so this
+    # rebuilds the {facet: source} map build_fund_breakdowns expects.
+    bd_overrides    = {
+        f: override_get(isin, f"breakdown_source.{f}")
+        for f in BREAKDOWN_FACETS
+        if override_get(isin, f"breakdown_source.{f}")
+    }
     uploaded_facets = uploaded_breakdowns_get(isin)
     fund_breakdowns = build_fund_breakdowns(
         breakdowns, sectors or [], asset_allocation or [],
@@ -2540,18 +3074,21 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
     # ``fund_structure_is_override`` — whether a stored override is in
     #                             force (vs pure Yahoo seed).
     # ──────────────────────────────────────────────────────────────────
-    from porxpy.utils import fund_structure_get, normalise_fund_structure
-    fund_structure_seed = _seed_fund_structure(profile or {})
-    _fs_override        = fund_structure_get(isin)
-    if _fs_override:
-        # A stored override may only specify some attributes; merge it
-        # over the seed so unspecified attributes keep the Yahoo value.
-        fund_structure = normalise_fund_structure({**fund_structure_seed,
-                                                   **_fs_override})
-        fund_structure_is_override = True
-    else:
-        fund_structure = fund_structure_seed
-        fund_structure_is_override = False
+    from porxpy.utils import (overrides_for, apply_overrides,
+                              normalise_fund_structure)
+    fund_structure_seed, _fs_seed_origins = _seed_fund_structure(
+        profile or {}, (asset_class or {}).get("class"))
+    # The structure override is now one registry field per attribute
+    # rather than one dense block. Collecting them back into a dict keeps
+    # _merge_fund_structure's shape, and — because the store is sparse —
+    # every key present here is a genuine assertion, which is what that
+    # function always wanted and previously had to infer.
+    _fs_override        = {f: e for f, e in overrides_for(isin).items()
+                           if f in DEFAULT_FUND_STRUCTURE}
+    fund_structure, fund_structure_sources = _merge_fund_structure(
+        fund_structure_seed, _fs_override, _fs_seed_origins)
+    fund_structure_is_override = any(v == "user"
+                                     for v in fund_structure_sources.values())
 
     # NOTE: ``sectors`` is intentionally NOT overridden with the
     # look-through rollup here, even when full holdings are present.
@@ -2610,12 +3147,18 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
     # profile cache file exists on disk. This is the truth-of-state for
     # the pre-loaded list (no separate flag — the file's presence IS
     # the marker). The frontend uses this to drive the Save button.
-    from porxpy.utils import listing_exists as _listing_exists
+    from porxpy.utils import (listing_exists as _listing_exists,
+                              override_get)
     saved = _listing_exists(yf_sym)
+    # v0.27.0 — optimiser opt-out, ISIN-keyed. Surfaced on every fund
+    # response so the fund page and the pre-loaded list can both show it.
+    include_opt = bool(override_get(isin, "include_in_optimizer",
+                                    DEFAULT_INCLUDE_IN_OPTIMIZER))
 
-    return {
+    payload = {
         "ticker":        yf_sym,
         "saved":         saved,
+        "include_in_optimizer": include_opt,
         "resolved_mic":  resolved_mic,
         "resolution":    note,
         "profile":       profile or {},
@@ -2653,6 +3196,9 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
         # flags whether a stored override is in force.
         "fund_structure":            fund_structure,
         "fund_structure_seed":       fund_structure_seed,
+        # Per-field provenance: {field: "user"|"yahoo"}. Lets the tile
+        # caption each row for where its value actually came from.
+        "fund_structure_sources":    fund_structure_sources,
         "fund_structure_is_override": fund_structure_is_override,
         "asset_class":     asset_class,
         "price_history":   price_history or [],
@@ -2668,3 +3214,22 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
                   if not holdings_rows else "")
         ),
     }
+
+    # v0.33.0 — write every *targeted* override into the assembled payload.
+    #
+    # Deliberately last, and deliberately generic: TER, total net assets
+    # and the structure fields all land here by walking the registry, so
+    # adding an overridable field is a registry entry rather than another
+    # bespoke application site. Fields without a target path
+    # (breakdown sources, include_in_optimizer) were already consumed
+    # above by the code that actually needs them.
+    #
+    # Note this runs on the assembled response, not on the cached blob:
+    # the override is a view over Yahoo's data, never a mutation of it,
+    # so clearing the override restores Yahoo's value with no refetch.
+    # override_seed carries the derived value each override displaced, so
+    # the Edit dialog can show what Yahoo said alongside the user's number
+    # and can restore it on revert without a refetch.
+    payload["override_sources"], payload["override_seed"] = \
+        apply_overrides(isin, payload)
+    return payload

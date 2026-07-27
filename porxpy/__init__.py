@@ -13,7 +13,7 @@ Version policy (informal semver):
 """
 
 NAME       = "PorxPy"
-VERSION    = "0.26.0"
-BUILD_DATE = "2026-06-17"
+VERSION    = "0.33.8"
+BUILD_DATE = "2026-07-26"
 
 __all__ = ["NAME", "VERSION", "BUILD_DATE"]

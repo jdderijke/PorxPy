@@ -31,6 +31,9 @@ from porxpy.config import (
     ASSET_CLASSES,
     BASE_DIR,
     BREAKDOWN_FACETS,
+    DEFAULT_FUND_STRUCTURE,
+    DEFAULT_INCLUDE_IN_OPTIMIZER,
+    OVERRIDABLE_FIELDS,
     BREAKDOWN_SOURCES,
     CACHE_CATEGORIES,
     CACHE_DIR,
@@ -74,11 +77,6 @@ from porxpy.breakdowns import (
 )
 from porxpy.utils import (
     age_days,
-    asset_class_override_delete,
-    asset_class_override_put,
-    breakdown_override_delete,
-    breakdown_override_put,
-    breakdown_overrides_get,
     cache_purge,
     cache_read,
     cache_write,
@@ -86,11 +84,13 @@ from porxpy.utils import (
     delete_portfolio,
     find_portfolio,
     fx_rate,
-    fund_structure_delete,
-    fund_structure_get,
-    fund_structure_put,
     fx_history,
     holdings_status_from_cache,
+    apply_overrides,
+    override_delete,
+    override_get,
+    override_put,
+    overrides_for,
     HOLDINGS_ROW_FIELDS,
     listing_identity_get,
     listing_identity_lookup_isin,
@@ -148,6 +148,19 @@ def create_app() -> Flask:
         """
         return jsonify({"name": NAME, "version": VERSION, "build_date": BUILD_DATE})
 
+
+    # The per-facet card source is one registry field per facet now
+    # ("breakdown_source.sector"). build_fund_breakdowns still wants the
+    # {facet: source} map, so rebuild it here rather than teaching that
+    # pure function about the override store.
+    def _bd_sources(isin: str) -> dict:
+        out = {}
+        for f in BREAKDOWN_FACETS:
+            v = override_get(isin, f"breakdown_source.{f}")
+            if v:
+                out[f] = v
+        return out
+
     @app.route("/api/regions")
     def api_regions() -> Response:
         """Return the country→region reference map for the frontend.
@@ -160,12 +173,26 @@ def create_app() -> Flask:
 
         Returns:
             ``{"country_to_region": {mstar_country: mstar_region, ...},
-            "regions": [<distinct mstar_region>, ...]}``.
+            "regions": [<distinct mstar_region>, ...],
+            "focus_regions": [{"key","label","kind"}, ...]}``.
+
+        The two region lists are deliberately different things and are
+        not interchangeable. ``regions`` is the *measured* taxonomy —
+        the distinct values the country breakdown regroups into, derived
+        from country_codes.csv. ``focus_regions`` is the *declared*
+        vocabulary for a fund's ``focus_detail``, from regions.csv, and
+        additionally contains super regions ("europe" spanning developed
+        Europe, emerging Europe and the UK). A fund can be built for
+        Europe; no holding is ever located in "europe".
         """
-        from porxpy.resources import MSTAR_TO_REGION
+        from porxpy.resources import MSTAR_TO_REGION, REGION_ROWS
         return jsonify({
             "country_to_region": MSTAR_TO_REGION,
             "regions":           sorted(set(MSTAR_TO_REGION.values())),
+            "focus_regions":     [
+                {"key": r["key"], "label": r["label"], "kind": r["kind"]}
+                for r in REGION_ROWS
+            ],
         })
 
     # -----------------------------------------------------------------------
@@ -753,21 +780,50 @@ def create_app() -> Flask:
                     continue
                 fx = rate
 
-            # Look-through exposure, already override-aware.
+            # Look-through exposure, per facet.
             #
-            # The country facet needs a level shift. Fund breakdowns are
-            # keyed by mstar_country ("germany", "france"), but the Targets
-            # tab stores country targets by mstar_region ("europeDeveloped",
-            # "northAmerica") — see porxpy.targets, which does the same
-            # aggregation for the deviation report. Without this the target
-            # key "europeDeveloped" is compared against exposure keys that
-            # never contain it, so the country facet contributes no matching
-            # exposure at all and can never be fitted, however many funds
-            # the solver tries.
-            bks = data.get("fund_breakdowns") or {}
+            # Source preference: the holdings roll-up whenever it exists,
+            # falling back to the fund's resolved breakdown card (issuer or
+            # user upload) otherwise.
+            #
+            # This deliberately does NOT follow the per-card source override.
+            # That override is a *display* choice — you may well want the
+            # issuer's official view on the fund page. But for optimisation
+            # the funds must be described on a comparable basis, and mixing
+            # sources silently biases the result: a fund whose issuer data
+            # sums to 0.85 is charged 15% into the "other" bucket, so it
+            # loses to an identical fund described by a look-through summing
+            # to 1.0 — not for being a worse fund, but for being worse
+            # described.
+            #
+            # Look-through is the sounder basis in both directions: it can't
+            # understate (a shortfall is genuinely un-held) and it can't
+            # overstate (issuer sector weights may be normalised within the
+            # equity sleeve, which would flatter a mixed fund into claiming
+            # sector exposure it doesn't have).
+            #
+            # The country facet also needs a level shift: fund breakdowns are
+            # keyed by mstar_country ("germany"), but the Targets tab stores
+            # country targets by mstar_region ("europeDeveloped") — see
+            # porxpy.targets, which does the same aggregation for the
+            # deviation report. Without it the target key is compared against
+            # exposure keys that never contain it, so the facet contributes
+            # no matching exposure and can never be fitted.
+            bks   = data.get("fund_breakdowns") or {}
+            lookt = data.get("holdings_breakdowns") or {}
             exposures = {}
+            fund_src  = {}
             for facet in targets:
-                items = (bks.get(facet) or {}).get("items") or []
+                items = [it for it in (lookt.get(facet) or [])
+                         if isinstance(it, dict) and it.get("key")]
+                src = "holdings"
+                if not items:
+                    items = (bks.get(facet) or {}).get("items") or []
+                    src = (bks.get(facet) or {}).get("source") or "fund"
+                if not items:
+                    src = "none"
+                fund_src[facet] = src
+
                 blk: dict[str, float] = {}
                 for it in items:
                     key = (it.get("key") or "").strip()
@@ -787,7 +843,14 @@ def create_app() -> Flask:
                 "name":           (data.get("profile") or {}).get("longName") or tk,
                 "price_base":     price * fx,
                 "current_shares": held.get(tk, 0.0),
+                # Per-fund opt-out. Unchecked funds are frozen rather
+                # than removed: a held position the user has ring-fenced
+                # still shapes the portfolio's exposure, so the optimiser
+                # has to design around it, not pretend it isn't there.
+                "include":        bool(override_get(
+                    isin, "include_in_optimizer", True)),
                 "exposures":      exposures,
+                "sources":        fund_src,   # {facet: holdings|fund|upload|none}
             })
 
         # Cash: aggregate to base currency, and take its exposure from the
@@ -842,15 +905,33 @@ def create_app() -> Flask:
         # never help, when the real fix is to switch that card to the
         # holdings look-through.
         facet_warnings = []
+        # Which source each facet's data came from, across the universe.
+        # Surfaced because a mixed run is worth knowing about: issuer and
+        # look-through data are not always on the same basis, so a fund can
+        # win or lose on how it's described rather than what it holds.
+        source_mix: dict[str, dict[str, int]] = {}
         for facet in targets:
+            mix: dict[str, int] = {}
+            for c in candidates:
+                s = (c.get("sources") or {}).get(facet, "none")
+                mix[s] = mix.get(s, 0) + 1
+            source_mix[facet] = mix
+
             total = sum(sum((c["exposures"].get(facet) or {}).values())
                         for c in candidates)
             if total <= 1e-9:
                 facet_warnings.append(
                     f"No {facet} exposure data on any candidate fund — the "
-                    f"{facet} targets cannot be fitted. Set that fund's "
-                    f"{facet} breakdown card to 'holdings' (look-through), "
-                    f"or upload holdings for the funds that lack it.")
+                    f"{facet} targets cannot be fitted. Upload holdings for "
+                    f"these funds so a look-through is available.")
+            elif mix.get("none"):
+                # These funds aren't excluded — they're treated as 100%
+                # "other" for this facet, so they can still serve the
+                # untargeted remainder. But they can never help hit a
+                # targeted bucket, which is worth saying out loud.
+                facet_warnings.append(
+                    f"{mix['none']} fund(s) have no {facet} data — they can "
+                    f"only be used for the untargeted part of {facet}.")
 
         result = optimise_portfolio(
             candidates, targets, cash_total, cash_exp,
@@ -869,6 +950,7 @@ def create_app() -> Flask:
         result["skipped"]         = skipped
         result["cash_before"]     = round(cash_total, 2)
         result["facet_warnings"]  = facet_warnings
+        result["source_mix"]      = source_mix
         return jsonify(result)
 
     @app.route("/api/portfolios/<pid>/trades", methods=["POST"])
@@ -1147,6 +1229,35 @@ def create_app() -> Flask:
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 404
         return jsonify({"targets": persisted})
+
+    @app.route("/api/targets/meta/<facet>", methods=["GET"])
+    def api_targets_meta(facet: str) -> Response:
+        """Return the targetable values for a metadata facet.
+
+        The meta facets (``market_cap``, ``style_box``) have a closed,
+        short vocabulary defined in config rather than in a resource
+        CSV, and not all of it can carry a target: ``unknown`` is a data
+        gap and ``n/a`` restates the cash target already set on
+        asset_class. Both still appear as buckets on the X-ray card and
+        in the deviation report's untargeted summary — they are just not
+        things a user can aim at, so the editor must not offer them.
+
+        Returns:
+            ``{values: [{"key": v, "label": display}, ...]}``, or a 404
+            for a facet that is not a metadata facet.
+        """
+        from porxpy.config import META_FACET_TARGETABLE
+        allowed = META_FACET_TARGETABLE.get(facet)
+        if allowed is None:
+            return jsonify({"error": f"not a metadata facet: {facet}"}), 404
+        labels = {
+            "large": "Large cap", "mid": "Mid cap", "small": "Small cap",
+            "mixed": "Mixed",
+            "growth": "Growth", "blend": "Blend", "value": "Value",
+        }
+        return jsonify({"values": [
+            {"key": v, "label": labels.get(v, v)} for v in allowed
+        ]})
 
     @app.route("/api/targets/regions", methods=["GET"])
     def api_targets_regions() -> Response:
@@ -2412,6 +2523,14 @@ def create_app() -> Flask:
                 "fund_structure":        fs_for_fund,
                 "categories":            cats,
                 "has_isin":              bool(isin_v),
+                # v0.32.0 — drives the "incl" column. ISIN-keyed like the
+                # rest of the fund-level metadata, so both listings of a
+                # dual-listed fund answer the same way; a listing with no
+                # ISIN on record has nothing to key on and reports the
+                # default.
+                "include_in_optimizer":  (bool(override_get(
+                                              isin_v, "include_in_optimizer", True))
+                                          if isin_v else True),
                 "holdings_status":       holdings_status_from_cache(isin_v) if isin_v else {},
                 "portfolios":            ticker_portfolios.get(ticker, []),
             })
@@ -3075,7 +3194,7 @@ def create_app() -> Flask:
         patch_blob       = cache_read(isin, "sectors")
         issuer_sectors   = (patch_blob.get("sectors") or {}).get("value") or []
         issuer_alloc     = (patch_blob.get("asset_allocation") or {}).get("value") or []
-        bd_overrides     = breakdown_overrides_get(isin)
+        bd_overrides     = _bd_sources(isin)
         uploaded_facets  = uploaded_breakdowns_get(isin)
         fund_breakdowns  = build_fund_breakdowns(
             holdings_breakdowns, issuer_sectors, issuer_alloc,
@@ -3190,7 +3309,7 @@ def create_app() -> Flask:
         patch_blob       = cache_read(isin, "sectors")
         issuer_sectors   = (patch_blob.get("sectors") or {}).get("value") or []
         issuer_alloc     = (patch_blob.get("asset_allocation") or {}).get("value") or []
-        bd_overrides     = breakdown_overrides_get(isin)
+        bd_overrides     = _bd_sources(isin)
         uploaded_facets  = uploaded_breakdowns_get(isin)
         fund_breakdowns  = build_fund_breakdowns(
             holdings_breakdowns, issuer_sectors, issuer_alloc,
@@ -3211,6 +3330,103 @@ def create_app() -> Flask:
     # -----------------------------------------------------------------------
     # Per-fund asset class — set / clear the override
     # -----------------------------------------------------------------------
+    @app.route("/api/funds/<ticker>/include_in_optimizer", methods=["PUT"])
+    def api_fund_include_in_optimizer(ticker: str) -> Response:
+        """Toggle whether a fund is offered to the optimiser.
+
+        ISIN-keyed, so excluding a fund excludes every listing of it —
+        two listings of the same fund are the same investment decision.
+
+        Body::
+
+            {"include": true|false}
+        """
+        isin = listing_identity_lookup_isin(ticker)
+        if not isin:
+            return jsonify({"error": f"no cached identity for {ticker} — "
+                                     f"load and save the fund first"}), 404
+
+        body = request.get_json(force=True, silent=True) or {}
+        if "include" not in body:
+            return jsonify({"error": "body must contain 'include'"}), 400
+
+        # Sparse store: asserting the default is the same as having no
+        # opinion, so it withdraws the assertion rather than writing one.
+        want = bool(body["include"])
+        if want == DEFAULT_INCLUDE_IN_OPTIMIZER:
+            override_delete(isin, "include_in_optimizer")
+        else:
+            override_put(isin, "include_in_optimizer", want)
+        return jsonify({"ticker": ticker.upper(), "isin": isin,
+                        "include_in_optimizer": want})
+
+    @app.route("/api/funds/<ticker>/override/<field>",
+               methods=["PUT", "DELETE"])
+    def api_fund_override(ticker: str, field: str) -> Response:
+        """Assert or withdraw one overridable field for a fund.
+
+        The generic route into the per-field override store. Fields whose
+        edit needs a richer response keep their own endpoint — flipping a
+        breakdown card's source hands back the rebuilt cards, and saving
+        the Structure block hands back the merged block — but a plain
+        scalar like TER needs none of that, and adding one to the registry
+        should not mean adding an endpoint.
+
+        ``PUT``    — body ``{"value": ..., "note": "..."}``
+        ``DELETE`` — withdraws the assertion, reverting to the derived
+                     value. There is no stored value meaning "unset", so
+                     deletion is the whole operation.
+
+        Returns:
+            ``{ticker, isin, field, value, source}``; ``value`` is None
+            after a withdrawal.
+        """
+        if field not in OVERRIDABLE_FIELDS:
+            return jsonify({"error": f"not an overridable field: {field}"}), 404
+
+        isin = listing_identity_lookup_isin(ticker)
+        if not isin:
+            return jsonify({"error": f"no identity recorded for {ticker!r}; "
+                                     "refetch the fund first"}), 404
+
+        if request.method == "DELETE":
+            cleared = override_delete(isin, field)
+            return jsonify({"ticker": ticker, "isin": isin, "field": field,
+                            "value": None, "cleared": cleared})
+
+        body = request.get_json(force=True, silent=True) or {}
+        if "value" not in body:
+            return jsonify({"error": "body must contain 'value'"}), 400
+        try:
+            env = override_put(isin, field, body["value"],
+                               note=body.get("note") or "")
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"ticker": ticker, "isin": isin, "field": field,
+                        "value": env["value"], "source": env["source"]})
+
+    @app.route("/api/funds/<ticker>/overrides", methods=["GET"])
+    def api_fund_overrides(ticker: str) -> Response:
+        """Every assertion stored for a fund, plus the registry.
+
+        The registry travels with the data so the Edit dialog can build
+        its inputs — type, bounds, unit, label — without a second
+        vocabulary of its own that could drift from the server's.
+        """
+        isin = listing_identity_lookup_isin(ticker)
+        if not isin:
+            return jsonify({"error": f"no identity recorded for {ticker!r}; "
+                                     "refetch the fund first"}), 404
+        return jsonify({
+            "ticker":    ticker,
+            "isin":      isin,
+            "overrides": overrides_for(isin),
+            "fields":    {f: {k: v for k, v in spec.items()
+                              if k in ("type", "vocab", "min", "max",
+                                       "unit", "label")}
+                          for f, spec in OVERRIDABLE_FIELDS.items()},
+        })
+
     @app.route("/api/funds/<ticker>/asset_class", methods=["PUT", "DELETE"])
     def api_fund_asset_class(ticker: str) -> Response:
         """Set or clear the asset-class override for a fund.
@@ -3239,7 +3455,7 @@ def create_app() -> Flask:
                                      "refetch the fund first"}), 404
 
         if request.method == "DELETE":
-            cleared = asset_class_override_delete(isin)
+            cleared = override_delete(isin, "asset_class")
             return jsonify({"ticker": ticker, "asset_class": None,
                             "cleared": cleared})
 
@@ -3247,7 +3463,7 @@ def create_app() -> Flask:
         ac   = body.get("asset_class")
         if ac not in ASSET_CLASSES:
             return jsonify({"error": f"asset_class must be one of {ASSET_CLASSES}"}), 400
-        asset_class_override_put(isin, ac)
+        override_put(isin, "asset_class", ac)
         return jsonify({"ticker": ticker, "asset_class": ac})
 
     # -----------------------------------------------------------------------
@@ -3290,12 +3506,12 @@ def create_app() -> Flask:
                                      "refetch the fund first"}), 404
 
         if request.method == "DELETE":
-            breakdown_override_delete(isin, facet)
+            override_delete(isin, f"breakdown_source.{facet}")
             return jsonify({
                 "ticker":    ticker,
                 "facet":     facet,
                 "source":    "fund",
-                "overrides": breakdown_overrides_get(isin),
+                "overrides": _bd_sources(isin),
             })
 
         body   = request.get_json(force=True, silent=True) or {}
@@ -3303,12 +3519,16 @@ def create_app() -> Flask:
         if source not in BREAKDOWN_SOURCES:
             return jsonify(
                 {"error": f"source must be one of {list(BREAKDOWN_SOURCES)}"}), 400
-        breakdown_override_put(isin, facet, source)
+        # "fund" is the default, so selecting it withdraws the override.
+        if source == "fund":
+            override_delete(isin, f"breakdown_source.{facet}")
+        else:
+            override_put(isin, f"breakdown_source.{facet}", source)
         return jsonify({
             "ticker":    ticker,
             "facet":     facet,
             "source":    source,
-            "overrides": breakdown_overrides_get(isin),
+            "overrides": _bd_sources(isin),
         })
 
     # -----------------------------------------------------------------------
@@ -3451,7 +3671,7 @@ def create_app() -> Flask:
         sectors_blob  = cache_read(isin, "sectors")
         issuer_sectors = (sectors_blob.get("sectors") or {}).get("value") or []
         issuer_alloc   = (sectors_blob.get("asset_allocation") or {}).get("value") or []
-        bd_overrides   = breakdown_overrides_get(isin)
+        bd_overrides   = _bd_sources(isin)
         fund_breakdowns = build_fund_breakdowns(
             holdings_breakdowns, issuer_sectors, issuer_alloc,
             bd_overrides, result["facets"])
@@ -3502,11 +3722,11 @@ def create_app() -> Flask:
         # have data to back them. The fallback in build_fund_breakdowns
         # would render those as "fund" anyway, but explicitly clearing
         # makes the stored state match what's actually in effect.
-        current_overrides = breakdown_overrides_get(isin)
+        current_overrides = _bd_sources(isin)
         upload_now        = uploaded_breakdowns_get(isin)
         for f, src in list(current_overrides.items()):
             if src == "upload" and not upload_now.get(f):
-                breakdown_override_delete(isin, f)
+                override_delete(isin, f"breakdown_source.{f}")
 
         # Rebuild fund_breakdowns so the frontend can update in place.
         holdings_blob = cache_read(isin, "holdings")
@@ -3516,7 +3736,7 @@ def create_app() -> Flask:
         sectors_blob  = cache_read(isin, "sectors")
         issuer_sectors = (sectors_blob.get("sectors") or {}).get("value") or []
         issuer_alloc   = (sectors_blob.get("asset_allocation") or {}).get("value") or []
-        bd_overrides   = breakdown_overrides_get(isin)
+        bd_overrides   = _bd_sources(isin)
         fund_breakdowns = build_fund_breakdowns(
             holdings_breakdowns, issuer_sectors, issuer_alloc,
             bd_overrides, upload_now)
@@ -3579,7 +3799,8 @@ def create_app() -> Flask:
                                      "refetch the fund first"}), 404
 
         if request.method == "DELETE":
-            cleared = fund_structure_delete(isin)
+            cleared = any(override_delete(isin, f)
+                          for f in DEFAULT_FUND_STRUCTURE)
             return jsonify({"ticker": ticker, "fund_structure": None,
                             "cleared": cleared})
 
@@ -3589,8 +3810,57 @@ def create_app() -> Flask:
         raw = body.get("fund_structure") if isinstance(
             body.get("fund_structure"), dict) else body
         block = normalise_fund_structure(raw)
-        stored = fund_structure_put(isin, block)
-        return jsonify({"ticker": ticker, "fund_structure": stored})
+
+        # Store only genuine divergence from the seed.
+        #
+        # A submitted value that already equals the seed is agreement, not
+        # an assertion, so its override is withdrawn and the field tracks
+        # the seed from here on. Without this, "Reload from Yahoo" was
+        # self-defeating: it filled the form with Yahoo's answers, and
+        # saving wrote those answers back as user overrides, pinning the
+        # fields to a snapshot of Yahoo rather than following it.
+        #
+        # v0.33.0: withdrawal is now a delete rather than storing a
+        # neutral value, so the file records only deliberate exceptions.
+        from porxpy.extractors import _seed_fund_structure, _merge_fund_structure
+        prof = (cache_read(ticker, "profile").get("profile") or {}).get("value") or {}
+        # Asset class is a fund-level (ISIN-keyed) category. Read-only —
+        # this endpoint must never trigger a Yahoo round-trip — and
+        # optional: without it the seed simply skips the cash/fixed-
+        # income inferences.
+        _ac = ((cache_read(isin, "asset_class").get("asset_class") or {})
+               .get("value") or {}).get("class")
+        seed, seed_origins = _seed_fund_structure(prof, _ac)
+
+        for field, seed_val in seed.items():
+            submitted = block.get(field)
+            if submitted == seed_val:
+                override_delete(isin, field)
+            else:
+                try:
+                    override_put(isin, field, submitted, context=block)
+                except ValueError as exc:
+                    return jsonify({"error": str(exc)}), 400
+
+        stored = {f: e["value"] for f, e in overrides_for(isin).items()
+                  if f in DEFAULT_FUND_STRUCTURE} or None
+
+        # Return the EFFECTIVE block (Yahoo seed with the override merged
+        # per field), not just what was stored. The caller needs it to
+        # update the fund-meta tile directly; previously it had to trigger
+        # a full re-fetch to see its own write, and that re-fetch was
+        # error-swallowed — so a failed reload looked exactly like a failed
+        # save.
+        effective, sources = _merge_fund_structure(
+            seed,
+            {f: e for f, e in overrides_for(isin).items()
+             if f in DEFAULT_FUND_STRUCTURE},
+            seed_origins)
+        return jsonify({"ticker": ticker,
+                        "fund_structure": effective,
+                        "fund_structure_stored": stored,
+                        "fund_structure_sources": sources,
+                        "fund_structure_seed": seed})
 
     # -----------------------------------------------------------------------
     # Assisted lookup of replication method + style (justETF, by ISIN)

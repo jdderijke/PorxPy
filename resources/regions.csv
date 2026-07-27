@@ -1,0 +1,17 @@
+Version=2
+key,kind,label,super_regions,style_match
+northAmerica,region,North America,,north america|usa|united states|america|american|s&p 500|sp 500|nasdaq|dow jones|russell 1000|russell 2000|canada|canadian
+latinAmerica,region,Latin America,emerging,latin america|latam|south america|brazil|brazilian|mexico|mexican|chile|colombia|peru|argentina
+unitedKingdom,region,United Kingdom,europe,uk|united kingdom|britain|british|ftse 100|ftse 250|ftse all-share
+europeDeveloped,region,Europe (Developed),europe,eurozone|euro zone|emu|euro stoxx|stoxx 600|stoxx europe|germany|german|dax|france|french|cac|switzerland|swiss|netherlands|dutch|italy|italian|spain|spanish|belgium|austria|ireland|portugal|nordic|scandinavia|sweden|swedish|norway|denmark|danish|finland
+europeEmerging,region,Europe (Emerging),europe|emerging,eastern europe|emerging europe|poland|polish|turkey|turkish|greece|greek|hungary|czech|romania|russia|russian
+africaMiddleEast,region,Africa & Middle East,emerging,africa|african|middle east|south africa|saudi|saudi arabia|israel|israeli|gulf|gcc|egypt|qatar|uae|kuwait|nigeria|morocco
+japan,region,Japan,asia|pacific,japan|japanese|nikkei|topix
+australasia,region,Australasia,pacific,australia|australian|new zealand|asx
+asiaDeveloped,region,Asia (Developed),asia|pacific,asia developed|developed asia|korea|korean|kospi|taiwan|taiwanese|singapore|hong kong|hang seng
+asiaEmerging,region,Asia (Emerging),asia|emerging,asia ex japan|emerging asia|china|chinese|csi 300|india|indian|nifty|sensex|indonesia|vietnam|thailand|malaysia|philippines|pakistan|bangladesh
+antartica,region,Antarctica,,
+europe,super,Europe,,european
+asia,super,Asia,,asian
+pacific,super,Pacific,,asia pacific|pacific rim|asia-pacific
+emerging,super,Emerging Markets,,emerging markets|emerging market|emerging

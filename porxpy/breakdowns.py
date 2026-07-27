@@ -38,6 +38,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from porxpy.config import META_FACETS, TARGET_FACETS
+
 
 # ---------------------------------------------------------------------------
 # Facet-key canonicalisation
@@ -255,7 +257,8 @@ def rollup_holdings(rows: list[dict]) -> dict:
 #                issuer's fund page and asking an LLM to extract a CSV).
 #
 # Per fund, per facet, the user can override the source from "fund" to
-# "holdings" or "upload" (persisted — see porxpy.utils.breakdown_override_*).
+# "holdings" or "upload" (persisted as "breakdown_source.<facet>"
+# in the per-field override store — see porxpy.utils.override_put).
 # Once overridden, that card *is* the fund's Fund/ETF-level data: it rolls up
 # into the portfolio's Fund/ETF-level cards exactly like issuer data.
 #
@@ -332,7 +335,7 @@ def build_fund_breakdowns(holdings_breakdowns: dict,
         asset_allocation: Issuer asset-allocation breakdown as emitted by
             ``extract_asset_allocation`` (``[{"key", "weight"}]``).
         overrides: The fund's ``{facet: source}`` override map (from
-            :func:`porxpy.utils.breakdown_overrides_get`). A facet absent
+            the ``breakdown_source.*`` override fields). A facet absent
             from the map defaults to ``"fund"``.
         uploaded_facets: Per-facet user-uploaded item lists (from
             :func:`porxpy.utils.uploaded_breakdowns_get`). Shape
@@ -576,6 +579,44 @@ def rollup_portfolio_lookthrough(enriched: list[dict],
 # card — e.g. country with no override — contributes nothing and is not
 # counted as covered).
 
+def meta_facet_items(fund_structure: dict | None) -> dict[str, list[dict]]:
+    """One-hot item lists for the metadata facets (v0.28.0).
+
+    ``market_cap`` and ``style_box`` are scalars on a fund's structure
+    block, not distributions — a fund is "large cap", never 70/30. To
+    feed them through the same portfolio rollup as the four real
+    breakdown facets, each is reshaped into a one-item distribution at
+    weight 1.0.
+
+    Every value is emitted, including ``"unknown"`` and ``"n/a"``. They
+    are real buckets: a portfolio where a fifth of the money sits in
+    funds nobody has classified should say so on the card, rather than
+    quietly renormalising the other four fifths to 100% and reading as
+    though the classification were complete. Neither is targetable (see
+    ``config.META_FACET_TARGETABLE``), so both land in the deviation
+    report's untargeted summary — visible, but not counted as a miss
+    against a target the user never set.
+
+    Args:
+        fund_structure: A fund's effective structure block, or ``None``.
+            Cash positions carry a synthetic one (see
+            :func:`synth_enriched_for_cash_position`).
+
+    Returns:
+        ``{facet: [{"key", "weight"}], ...}`` for each facet in
+        ``META_FACETS``. A facet whose value is missing entirely yields
+        an empty list, and the fund then counts as uncovered there —
+        which in practice only happens for a structure block that never
+        went through ``normalise_fund_structure``.
+    """
+    fs = fund_structure if isinstance(fund_structure, dict) else {}
+    out: dict[str, list[dict]] = {}
+    for facet in META_FACETS:
+        val = str(fs.get(facet) or "").strip().lower()
+        out[facet] = [{"key": val, "weight": 1.0}] if val else []
+    return out
+
+
 def rollup_portfolio_fundlevel(enriched: list[dict],
                                total_base: float) -> dict:
     """Aggregate per-fund Fund/ETF-level cards into portfolio-level ones.
@@ -604,6 +645,8 @@ def rollup_portfolio_fundlevel(enriched: list[dict],
                   "sector":      [...],
                   "country":     [...],
                   "currency":    [...],
+                  "market_cap":  [...],
+                  "style_box":   [...],
               },
               "fundlevel_coverage": {
                   "asset_class": 0.97, "sector": 0.81, ...
@@ -613,21 +656,37 @@ def rollup_portfolio_fundlevel(enriched: list[dict],
         Each item ``weight`` is a fraction of the COVERED portfolio
         value for that facet; ``value`` is base-currency money. Items
         are sorted by weight descending.
+
+        v0.28.0: six facets, not four. The last two are the metadata
+        facets — one-hot per fund rather than distributions, and read
+        off each entry's ``data.fund_structure`` rather than its
+        breakdown cards. They aggregate identically once reshaped,
+        which is the whole point of reshaping them.
     """
-    buckets:       dict[str, dict[str, float]] = {f: {} for f in _FUND_BD_FACETS}
-    covered_value: dict[str, float] = {f: 0.0 for f in _FUND_BD_FACETS}
+    buckets:       dict[str, dict[str, float]] = {f: {} for f in TARGET_FACETS}
+    covered_value: dict[str, float] = {f: 0.0 for f in TARGET_FACETS}
 
     for e in enriched:
         v = (e.get("valuation") or {}).get("value_base")
         if v is None or v <= 0:
             continue
-        fb = (e.get("data") or {}).get("fund_breakdowns") or {}
+        data = e.get("data") or {}
+        fb = data.get("fund_breakdowns") or {}
         if not isinstance(fb, dict):
-            continue
+            fb = {}
+        # The meta facets are not cards and have no source selector —
+        # they are one-hot reshapes of the fund's own structure block.
+        # Derived here rather than baked into fund_breakdowns because
+        # that block is rebuilt in five places (source toggles, upload
+        # commits) that have no reason to know about fund metadata, and
+        # any one of them forgetting would silently drop the facet.
+        meta = meta_facet_items(data.get("fund_structure"))
         fv = float(v)
-        for facet in _FUND_BD_FACETS:
-            card  = fb.get(facet) or {}
-            items = card.get("items") or []
+        for facet in TARGET_FACETS:
+            if facet in META_FACETS:
+                items = meta.get(facet) or []
+            else:
+                items = (fb.get(facet) or {}).get("items") or []
             if not items:
                 continue
             # The fund has data on this facet → its whole value counts
@@ -646,7 +705,7 @@ def rollup_portfolio_fundlevel(enriched: list[dict],
 
     fundlevel_breakdowns: dict[str, list[dict]] = {}
     fundlevel_coverage:   dict[str, float] = {}
-    for facet in _FUND_BD_FACETS:
+    for facet in TARGET_FACETS:
         covered = covered_value[facet]
         fundlevel_coverage[facet] = (
             round(covered / total_base, 6) if total_base > 0 else 0.0)
@@ -1137,6 +1196,15 @@ def synth_enriched_for_cash_position(pos: dict,
             # surface it here so any consumer reading data.asset_class
             # gets the same value as the breakdown.
             "asset_class":         {"class": pos_asset_class},
+            # v0.28.0 — the meta facets, in the shape
+            # rollup_portfolio_fundlevel reads them from. Market cap is
+            # "n/a" rather than "unknown": there is no market cap to
+            # discover for a bank balance, which is a different claim
+            # from not having discovered one. Style box is "value" for
+            # the same reason a bond fund is — the return is interest,
+            # not capital appreciation.
+            "fund_structure":      {"market_cap": "n/a",
+                                    "style_box":  "value"},
         },
         # Pass through the original position so the caller has a
         # handle for the price-history path (which needs the

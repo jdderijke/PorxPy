@@ -50,6 +50,9 @@ from porxpy.config import (
     DEFAULT_SETTINGS,
     DISTRIBUTION_POLICIES,
     ENRICHABLE_FIELDS,
+    FOCUS_TYPES,
+    MARKET_CAPS,
+    STYLE_BOXES,
     FUND_STRUCTURES,
     FUND_STYLES,
     FX_HIST_TTL_HOURS,
@@ -1845,24 +1848,143 @@ def isin_map_put(isin: str, mic: str | None, ticker: str,
 # the "Clear cache" reset never touches them. ``load_fund_data`` layers
 # them on top of the Yahoo-derived data at read time.
 
+# ---------------------------------------------------------------------------
+# Per-field override store (v0.33.0)
+# ---------------------------------------------------------------------------
+# overrides.json is ISIN-keyed; each entry is a flat table of field name →
+# envelope. See :data:`porxpy.config.OVERRIDABLE_FIELDS` for what may be
+# asserted and how each value is validated.
+#
+#   {"IE00B4L5Y983": {
+#       "expenseRatioPct": {"value": 0.22, "source": "user",
+#                           "ts": "2026-07-26T…", "note": "KIID"},
+#       "market_cap":      {"value": "large", "source": "user", "ts": "…"},
+#       "breakdown_source.sector": {"value": "holdings", ...}}}
+#
+# The table is SPARSE. A field is present exactly when the user (or a
+# one-shot lookup like justETF) asserted it; absence means "no opinion"
+# and the Yahoo/derived seed shows through. Nothing ever stores a value
+# meaning "unset".
+#
+# What must NOT go in here: anything the load pipeline recomputes. A
+# name-derived market cap written to this table would survive a fund
+# rename for ever, and the UI's "inferred from fund name" caption would
+# become a lie. Yahoo values and name-derived values stay runtime-only;
+# this file holds what has to survive a refetch.
+
+# Envelope fields carried alongside the value. ``source`` says who
+# asserted it, not where the number originally came from.
+OVERRIDE_SOURCES: tuple[str, ...] = ("user", "justetf", "csv")
+
+
 def _ov_key(isin: str) -> str:
     """Normalise an ISIN to the canonical override-store key."""
     return (isin or "").strip().upper()
 
 
+# Legacy top-level keys, pre-0.33.0.
+_LEGACY_OV_KEYS = ("asset_class", "breakdown_source",
+                   "include_in_optimizer", "fund_structure")
+
+
+def _is_envelope(v) -> bool:
+    """True for a v0.33.0 override envelope."""
+    return isinstance(v, dict) and "value" in v
+
+
+def _is_legacy_entry(entry: dict) -> bool:
+    """True when an ISIN entry predates the flat per-field table.
+
+    Detection is by SHAPE, not by key name. Two of the legacy top-level
+    keys — ``asset_class`` and ``include_in_optimizer`` — are also field
+    names in the new registry, so "does this entry contain the key
+    ``asset_class``" stays true after a successful migration and the
+    migration re-runs on every single load, rewriting the file each time.
+    An envelope is a dict carrying ``value``; a legacy value is a bare
+    string, bool or nested dict. That difference converges.
+    """
+    return any(not _is_envelope(v) for v in entry.values())
+
+
+def _migrate_override_entry(entry: dict) -> dict:
+    """Rewrite one pre-0.33.0 ISIN entry into the flat envelope table.
+
+    Legacy values equal to their registry ``neutral`` are DROPPED rather
+    than carried across. In the old dense blocks a neutral value meant
+    "the user expressed no opinion" — migrating it as an assertion would
+    pin the field to that value permanently, which is exactly the bug the
+    sparse table exists to make impossible.
+    """
+    from porxpy.config import OVERRIDABLE_FIELDS
+
+    out: dict[str, dict] = {}
+
+    def _add(field: str, value) -> None:
+        spec = OVERRIDABLE_FIELDS.get(field)
+        if spec is None or value is None:
+            return
+        if value == spec.get("neutral"):
+            return
+        out[field] = {"value": value, "source": "user",
+                      "ts": now_iso(), "note": "migrated from pre-0.33 overrides"}
+
+    ac = entry.get("asset_class")
+    if isinstance(ac, str):
+        _add("asset_class", ac)
+    inc = entry.get("include_in_optimizer")
+    if isinstance(inc, bool):
+        _add("include_in_optimizer", inc)
+    for facet, src in (entry.get("breakdown_source") or {}).items():
+        _add(f"breakdown_source.{facet}", src)
+    for field, value in (entry.get("fund_structure") or {}).items():
+        _add(field, value)
+
+    # Anything already in the new shape is kept as-is, so a half-migrated
+    # file (interrupted write, hand-edit) converges rather than losing data.
+    for field, env in entry.items():
+        if field in _LEGACY_OV_KEYS:
+            continue
+        if _is_envelope(env):
+            out[field] = env
+    return out
+
+
 def load_overrides() -> dict:
-    """Load the unified overrides file. Returns an empty dict if missing."""
+    """Load the override store, migrating any pre-0.33.0 entries in place.
+
+    Migration is one-shot and self-healing: it runs on read, rewrites the
+    file when anything changed, and is a no-op thereafter. There is no
+    legacy reader — the old shape exists only inside
+    :func:`_migrate_override_entry`.
+    """
     if not OVERRIDES_FP.exists():
         return {}
     try:
         with open(OVERRIDES_FP, "r", encoding="utf-8") as f:
-            return json.load(f)
+            raw = json.load(f)
     except Exception:
         return {}
+    if not isinstance(raw, dict):
+        return {}
+
+    migrated, changed = {}, False
+    for key, entry in raw.items():
+        if not isinstance(entry, dict):
+            continue
+        if _is_legacy_entry(entry):
+            entry = _migrate_override_entry(entry)
+            changed = True
+        if entry:
+            migrated[key] = entry
+    if changed:
+        print(f"[Overrides] migrated {len(migrated)} entr(ies) to the "
+              f"v0.33.0 per-field format.")
+        save_overrides(migrated)
+    return migrated
 
 
 def save_overrides(m: dict) -> None:
-    """Persist the unified overrides file."""
+    """Persist the override store."""
     try:
         with open(OVERRIDES_FP, "w", encoding="utf-8") as f:
             json.dump(m, f, ensure_ascii=False, indent=2)
@@ -1870,132 +1992,214 @@ def save_overrides(m: dict) -> None:
         print(f"[Overrides] save error: {exc}")
 
 
-def overrides_get(isin: str) -> dict:
-    """Return all overrides for an ISIN, or an empty dict if none.
+def coerce_override_value(field: str, value, context: dict | None = None):
+    """Validate and coerce a value against the field's registry entry.
 
-    The returned dict is a shallow copy and safe to mutate; persistence
-    only happens through the ``*_put`` / ``*_delete`` helpers below.
+    Args:
+        field: Registry key.
+        value: The candidate value.
+        context: Other pending field values, for the one cross-field
+            rule — ``focus_detail``'s vocabulary depends on the
+            ``focus_type`` being set in the same edit.
+
+    Returns:
+        The coerced value.
+
+    Raises:
+        ValueError: Unknown field, wrong type, out of range, or outside
+            the field's vocabulary.
     """
+    from porxpy.config import OVERRIDABLE_FIELDS
+
+    spec = OVERRIDABLE_FIELDS.get(field)
+    if spec is None:
+        raise ValueError(f"not an overridable field: {field}")
+    kind = spec.get("type")
+
+    if kind == "bool":
+        if isinstance(value, bool):
+            return value
+        raise ValueError(f"{field} must be true or false")
+
+    if kind == "number":
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{field} must be a number")
+        if v != v or v in (float("inf"), float("-inf")):
+            raise ValueError(f"{field} must be a finite number")
+        lo, hi = spec.get("min"), spec.get("max")
+        if lo is not None and v < lo:
+            raise ValueError(f"{field} must be at least {lo}")
+        if hi is not None and v > hi:
+            raise ValueError(f"{field} must be at most {hi}")
+        return v
+
+    v = ("" if value is None else str(value)).strip()
+    if kind == "enum":
+        vocab = spec.get("vocab") or ()
+        if v.lower() not in vocab:
+            raise ValueError(f"{field} must be one of {tuple(vocab)}")
+        return v.lower()
+
+    vocab_fn = spec.get("vocab_fn")
+    if vocab_fn:
+        import porxpy.resources as _res
+        allowed = getattr(_res, vocab_fn)(context or {})
+        # None means "free text is fine for this context" — a thematic
+        # focus is exactly the case nothing can enumerate.
+        if allowed is not None and v and v not in allowed:
+            raise ValueError(f"{field} must be one of {tuple(allowed)}")
+    return v
+
+
+def overrides_for(isin: str) -> dict:
+    """Every stored envelope for one ISIN. Fresh dict, safe to mutate."""
     key = _ov_key(isin)
     if not key:
         return {}
-    return dict(load_overrides().get(key) or {})
+    return {f: dict(e) for f, e in (load_overrides().get(key) or {}).items()
+            if isinstance(e, dict)}
 
 
-# ── asset_class ─────────────────────────────────────────────────────────────
-def asset_class_override_get(isin: str) -> str | None:
-    """Return the per-fund asset-class override for ``isin``, or None."""
-    v = overrides_get(isin).get("asset_class")
-    return v if isinstance(v, str) and v.strip() else None
+def override_get(isin: str, field: str, default=None):
+    """The asserted value for one field, or ``default`` when unasserted."""
+    env = overrides_for(isin).get(field)
+    if not env or "value" not in env:
+        return default
+    return env["value"]
 
 
-def asset_class_override_put(isin: str, asset_class: str) -> None:
-    """Set the asset-class override for ``isin``. No-op for blank keys."""
+def override_source(isin: str, field: str) -> str | None:
+    """Who asserted this field, or None when nobody has."""
+    env = overrides_for(isin).get(field)
+    return (env or {}).get("source")
+
+
+def override_put(isin: str, field: str, value, source: str = "user",
+                 note: str = "", context: dict | None = None) -> dict:
+    """Assert a value for one field. Returns the stored envelope.
+
+    Raises:
+        ValueError: For a blank ISIN, an unknown field, an unknown
+            source, or a value the registry rejects.
+    """
     key = _ov_key(isin)
-    if not key or not asset_class:
-        return
-    if asset_class not in ASSET_CLASSES:
-        raise ValueError(f"asset_class must be one of {ASSET_CLASSES}")
+    if not key:
+        raise ValueError("an ISIN is required to store an override")
+    if source not in OVERRIDE_SOURCES:
+        raise ValueError(f"source must be one of {OVERRIDE_SOURCES}")
+
+    coerced = coerce_override_value(field, value, context)
+    env = {"value": coerced, "source": source, "ts": now_iso()}
+    if note:
+        env["note"] = str(note).strip()
+
     m = load_overrides()
     entry = dict(m.get(key) or {})
-    entry["asset_class"] = asset_class
+    entry[field] = env
     m[key] = entry
     save_overrides(m)
+    return env
 
 
-def asset_class_override_delete(isin: str) -> bool:
-    """Remove the asset-class override for ``isin``. Returns True if removed."""
+def override_delete(isin: str, field: str | None = None) -> bool:
+    """Withdraw one assertion, or every assertion for the fund.
+
+    Deleting IS "revert to the Yahoo/derived value" — there is no stored
+    value meaning "unset", so removing the entry is the whole operation.
+
+    Returns:
+        True if anything was actually removed.
+    """
     key = _ov_key(isin)
     if not key:
         return False
     m = load_overrides()
     entry = m.get(key)
-    if not entry or "asset_class" not in entry:
+    if not entry:
         return False
-    del entry["asset_class"]
-    if entry:
-        m[key] = entry
-    else:
-        # Pruning empty sub-dicts keeps the file readable.
+    if field is None:
         del m[key]
+    else:
+        if field not in entry:
+            return False
+        del entry[field]
+        if entry:
+            m[key] = entry
+        else:
+            m.pop(key, None)
     save_overrides(m)
     return True
 
 
-# ── breakdown_source ────────────────────────────────────────────────────────
-def breakdown_overrides_get(isin: str) -> dict:
-    """Return the per-facet breakdown-source override map for ``isin``.
-
-    The shape is ``{facet: source}`` where ``source`` is the non-default
-    choice (typically ``"holdings"``). An absent facet means "use the
-    issuer-published value" — the default. Always returns a fresh dict.
-    """
-    v = overrides_get(isin).get("breakdown_source") or {}
-    return dict(v) if isinstance(v, dict) else {}
+def _payload_get(payload: dict, path: str):
+    """Read a dotted path out of a payload, or None."""
+    node = payload
+    for part in path.split("."):
+        if not isinstance(node, dict):
+            return None
+        node = node.get(part)
+    return node
 
 
-def breakdown_override_get(isin: str, facet: str) -> str:
-    """Source for a single facet — ``"fund"`` when no override is set."""
-    return breakdown_overrides_get(isin).get(facet, "fund")
-
-
-def breakdown_override_put(isin: str, facet: str, source: str) -> None:
-    """Set the breakdown source for one facet of one fund.
-
-    Setting it to the default (``"fund"``) deletes the override instead
-    of storing it, keeping the on-disk shape minimal.
-    """
-    key = _ov_key(isin)
-    if not key:
-        return
-    if facet not in BREAKDOWN_FACETS:
-        raise ValueError(f"facet must be one of {BREAKDOWN_FACETS}")
-    if source not in BREAKDOWN_SOURCES:
-        raise ValueError(f"source must be one of {BREAKDOWN_SOURCES}")
-    m = load_overrides()
-    entry = dict(m.get(key) or {})
-    bd = dict(entry.get("breakdown_source") or {})
-    if source == "fund":
-        bd.pop(facet, None)
-    else:
-        bd[facet] = source
-    if bd:
-        entry["breakdown_source"] = bd
-    else:
-        entry.pop("breakdown_source", None)
-    if entry:
-        m[key] = entry
-    else:
-        m.pop(key, None)
-    save_overrides(m)
-
-
-def breakdown_override_delete(isin: str, facet: str | None = None) -> bool:
-    """Delete one facet's override, or the whole map when ``facet`` is None."""
-    key = _ov_key(isin)
-    if not key:
-        return False
-    m = load_overrides()
-    entry = m.get(key)
-    if not entry or "breakdown_source" not in entry:
-        return False
-    if facet is None:
-        del entry["breakdown_source"]
-        changed = True
-    else:
-        bd = entry["breakdown_source"]
-        if facet not in bd:
+def _payload_set(payload: dict, path: str, value) -> bool:
+    """Write ``value`` into ``payload`` at a dotted path. False if absent."""
+    parts = path.split(".")
+    node = payload
+    for part in parts[:-1]:
+        node = node.get(part) if isinstance(node, dict) else None
+        if not isinstance(node, dict):
             return False
-        del bd[facet]
-        if not bd:
-            del entry["breakdown_source"]
-        changed = True
-    if entry:
-        m[key] = entry
-    else:
-        m.pop(key, None)
-    save_overrides(m)
-    return changed
+    if not isinstance(node, dict):
+        return False
+    node[parts[-1]] = value
+    return True
+
+
+def apply_overrides(isin: str, payload: dict) -> dict:
+    """Write every targeted override into an assembled fund payload.
+
+    Walks the registry rather than the stored entry, so a stale field
+    left in the file by a downgrade is ignored rather than injected.
+    Mutates ``payload`` in place.
+
+    Args:
+        isin: Fund ISIN.
+        payload: The response dict under assembly — expected to already
+            contain the blocks the registry targets (``profile``,
+            ``fund_structure``).
+
+    Returns:
+        ``(applied, displaced)``. ``applied`` maps each overridden field
+        to the source that asserted it, so the UI can caption the row.
+        ``displaced`` maps it to the value that was there beforehand —
+        the derived one the override is standing in front of.
+
+        ``displaced`` exists because otherwise the derived value is
+        simply gone: the override is written over the same payload slot,
+        so by the time the client sees the response there is no record of
+        what Yahoo said. That made "revert to Yahoo" a promise the UI
+        could not keep — it could delete the override but had nothing to
+        put back, and had to wait for a refetch to find out.
+    """
+    from porxpy.config import OVERRIDABLE_FIELDS
+
+    stored = overrides_for(isin)
+    applied:   dict[str, str] = {}
+    displaced: dict[str, object] = {}
+    for field, spec in OVERRIDABLE_FIELDS.items():
+        target = spec.get("target")
+        if not target:
+            continue
+        env = stored.get(field)
+        if not env or "value" not in env:
+            continue
+        before = _payload_get(payload, target)
+        if _payload_set(payload, target, env["value"]):
+            applied[field]   = env.get("source") or "user"
+            displaced[field] = before
+    return applied, displaced
 
 
 # ── uploaded_breakdowns ─────────────────────────────────────────────────────
@@ -2183,53 +2387,35 @@ def normalise_fund_structure(raw: dict | None) -> dict:
         # unknown structure) treat it as "not yet specified".
         replication = "unknown"
 
+    # v0.27.0 metadata. Same contract as the fields above: validate
+    # against a closed vocabulary, fall back to the neutral value.
+    market_cap = str(raw.get("market_cap", "")).strip().lower()
+    if market_cap not in MARKET_CAPS:
+        market_cap = "unknown"
+    style_box = str(raw.get("style_box", "")).strip().lower()
+    if style_box not in STYLE_BOXES:
+        style_box = "unknown"
+    focus_type = str(raw.get("focus_type", "")).strip().lower()
+    if focus_type not in FOCUS_TYPES:
+        focus_type = "none"
+
+    # focus_detail is free-form for "thematic" and a controlled key for
+    # region/sector, but validating it against those vocabularies here
+    # would couple this pure function to the resource CSVs. The frontend
+    # constrains it with dropdowns; we only enforce the coupling rule
+    # that detail without a type is meaningless.
+    focus_detail = str(raw.get("focus_detail", "") or "").strip()
+    if focus_type == "none":
+        focus_detail = ""
+
     return {"structure":    structure,
             "replication":  replication,
             "style":        style,
-            "distribution": distribution}
-
-
-
-def fund_structure_get(isin: str) -> dict | None:
-    """Return the user-supplied fund-structure block for ``isin``, or None."""
-    v = overrides_get(isin).get("fund_structure")
-    return dict(v) if isinstance(v, dict) and v else None
-
-
-def fund_structure_put(isin: str, structure: dict) -> dict:
-    """Persist a fund-structure override, normalising the coupling rules.
-
-    Returns the normalised block that was actually written.
-    """
-    key = _ov_key(isin)
-    if not key:
-        return {}
-    normalised = normalise_fund_structure(structure)
-    m = load_overrides()
-    entry = dict(m.get(key) or {})
-    entry["fund_structure"] = normalised
-    m[key] = entry
-    save_overrides(m)
-    return normalised
-
-
-def fund_structure_delete(isin: str) -> bool:
-    """Remove the structure override for ``isin``. Returns True if removed."""
-    key = _ov_key(isin)
-    if not key:
-        return False
-    m = load_overrides()
-    entry = m.get(key)
-    if not entry or "fund_structure" not in entry:
-        return False
-    del entry["fund_structure"]
-    if entry:
-        m[key] = entry
-    else:
-        m.pop(key, None)
-    save_overrides(m)
-    return True
-
+            "distribution": distribution,
+            "market_cap":   market_cap,
+            "style_box":    style_box,
+            "focus_type":   focus_type,
+            "focus_detail": focus_detail}
 
 
 
@@ -2401,15 +2587,26 @@ def _coerce_targets(raw) -> dict:
         A new dict with the four facet keys present (some possibly
         empty) and only valid {key: percent} entries.
     """
-    out: dict[str, dict] = {f: {} for f in BREAKDOWN_FACETS}
+    from porxpy.config import META_FACET_TARGETABLE, TARGET_FACETS
+
+    out: dict[str, dict] = {f: {} for f in TARGET_FACETS}
     if not isinstance(raw, dict):
         return out
-    for facet in BREAKDOWN_FACETS:
+    for facet in TARGET_FACETS:
         block = raw.get(facet)
         if not isinstance(block, dict):
             continue
+        # v0.28.0: the meta facets have a closed, short vocabulary and
+        # not all of it is targetable. "unknown" is a data gap and
+        # "n/a" duplicates the cash target on asset_class — neither is
+        # something a user can meaningfully aim for, so a target on one
+        # is dropped rather than stored and then never satisfiable.
+        allowed = META_FACET_TARGETABLE.get(facet)
         for k, v in block.items():
             if not isinstance(k, str) or not k.strip():
+                continue
+            key = k.strip()
+            if allowed is not None and key not in allowed:
                 continue
             try:
                 pct = float(v)
@@ -2417,14 +2614,15 @@ def _coerce_targets(raw) -> dict:
                 continue
             if pct < 0:
                 pct = 0.0
-            out[facet][k.strip()] = pct
+            out[facet][key] = pct
     return out
 
 
 def portfolio_targets_get(pid: str) -> dict:
     """Return the targets dict for portfolio ``pid``.
 
-    Always returns a four-key dict; missing facets are empty.
+    Always returns a full-width dict (one key per TARGET_FACET);
+    missing facets are empty.
 
     Args:
         pid: Portfolio UUID.
@@ -2436,7 +2634,8 @@ def portfolio_targets_get(pid: str) -> dict:
     """
     p = find_portfolio(pid)
     if not p:
-        return {f: {} for f in BREAKDOWN_FACETS}
+        from porxpy.config import TARGET_FACETS
+        return {f: {} for f in TARGET_FACETS}
     return _coerce_targets(p.get("targets"))
 
 
@@ -2466,7 +2665,8 @@ def portfolio_targets_put(pid: str, targets: dict) -> dict:
             # Drop the field entirely when no facet has any target,
             # so portfolios.json stays clean for users who haven't
             # opted into the feature.
-            if any(normalised.get(f) for f in BREAKDOWN_FACETS):
+            from porxpy.config import TARGET_FACETS
+            if any(normalised.get(f) for f in TARGET_FACETS):
                 p["targets"] = normalised
             else:
                 p.pop("targets", None)
