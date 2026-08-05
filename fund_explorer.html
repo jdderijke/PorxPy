@@ -6888,7 +6888,7 @@ function renderFundCardEmpty(chartVar, canvasId, legId, message, withUploadCta) 
 // was the badge contradicting the picture beside it.
 function coveredPct(items) {
   return (items || []).reduce(
-    (a, it) => a + (it.key === 'undefined' ? 0 : (it.weight || 0)), 0) * 100;
+    (a, it) => a + (it.key === 'unknown' ? 0 : (it.weight || 0)), 0) * 100;
 }
 
 // Coverage badge for a fund-page card. `mode` is 'yahoo' or 'holdings';
@@ -6936,13 +6936,13 @@ const FUND_BD_CARDS = {
     chartVar:'fAcChart', canvasId:'fAcChart', legId:'fAcLeg',
     covId:'fAcCov', ctlId:'fAcCtl', title:'asset class',
     labelFn: it => fmtAssetClass(it.key),
-    colorFn: it => it.key==='undefined' ? UNDEFINED_COLOUR : (AC_COLOURS[it.key]||'#6b7280'),
+    colorFn: it => isResidual(it.key) ? residualColour(it.key) : (AC_COLOURS[it.key]||'#6b7280'),
   },
   sector: {
     chartVar:'fSecChart', canvasId:'fSecChart', legId:'fSecLeg',
     covId:'fSecCov', ctlId:'fSecCtl', title:'sector',
     labelFn: it => fmtSector(it.key),
-    colorFn: (it,i) => it.key==='undefined' ? UNDEFINED_COLOUR : SCOL[i%SCOL.length],
+    colorFn: (it,i) => isResidual(it.key) ? residualColour(it.key) : SCOL[i%SCOL.length],
   },
   country: {
     chartVar:'fCtyChart', canvasId:'fCtyChart', legId:'fCtyLeg',
@@ -6952,8 +6952,8 @@ const FUND_BD_CARDS = {
   currency: {
     chartVar:'fCurChart', canvasId:'fCurChart', legId:'fCurLeg',
     covId:'fCurCov', ctlId:'fCurCtl', title:'currency',
-    labelFn: it => it.key==='undefined' ? UNDEFINED_LABEL : it.key,
-    colorFn: (it,i) => it.key==='undefined' ? UNDEFINED_COLOUR : SCOL[i%SCOL.length],
+    labelFn: it => isResidual(it.key) ? residualLabel(it.key) : it.key,
+    colorFn: (it,i) => isResidual(it.key) ? residualColour(it.key) : SCOL[i%SCOL.length],
   },
 };
 
@@ -7071,7 +7071,7 @@ function renderFundFundlevelCard(data, facet, card) {
     } else {
       labelFn = it => fmtCountry(it.key);
     }
-    colorFn = (it,i) => it.key==='undefined' ? UNDEFINED_COLOUR : SCOL[i%SCOL.length];
+    colorFn = (it,i) => isResidual(it.key) ? residualColour(it.key) : SCOL[i%SCOL.length];
   }
 
   // Control row: per-card override toggle, plus the Country/Region
@@ -7117,7 +7117,7 @@ function renderFundCardControls(data, facet, card) {
   // Nothing identified from any source: the card is a single undefined
   // slice and no other source is on offer. Then, and only then, is
   // "upload a CSV" the useful next step.
-  const identified = (card.items || []).some(it => it.key !== 'undefined');
+  const identified = (card.items || []).some(it => it.key !== 'unknown');
   const nudge = !identified
              && !['factsheet', 'holdings', 'upload'].some(k => avail[k]);
 
@@ -10042,7 +10042,7 @@ function showExtractionReport(ex){
           <td class="tk">${b.items.length} rows</td>
           <td class="tk">${b.sum_pct}%</td>
           <td style="color:${b.complete ? 'var(--muted)' : 'var(--amber)'};font-size:.62rem">
-            ${b.complete ? 'complete' : `partial — the rest shows as ${UNDEFINED_LABEL.toLowerCase()}`}</td></tr>`).join('');
+            ${b.complete ? 'complete' : 'partial — the rest shows as unknown'}</td></tr>`).join('');
   document.getElementById('exReportBody').innerHTML = `
     <div class="mhint" style="color:var(--muted);margin-bottom:.6rem">
       ${fields.length} field(s) and ${facets.length} breakdown(s) read
@@ -12010,7 +12010,7 @@ function ufOpenEditPopover(facet, evt){
   pop.style.top  = y + 'px';
 
   const opts = ['<option value="">(skip — leave as-is)</option>',
-                `<option value="__undefined__">(${UNDEFINED_LABEL.toLowerCase()} / clear value)</option>`]
+                '<option value="__undefined__">(clear the value)</option>']
     .concat(cf.values.map(c => {
       const label = c.group ? `${c.value} (${c.group})` : c.value;
       return `<option value="${escapeAttr(c.value)}">${escapeHtml(label)}</option>`;
@@ -12774,17 +12774,22 @@ function refetchPortfolioFund(ticker){
 // All four cards render through one dispatcher so coverage pills and
 // chart instances stay in lockstep with the toggle.
 
-// Stable colour for the residual bucket, shared across all four facets so
-// the user learns to associate the colour with it.
-const UNDEFINED_COLOUR = '#6b7280';
+// The two residual buckets, shared by all six facets.
+//
+//   unknown — there is a value; this source does not have it. More data
+//             would fix it, so it counts AGAINST coverage.
+//   n/a     — there is no value to have. A cash sleeve has no sector.
+//             Nothing will ever fill it in, so it counts as answered.
+//
+// Two greys rather than two hues: both are the absence of a real bucket
+// and neither should read as a category competing with the others. n/a
+// is the lighter of the two, because it is the one that needs no action.
+const RESIDUAL_COLOURS = { unknown: '#6b7280', 'n/a': '#9ca3af' };
+const RESIDUAL_LABELS  = { unknown: 'Unknown',  'n/a': 'Not applicable' };
 
-// What the residual is CALLED on screen. The stored key stays
-// "undefined" — it is the data contract every rollup, target comparison
-// and coverage sum is written against — but "undefined" is a programming
-// word, and what it means to a reader is that the source was asked and
-// did not know. The metadata facets already said "Unknown"; now all six
-// agree.
-const UNDEFINED_LABEL = 'Unknown';
+const isResidual     = k => k === 'unknown' || k === 'n/a';
+const residualColour = k => RESIDUAL_COLOURS[k] || '#6b7280';
+const residualLabel  = k => RESIDUAL_LABELS[k]  || k;
 
 // Public entry point — called from reloadPortfolio().
 //
@@ -13457,17 +13462,17 @@ function renderAssetClassBreakdownYM(view){
   setCoverageBadge('acCov', cov != null ? cov*100 : null, 'yahoo');
 
   const colors = breakdown.map(b =>
-    b.key === 'undefined' ? UNDEFINED_COLOUR : (AC_COLOURS[b.key] || '#6b7280'));
+    isResidual(b.key) ? residualColour(b.key) : (AC_COLOURS[b.key] || '#6b7280'));
 
   makeBreakdownChart({
     chartVar:'acChart', canvasId:'acChart', items:breakdown,
-    labelFn: b => b.key === 'undefined' ? UNDEFINED_LABEL : fmtAssetClass(b.key),
+    labelFn: b => fmtAssetClass(b.key),
     colorFn: (b,i) => colors[i],
   });
 
   document.getElementById('acLeg').innerHTML = breakdown.map((b,i)=>{
     const valStr = b.value != null ? ` · ${fmtMoney(b.value, baseCur)}` : '';
-    const label  = b.key === 'undefined' ? UNDEFINED_LABEL : fmtAssetClass(b.key);
+    const label  = fmtAssetClass(b.key);
     return `
       <div class="lr">
         <div class="ls" style="background:${colors[i]}"></div>
@@ -13512,15 +13517,15 @@ function renderSectorBreakdownYM(view){
   }
   const top = sectors.slice(0, 16);
   const colors = top.map((s,i) =>
-    s.key === 'undefined' ? UNDEFINED_COLOUR : SCOL[i % SCOL.length]);
+    isResidual(s.key) ? residualColour(s.key) : SCOL[i % SCOL.length]);
   makeBreakdownChart({
     chartVar:'pSectorChart', canvasId:'pSectorChart', items:top,
-    labelFn: s => s.key === 'undefined' ? UNDEFINED_LABEL : fmtSector(s.key),
+    labelFn: s => fmtSector(s.key),
     colorFn: (s,i) => colors[i],
   });
   document.getElementById('pSectorLeg').innerHTML = top.map((s,i)=>{
     const valStr = s.value != null ? ` · ${fmtMoney(s.value, baseCur)}` : '';
-    const label  = s.key === 'undefined' ? UNDEFINED_LABEL : fmtSector(s.key);
+    const label  = fmtSector(s.key);
     return `
     <div class="lr">
       <div class="ls" style="background:${colors[i]}"></div>
@@ -13546,10 +13551,39 @@ function renderCountryBreakdownYM(view){
   if (!items.length){
     return renderBreakdownEmpty({
       chartVar:'pCountryChart', canvasId:'pCountryChart', legId:'pCountryLeg',
-      message: 'Yahoo publishes no country breakdown. On a fund\u2019s page, set its country card to "Holdings" — or use Holdings-level mode here.',
+      message: 'Yahoo publishes no country breakdown. On a fund\u2019s page, set its country card to "Holdings".',
     });
   }
   renderCountryCardChart(items, baseCur);
+}
+
+// Shared by the country card's two granularities. Lives outside
+// renderCountryBreakdownYM because the Country/Region toggle re-renders
+// the chart without re-reading the view.
+function renderCountryCardChart(items, baseCur){
+  let labelFn = it => fmtCountry(it.key);
+  if (portfolioCountryGranularity === 'region'){
+    items   = regroupToRegion(items);
+    labelFn = it => fmtRegion(it.key);
+  }
+  const top    = items.slice(0, 16);
+  const colorAt = (it, i) =>
+    isResidual(it.key) ? residualColour(it.key) : SCOL[i % SCOL.length];
+  const colors = top.map(colorAt);
+  makeBreakdownChart({
+    chartVar:'pCountryChart', canvasId:'pCountryChart', items:top,
+    labelFn,
+    colorFn: (it, i) => colors[i],
+  });
+  document.getElementById('pCountryLeg').innerHTML = top.map((it,i)=>{
+    const valStr = it.value != null ? ` · ${fmtMoney(it.value, baseCur)}` : '';
+    return `
+      <div class="lr">
+        <div class="ls" style="background:${colors[i]}"></div>
+        <span class="ln">${escapeHtml(labelFn(it))}</span>
+        <span class="lp">${(it.weight*100).toFixed(2)}%${valStr}</span>
+      </div>`;
+  }).join('');
 }
 
 // ── Currency ──────────────────────────────────────────────────────────────
@@ -13567,21 +13601,21 @@ function renderCurrencyBreakdownYM(view){
   if (!breakdown.length){
     return renderBreakdownEmpty({
       chartVar:'pCurChart', canvasId:'pCurChart', legId:'pCurLeg',
-      message: 'Yahoo publishes no currency breakdown. On a fund\u2019s page, set its currency card to "Holdings" — or use Holdings-level mode here.',
+      message: 'Yahoo publishes no currency breakdown. On a fund\u2019s page, set its currency card to "Holdings".',
     });
   }
   const colors = breakdown.map((it,i) =>
-    it.key === 'undefined' ? UNDEFINED_COLOUR : SCOL[i % SCOL.length]);
+    isResidual(it.key) ? residualColour(it.key) : SCOL[i % SCOL.length]);
   makeBreakdownChart({
     chartVar:'pCurChart', canvasId:'pCurChart', items:breakdown,
-    labelFn: b => b.key === 'undefined' ? UNDEFINED_LABEL : b.key.toUpperCase(),
+    labelFn: b => isResidual(b.key) ? residualLabel(b.key) : b.key.toUpperCase(),
     colorFn: (b,i) => colors[i],
   });
   document.getElementById('pCurLeg').innerHTML = breakdown.map((b,i)=>{
-    const cur    = b.key === 'undefined' ? '' : b.key.toUpperCase();
+    const cur    = isResidual(b.key) ? '' : b.key.toUpperCase();
     const isBase = cur && cur === baseCur.toUpperCase();
     const valStr = b.value != null ? ` · ${fmtMoney(b.value, baseCur)}` : '';
-    const label  = b.key === 'undefined' ? UNDEFINED_LABEL : escapeHtml(cur);
+    const label  = isResidual(b.key) ? residualLabel(b.key) : escapeHtml(cur);
     return `
       <div class="lr">
         <div class="ls" style="background:${colors[i]}"></div>
@@ -13614,8 +13648,7 @@ function renderMetaFacetBreakdown(view, facet, cfg){
   }
   // Grey out the two non-answers so the eye reads them as residual
   // rather than as another category competing on equal terms.
-  const isResidual = k => (k === 'unknown' || k === 'n/a');
-  const colorAt = (it, i) => isResidual(it.key) ? UNDEFINED_COLOUR : SCOL[i % SCOL.length];
+  const colorAt = (it, i) => isResidual(it.key) ? residualColour(it.key) : SCOL[i % SCOL.length];
   const colors  = items.map(colorAt);
   makeBreakdownChart({
     chartVar: cfg.chartVar, canvasId: cfg.canvasId, items,
@@ -13988,7 +14021,7 @@ function fmtVolume(v){
 }
 function fmtSector(raw){
   if(!raw)return'—';
-  if(raw==='undefined')return UNDEFINED_LABEL;
+  if(isResidual(raw))return residualLabel(raw);
   const map={realestate:'Real Estate',consumer_cyclical:'Consumer Cyclical',
     basic_materials:'Basic Materials',consumer_defensive:'Consumer Defensive',
     technology:'Technology',communication_services:'Communication Services',
@@ -13997,7 +14030,7 @@ function fmtSector(raw){
   return map[raw] || raw.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
 }
 function fmtAssetClass(raw){
-  if (raw === 'undefined') return UNDEFINED_LABEL;
+  if (isResidual(raw)) return residualLabel(raw);
   const map = {
     equity:'Equity', fixed_income:'Fixed Income', cash:'Cash',
     mixed:'Mixed', commodity:'Commodity', other:'Other',
@@ -14060,7 +14093,7 @@ function fmtExchange(raw){
 // Pretty-print a Morningstar mstar_region key to a friendly label.
 function fmtRegion(raw){
   if (!raw) return '—';
-  if (raw === 'undefined') return UNDEFINED_LABEL;
+  if (isResidual(raw)) return residualLabel(raw);
   const map = {
     northAmerica:'North America', latinAmerica:'Latin America',
     unitedKingdom:'United Kingdom', europeDeveloped:'Europe — Developed',
@@ -14074,18 +14107,22 @@ function fmtRegion(raw){
 
 // Regroup a country breakdown ([{key,weight,value?}, ...] keyed by
 // mstar_country) into Morningstar regional buckets via REGION_MAP.
-// Weights and values are summed per region. The "undefined" bucket is
-// preserved as-is. A country with no region mapping falls into its own
-// "undefined" share so nothing is silently dropped. Output keeps the
-// same item shape and is sorted by weight descending with "undefined"
-// pinned last — matching what the backend rollups emit.
+// Weights and values are summed per region.
+//
+// Both residuals pass through unchanged — a cash sleeve has no region
+// for the same reason it has no country, and rewriting its "n/a" to
+// "unknown" here would invent a gap. A real country with no region
+// mapping is a gap in REGION_MAP, so it becomes "unknown" and nothing is
+// silently dropped. Output keeps the same item shape, sorted by weight
+// descending with both residuals pinned last — matching the backend.
 function regroupToRegion(items){
   const buckets = {};
   (items || []).forEach(it=>{
     const ckey = it.key || '';
     let rkey;
-    if (ckey === 'undefined' || !ckey)      rkey = 'undefined';
-    else                                    rkey = REGION_MAP[ckey] || 'undefined';
+    if (isResidual(ckey))      rkey = ckey;
+    else if (!ckey)            rkey = 'unknown';
+    else                       rkey = REGION_MAP[ckey] || 'unknown';
     const b = buckets[rkey] || (buckets[rkey] = {key:rkey, weight:0, value:0, _hasVal:false});
     b.weight += (it.weight || 0);
     if (it.value != null){ b.value += it.value; b._hasVal = true; }
@@ -14095,7 +14132,7 @@ function regroupToRegion(items){
     if (b._hasVal) o.value = b.value;
     return o;
   });
-  out.sort((a,b)=> (a.key==='undefined') - (b.key==='undefined') || b.weight - a.weight);
+  out.sort((a,b)=> isResidual(a.key) - isResidual(b.key) || b.weight - a.weight);
   return out;
 }
 
@@ -14106,7 +14143,7 @@ function regroupToRegion(items){
 // having to enumerate every country in the world here).
 function fmtCountry(raw){
   if (!raw) return '—';
-  if (raw === 'undefined') return UNDEFINED_LABEL;
+  if (isResidual(raw)) return residualLabel(raw);
   const map = {
     unitedstates:'United States', unitedkingdom:'United Kingdom',
     netherlands:'Netherlands', germany:'Germany', france:'France',

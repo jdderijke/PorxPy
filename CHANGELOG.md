@@ -5,6 +5,79 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [0.51.1] — 2026-08-04
+
+### Fixed
+- **`renderCountryCardChart` was deleted in 0.50.0**, so opening a
+  portfolio's fund list threw `renderCountryCardChart is not defined`.
+  Removing `renderCountryBreakdownLT` cut from that function's opening
+  line to the next section marker, and this shared helper sat between the
+  two. It is shared precisely because the Country/Region toggle re-renders
+  the chart without re-reading the view, so it belonged to the surviving
+  renderer as much as to the removed one.
+  Restored, updated for the two residuals.
+
+  Cutting by section marker rather than by function boundary is the
+  anchor-overreach failure the working agreement warns about, in a form
+  the occurrence count does not catch: the anchors were unique, the
+  region between them was not. Verified this release by diffing the whole
+  function inventory against 0.49.2 — `renderCountryCardChart` was the
+  only unintended removal.
+
+### Changed
+- Two empty-state messages still told the user to "use Holdings-level mode
+  here". That selector was removed in 0.50.0.
+
+---
+
+## [0.51.0] — 2026-08-04
+
+### Added
+- **The four breakdown facets now have two residuals instead of one.**
+  0.50.4 renamed `undefined` to "Unknown", which flattened a distinction
+  the meta facets have drawn since 0.28.0: `unknown` is a gap somebody
+  could close, `n/a` means the question does not apply. The reader wants
+  to know whether better data would fix it, and one bucket could not say.
+
+  - `unknown` — there is a value; this source does not have it. A
+    factsheet that omits the currency split, the 79% of a fund a top-10
+    holdings list says nothing about.
+  - `n/a` — there is no value to have. A cash balance has no sector.
+
+  `config.FACET_NOT_APPLICABLE` decides which a blank value becomes, from
+  the row's own asset class. It is deliberately narrow — PorxPy is
+  asserting something no source said — and currently covers cash on
+  sector and country only. Commodities are a defensible addition to both;
+  left out until asked for, and a one-line change when it is. Bond
+  positions are not there: an issuer has a sector and a country, and a
+  blank one is missing data.
+
+### Changed
+- **Coverage counts `n/a` as answered.** Only `unknown` counts against it.
+  Scoring an inapplicable question as a shortfall left a cash-heavy
+  portfolio permanently short of 100% on sector and country with nothing
+  anyone could do about it.
+- A partial roll-up's shortfall is `unknown`, never `n/a` — the rows we
+  are missing are holdings like any other.
+- A source that exists but says nothing about a facet answers `unknown`.
+- Two greys rather than two hues, `n/a` the lighter: both are the absence
+  of a real bucket and neither should read as a category competing with
+  the others, but `n/a` is the one needing no action.
+- `regroupToRegion` passes both residuals through unchanged. A cash sleeve
+  has no region for the same reason it has no country, and rewriting its
+  `n/a` to `unknown` would have invented a gap. A real country missing
+  from `REGION_MAP` is a gap, so it becomes `unknown`.
+- One `isResidual` / `residualLabel` / `residualColour` triple at the top
+  level, replacing the per-site key comparisons that had already drifted.
+
+### Note on migration
+None needed: the residual key is computed at request time by
+`rollup_holdings` and `build_fund_breakdowns` and never persisted.
+Holdings rows store their own raw facet values, and uploads store what was
+uploaded.
+
+---
+
 ## [0.50.4] — 2026-08-04
 
 ### Changed

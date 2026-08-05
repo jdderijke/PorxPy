@@ -41,17 +41,32 @@ from __future__ import annotations
 
 from typing import Any
 
-from porxpy.config import (BREAKDOWN_SOURCES, META_FACETS,
-                           SUPPLIED_BREAKDOWN_SOURCES, TARGET_FACETS)
+from porxpy.config import (BREAKDOWN_SOURCES, FACET_NOT_APPLICABLE,
+                           META_FACETS, NA_KEY, SUPPLIED_BREAKDOWN_SOURCES,
+                           TARGET_FACETS, UNKNOWN_KEY)
 
 
-# The residual bucket. Every facet distribution in this module reserves
-# this key for weight that is genuinely unaccounted for — a holding with
-# a blank facet value, the shortfall of a partial roll-up, or a source
-# that has nothing to say about this facet at all. It is never
-# renormalised away: a top-10 list covering a fifth of a fund describes a
-# fifth of a fund, and scaling it to 100% would invent the rest.
-UNDEFINED_KEY = "undefined"
+# The two residuals. Weight that lands in no real bucket is either a gap
+# somebody could close (UNKNOWN_KEY) or a question that does not apply to
+# the position (NA_KEY) — see the note beside them in config.
+#
+# Neither is ever renormalised away: a top-10 list covering a fifth of a
+# fund describes a fifth of a fund, and scaling it to 100% would invent
+# the rest.
+_RESIDUAL_KEYS = (UNKNOWN_KEY, NA_KEY)
+
+
+def _blank_facet_key(facet: str, asset_class: str) -> str:
+    """Which residual a blank ``facet`` value becomes for this position.
+
+    A cash row has no sector — no source will ever supply one, and
+    counting it as a gap left cash-heavy portfolios permanently
+    under-covered. Anything else is a gap: the value exists and whoever
+    filled in this row did not have it.
+    """
+    return (NA_KEY
+            if asset_class in FACET_NOT_APPLICABLE.get(facet, frozenset())
+            else UNKNOWN_KEY)
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +121,7 @@ def canonicalise_facet_key(facet: str, raw: Any) -> str:
     """Return the canonical key for a rollup-bucket lookup.
 
     Empty / ``None`` / ``"-"`` inputs return ``""`` so the caller can
-    decide whether to fold them into the ``"undefined"`` bucket.
+    decide which residual bucket to fold them into.
     Non-empty inputs return a canonical string suitable for use as a
     rollup-bucket key.
 
@@ -160,18 +175,19 @@ def rollup_holdings(rows: list[dict]) -> dict:
 
     Each input row carries ``weight_pct`` (a number, percent — 5.34 means
     5.34%) plus textual fields ``sector``, ``currency``, ``country``,
-    ``asset_class``. Blank values for one or more of those fields (cash
-    residuals, derivatives, securities-lending collateral, plain gaps in
-    the upload) are kept and bucketed under the literal key ``"undefined"``
-    on the affected facet — this way the visible buckets always sum to
-    100% and the user can see how much of the rollup is unclassified.
+    ``asset_class``. Blank values are kept rather than dropped, so the
+    visible buckets always sum to 100% and the reader can see how much of
+    the rollup is unclassified. Which residual a blank lands in depends on
+    the row: a cash position has no sector to find, so it is ``"n/a"``,
+    while a derivative or a gap in the upload is ``"unknown"`` — see
+    :data:`~porxpy.config.FACET_NOT_APPLICABLE`.
 
     Facet values are canonicalised via :func:`canonicalise_facet_key`
     before bucketing — see that function for the per-facet rules.
 
     Returned weights are FRACTIONS (0–1) of the WHOLE FUND, not of the
     rows supplied. A holdings list that covers 60% of a fund yields items
-    summing to 0.60 plus an ``"undefined"`` bucket of 0.40 — it is not
+    summing to 0.60 plus an ``"unknown"`` bucket of 0.40 — it is not
     rescaled to 100%, because doing so would report a top-10 list as if
     it were the entire portfolio. Per-facet ``coverage`` is the share the
     rows genuinely account for.
@@ -185,7 +201,7 @@ def rollup_holdings(rows: list[dict]) -> dict:
 
             {
               "sector":      [{"key": "Technology",   "weight": 0.34},
-                              {"key": "undefined",    "weight": 0.02}, ...],
+                              {"key": "unknown",      "weight": 0.02}, ...],
               "currency":    [{"key": "USD",          "weight": 0.71}, ...],
               "country":     [{"key": "unitedstates", "weight": 0.61}, ...],
               "asset_class": [{"key": "equity",       "weight": 0.97}, ...],
@@ -203,10 +219,9 @@ def rollup_holdings(rows: list[dict]) -> dict:
     if not rows:
         return empty
 
-    # Per-facet bucket dict keyed by the textual facet value (or
-    # ``"undefined"`` for blanks). One row contributes its weight to
-    # every facet's bucket — either to a real key or to "undefined".
-    UNDEFINED = UNDEFINED_KEY
+    # Per-facet bucket dict keyed by the textual facet value. One row
+    # contributes its weight to every facet's bucket — to a real key, or
+    # to one of the two residuals when the row's value is blank.
     buckets: dict[str, dict[str, float]] = {f: {} for f in facets}
     total_w = 0.0
 
@@ -218,10 +233,14 @@ def rollup_holdings(rows: list[dict]) -> dict:
         if w <= 0:
             continue
         total_w += w
+        # A blank sector means one thing on an equity row and another on
+        # a cash row, so the row's own asset class decides which residual
+        # it lands in.
+        row_ac = canonicalise_facet_key("asset_class", r.get("asset_class"))
         for facet in facets:
             key = canonicalise_facet_key(facet, r.get(facet))
             if not key:
-                key = UNDEFINED
+                key = _blank_facet_key(facet, row_ac)
             buckets[facet][key] = buckets[facet].get(key, 0.0) + w
 
     # Normalise against the WHOLE FUND, not against the rows we happen to
@@ -236,9 +255,9 @@ def rollup_holdings(rows: list[dict]) -> dict:
     #
     # So the denominator is 100 unless the rows exceed it (rounding, or a
     # leveraged fund whose exposures genuinely sum above par), and the
-    # shortfall becomes "undefined" — the same bucket a row with a blank
-    # facet value lands in. Both mean "weight we cannot attribute", which
-    # is exactly what the reader needs to know.
+    # shortfall becomes "unknown". The rows we are missing are holdings
+    # like any other — they have sectors and countries, we simply do not
+    # have the rows. That is a gap, never an inapplicable question.
     denom = max(total_w, 100.0)
     shortfall = max(0.0, denom - total_w)
 
@@ -247,14 +266,14 @@ def rollup_holdings(rows: list[dict]) -> dict:
         if total_w > 0:
             counts = dict(buckets[facet])
             if shortfall > 0:
-                counts[UNDEFINED] = counts.get(UNDEFINED, 0.0) + shortfall
+                counts[UNKNOWN_KEY] = counts.get(UNKNOWN_KEY, 0.0) + shortfall
             items = [
                 {"key": k, "weight": round(w / denom, 6)}
                 for k, w in counts.items()
             ]
-            # Sort by weight desc, but pin "undefined" at the end so
-            # consumers can show it as a tail slice without resorting.
-            items.sort(key=lambda x: (x["key"] == UNDEFINED, -x["weight"]))
+            # Sort by weight desc, but pin both residuals at the end so
+            # consumers can show them as tail slices without resorting.
+            items.sort(key=lambda x: (x["key"] in _RESIDUAL_KEYS, -x["weight"]))
         else:
             items = []
         out[facet] = items
@@ -358,7 +377,7 @@ def build_fund_breakdowns(holdings_breakdowns: dict,
     For each facet it reads the pinned source from ``overrides`` and
     emits that source's item list. **The pin is always honoured.** A
     source that exists but has nothing to say about this facet yields a
-    single 100% ``"undefined"`` bucket rather than falling back to
+    single 100% ``"unknown"`` bucket rather than falling back to
     Yahoo — silently substituting another source made the selector look
     broken, because picking one with no data for that facet snapped the
     card straight back to Yahoo.
@@ -410,7 +429,7 @@ def build_fund_breakdowns(holdings_breakdowns: dict,
 
         ``available`` says which sources the selector may offer. ``items``
         is never empty: a source with nothing for this facet gives
-        ``[{"key": "undefined", "weight": 1.0}]``.
+        ``[{"key": "unknown", "weight": 1.0}]``.
 
         Item weights are fractions (0-1). For ``"yahoo"`` they are issuer
         fractions as published (which may not sum to 1.0); for
@@ -424,7 +443,7 @@ def build_fund_breakdowns(holdings_breakdowns: dict,
 
     # Issuer-published item lists per facet. Yahoo publishes only
     # asset_class and sector; country and currency have no issuer source
-    # and answer "undefined" like any other source with nothing to say.
+    # and answer "unknown" like any other source with nothing to say.
     issuer: dict[str, list[dict]] = {
         "asset_class": _items_from_issuer_asset_allocation(asset_allocation),
         "sector":      _items_from_issuer_sectors(sectors),
@@ -476,7 +495,10 @@ def build_fund_breakdowns(holdings_breakdowns: dict,
 
         items = [dict(it) for it in (items_by_source.get(src) or [])]
         if not items:
-            items = [{"key": UNDEFINED_KEY, "weight": 1.0}]
+            # The source exists but says nothing about this facet. That
+            # is a gap in what it publishes, not an inapplicable
+            # question — a different factsheet would answer it.
+            items = [{"key": UNKNOWN_KEY, "weight": 1.0}]
 
         out[facet] = {
             "items":     items,
@@ -612,25 +634,27 @@ def rollup_portfolio_fundlevel(enriched: list[dict],
                 items = (fb.get(facet) or {}).get("items") or []
             if not items:
                 continue
-            undefined_w = 0.0
+            unknown_w = 0.0
             for it in items:
                 key = (it.get("key") or "").strip()
                 if not key:
-                    key = UNDEFINED_KEY
+                    key = UNKNOWN_KEY
                 try:
                     w = float(it.get("weight") or 0.0)
                 except (TypeError, ValueError):
                     continue
-                if key == UNDEFINED_KEY:
-                    undefined_w += w
+                if key == UNKNOWN_KEY:
+                    unknown_w += w
                 buckets[facet][key] = buckets[facet].get(key, 0.0) + fv * w
-            # Coverage measures IDENTIFIED exposure, so the undefined
-            # residual is excluded — a fund whose card is entirely
-            # undefined contributes nothing to coverage even though it
-            # contributes a full slice to the chart. Everything else
-            # counts in full, including issuer fractions that don't quite
-            # total 1.0: an incomplete answer is still an answer.
-            covered_value[facet] += fv * max(0.0, 1.0 - undefined_w)
+            # Coverage measures the share of the portfolio this facet has
+            # been ANSWERED for, so only "unknown" counts against it.
+            # "n/a" is an answer — a cash sleeve has no sector and never
+            # will — and scoring it as a gap left a cash-heavy portfolio
+            # permanently short of 100% with nothing anyone could do.
+            # Everything else counts in full, including issuer fractions
+            # that don't quite total 1.0: an incomplete answer is still
+            # an answer.
+            covered_value[facet] += fv * max(0.0, 1.0 - unknown_w)
 
     fundlevel_breakdowns: dict[str, list[dict]] = {}
     fundlevel_coverage:   dict[str, float] = {}
@@ -653,7 +677,7 @@ def rollup_portfolio_fundlevel(enriched: list[dict],
                 "weight": round(val / denom, 6),
                 "value":  round(val, 2),
             })
-        items.sort(key=lambda x: (x["key"] == "undefined", -x["weight"]))
+        items.sort(key=lambda x: (x["key"] in _RESIDUAL_KEYS, -x["weight"]))
         fundlevel_breakdowns[facet] = items
 
     return {

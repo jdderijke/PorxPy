@@ -538,6 +538,43 @@ MARKET_CAP_BUCKETS: tuple[tuple[str, float], ...] = (
 # by any reading. Cash likewise.
 STYLE_BOXES: tuple[str, ...] = ("growth", "blend", "value", "unknown")
 
+# ── The two residuals of a breakdown ────────────────────────────────────
+# Weight that lands in no real bucket is not all the same thing, and the
+# meta facets above already say so: "unknown" is a data gap, "n/a" means
+# the concept does not apply to this position. The four breakdown facets
+# used to call both "undefined", which answered the wrong question — the
+# reader wants to know whether better data would fix it.
+#
+#   unknown — there is a value; this source does not have it. The
+#             factsheet omits the currency split; a top-10 holdings list
+#             says nothing about the other 90%. More data would fix it.
+#   n/a     — there is no value to have. A cash balance has no sector.
+#             No source will ever fill this in, and it is not a gap.
+#
+# Only "unknown" counts against coverage. Treating n/a as a shortfall
+# left a cash-heavy portfolio permanently under-covered on sector with
+# nothing anyone could do about it.
+UNKNOWN_KEY: str = "unknown"
+NA_KEY:      str = "n/a"
+
+# Which asset classes make a facet inapplicable, so a blank value becomes
+# n/a rather than unknown. Deliberately narrow: PorxPy is asserting
+# something no source said, so it does it only where the answer is not
+# arguable. Cash has no sector and no country of issue.
+#
+# Commodities are a defensible addition to both — bullion has no equity
+# sector and no issuer — but that is a judgement about instruments rather
+# than a fact about the concept, so it is left out until asked for.
+# Bond positions are NOT here: an issuer has a sector and a country, and
+# a blank one is missing data, which is what "unknown" is for.
+#
+# A facet absent from this table is never n/a: every position is
+# denominated in some currency and belongs to some asset class.
+FACET_NOT_APPLICABLE: dict[str, frozenset[str]] = {
+    "sector":  frozenset({"cash"}),
+    "country": frozenset({"cash"}),
+}
+
 # Which values of each meta facet may carry a target. "unknown" is a
 # data gap rather than an intention, and "n/a" duplicates the cash
 # target you would already set on asset_class — neither belongs in the
