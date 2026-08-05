@@ -61,6 +61,27 @@ OTHER_BUCKET = "__other__"
 # 0.02% allocation is solver noise, not an intention.
 WEIGHT_EPS = 1e-4
 
+# Precision for SCREENING solves — the hundreds of throwaway fits greedy
+# and the swap search run to rank candidates against each other.
+#
+# Those fits are never shown to anyone; they exist to answer "is A better
+# than B", and the ranking is settled long before the weights are. At 60
+# iterations the residual is within ~4e-5 of converged, which cannot flip
+# a comparison that matters, and it is ~8x faster — the inner loop is
+# dominated by numpy call overhead at these tiny sizes, so iteration count
+# is very nearly the whole cost.
+#
+# The chosen set is always re-solved at full precision afterwards, so
+# nothing the user sees inherits the screening tolerance.
+SCREEN_ITER = 150
+SCREEN_TOL  = 1e-9
+
+# How many incoming funds the swap search tries per round, ranked by how
+# well they align with the current residual. Trying every unselected fund
+# is |selected| x |remaining| solves per round; at ~7ms a solve that is
+# seconds of wall clock for a gain the shortlist almost always contains.
+SWAP_CANDIDATES = 8
+
 
 # ---------------------------------------------------------------------------
 # Core numerics
@@ -91,9 +112,46 @@ def _project_simplex(v: np.ndarray) -> np.ndarray:
     return np.maximum(v - theta, 0.0)
 
 
+def _project_capped_simplex(y: np.ndarray, lb: np.ndarray, ub: np.ndarray,
+                            iters: int = 60) -> np.ndarray:
+    """Closest point to ``y`` in ``{w : lb <= w <= ub, sum(w) == 1}``.
+
+    The plain simplex projection assumes every weight may range over
+    ``[0, 1]``. Per-fund bounds break that: a position the user has
+    locked cannot go below what they already hold, and a fund excluded
+    from buying cannot go above it.
+
+    The solution has the form ``w_i = clip(y_i - lambda, lb_i, ub_i)`` for
+    a single scalar ``lambda`` — the Lagrange multiplier on the sum
+    constraint. ``sum(w(lambda))`` is non-increasing in lambda and
+    continuous, so bisection finds the lambda giving ``sum == 1`` without
+    needing a solver. 60 iterations halve the bracket 60 times, which is
+    exact to floating point.
+
+    Bracket: at ``lambda = min(y - ub)`` every weight is at its upper
+    bound and the sum is at its maximum; at ``lambda = max(y - lb)`` every
+    weight is at its lower bound and the sum is at its minimum. If 1 lies
+    outside ``[sum(lb), sum(ub)]`` the constraints are contradictory and
+    no projection exists — the caller checks feasibility first, so this
+    clamps rather than raising.
+    """
+    lo = float(np.min(y - ub))
+    hi = float(np.max(y - lb))
+    for _ in range(iters):
+        mid = 0.5 * (lo + hi)
+        if np.clip(y - mid, lb, ub).sum() > 1.0:
+            lo = mid
+        else:
+            hi = mid
+    return np.clip(y - 0.5 * (lo + hi), lb, ub)
+
+
 def _solve_weights(A: np.ndarray, t: np.ndarray,
                    max_iter: int = 500,
-                   tol: float = 1e-10) -> tuple[np.ndarray, float]:
+                   tol: float = 1e-10,
+                   w0: np.ndarray | None = None,
+                   lb: np.ndarray | None = None,
+                   ub: np.ndarray | None = None) -> tuple[np.ndarray, float]:
     """Minimise ``||A w - t||^2`` subject to ``w >= 0``, ``sum(w) == 1``.
 
     FISTA-accelerated projected gradient. Convex with a simple projection,
@@ -104,6 +162,12 @@ def _solve_weights(A: np.ndarray, t: np.ndarray,
         A: ``(n_buckets, n_assets)`` exposure matrix. Column ``j`` is
             asset ``j``'s exposure across every target bucket.
         t: ``(n_buckets,)`` target exposure vector.
+        w0: Optional starting point. The searches evaluate thousands of
+            column sets that differ from the previous one by a single
+            column, so the previous answer is nearly the next answer and
+            starting from it converges in a fraction of the iterations.
+            Must be a valid simplex point of the right length; it is
+            projected defensively regardless.
 
     Returns:
         ``(w, sse)`` — the optimal weights and the residual sum of squares.
@@ -125,14 +189,27 @@ def _solve_weights(A: np.ndarray, t: np.ndarray,
         L = 1.0
     step = 1.0 / L
 
-    w = np.full(n, 1.0 / n)
+    # Per-column bounds. Absent means the plain simplex, which is what
+    # every unconstrained fund gets.
+    bounded = lb is not None or ub is not None
+    if bounded:
+        _lb = np.zeros(n) if lb is None else np.asarray(lb, dtype=float)
+        _ub = np.ones(n)  if ub is None else np.asarray(ub, dtype=float)
+        _project = lambda v: _project_capped_simplex(v, _lb, _ub)
+    else:
+        _project = _project_simplex
+
+    if w0 is not None and w0.shape[0] == n:
+        w = _project(np.asarray(w0, dtype=float))
+    else:
+        w = _project(np.full(n, 1.0 / n)) if bounded else np.full(n, 1.0 / n)
     y = w.copy()
     t_k = 1.0
     prev = w.copy()
 
     for _ in range(max_iter):
         grad = AtA @ y - Atb
-        w_new = _project_simplex(y - step * grad)
+        w_new = _project(y - step * grad)
 
         t_next = (1.0 + np.sqrt(1.0 + 4.0 * t_k * t_k)) / 2.0
         y = w_new + ((t_k - 1.0) / t_next) * (w_new - w)
@@ -290,7 +367,10 @@ def _greedy_select(A: np.ndarray, t: np.ndarray,
                    mask: np.ndarray, row_facet: np.ndarray,
                    n_candidates: int,
                    max_funds: int,
-                   tol: dict) -> tuple[list[int], dict, bool]:
+                   tol: dict,
+                   lb: np.ndarray | None = None,
+                   ub: np.ndarray | None = None,
+                   forced: list[int] | None = None) -> tuple[list[int], dict, bool]:
     """Greedy forward selection, stopping when EVERY facet is in tolerance.
 
     Each round, try adding every not-yet-chosen fund, solve the small weight
@@ -319,23 +399,55 @@ def _greedy_select(A: np.ndarray, t: np.ndarray,
         order, so the caller can show which funds did the real work.
     """
     cash_idx = A.shape[1] - 1
-    selected: list[int] = []
-    remaining = set(range(n_candidates))
+    # Locked positions are in the design by right: a lower bound only
+    # binds if its column is present.
+    selected: list[int] = list(forced or [])
+    remaining = set(range(n_candidates)) - set(selected)
+
+    def _bnd(cols):
+        """Bounds for a column subset, or (None, None) when unbounded."""
+        if lb is None and ub is None:
+            return None, None
+        return (None if lb is None else lb[cols],
+                None if ub is None else ub[cols])
 
     # Baseline: everything in cash. Any fund must beat that.
-    w0, best_sse = _solve_weights(A[:, [cash_idx]], t)
+    #
+    # Two residuals are tracked deliberately. ``best_sse`` is measured at
+    # SCREENING precision because every challenger is, and a comparison
+    # between precisions is not a comparison at all: a screening fit sits
+    # ~4e-5 above its converged value, so a genuine improvement smaller
+    # than that would read as "no fund helps" and stop the search early.
+    # The exact solve is kept only for the deviations, which drive the
+    # stopping test and must be honest.
+    _base_cols = selected + [cash_idx]
+    _l, _u = _bnd(_base_cols)
+    w0, _ = _solve_weights(A[:, _base_cols], t, lb=_l, ub=_u)
     w_full = np.zeros(A.shape[1])
-    w_full[cash_idx] = w0[0]
+    for _pos, _col in enumerate(_base_cols):
+        w_full[_col] = w0[_pos]
+    cur_w = w_full
     best_devs = _facet_devs(A_raw, t_raw, mask, row_facet, w_full)
+    _, best_sse = _solve_weights(A[:, _base_cols], t, lb=_l, ub=_u,
+                                 max_iter=SCREEN_ITER, tol=SCREEN_TOL)
 
     while len(selected) < max_funds and remaining:
         if _all_within(best_devs, tol):
             return selected, best_devs, True      # the intended exit
 
         best_j, best_j_sse, best_j_w = None, best_sse, None
+        # Warm start: incumbent weights, with the trial column at zero.
+        # cols is [*selected, j, cash], so the new column sits second-last.
+        warm = np.zeros(len(selected) + 2)
+        for pos, col in enumerate(selected):
+            warm[pos] = cur_w[col]
+        warm[-1] = cur_w[cash_idx]
         for j in remaining:
             cols = selected + [j] + [cash_idx]
-            w, sse = _solve_weights(A[:, cols], t)
+            _tl, _tu = _bnd(cols)
+            w, sse = _solve_weights(A[:, cols], t, lb=_tl, ub=_tu,
+                                    max_iter=SCREEN_ITER, tol=SCREEN_TOL,
+                                    w0=warm)
             if sse < best_j_sse - 1e-12:
                 best_j, best_j_sse, best_j_w = j, sse, (cols, w)
 
@@ -345,15 +457,302 @@ def _greedy_select(A: np.ndarray, t: np.ndarray,
 
         selected.append(best_j)
         remaining.discard(best_j)
-        best_sse = best_j_sse
 
-        cols, w = best_j_w
+        # Re-solve the winner exactly. The screening fit ranked it; the
+        # deviations reported from it drive the stopping test, and that
+        # test must not fire on a number that is 4e-5 out.
+        cols, _w_screen = best_j_w
+        best_sse = best_j_sse            # screening scale, as above
+        _kl, _ku = _bnd(cols)
+        w, _ = _solve_weights(A[:, cols], t, lb=_kl, ub=_ku)
         w_full = np.zeros(A.shape[1])
         for pos, col in enumerate(cols):
             w_full[col] = w[pos]
+        cur_w = w_full
         best_devs = _facet_devs(A_raw, t_raw, mask, row_facet, w_full)
 
     return selected, best_devs, _all_within(best_devs, tol)
+
+
+def _swap_refine(A: np.ndarray, t: np.ndarray,
+                 A_raw: np.ndarray, t_raw: np.ndarray,
+                 mask: np.ndarray, row_facet: np.ndarray,
+                 selected: list[int], n_candidates: int,
+                 tol: dict,
+                 lb: np.ndarray | None = None,
+                 ub: np.ndarray | None = None,
+                 forced: list[int] | None = None,
+                 max_rounds: int = 4) -> tuple[list[int], dict, bool, int]:
+    """Improve a greedy selection by exchanging chosen funds for unchosen.
+
+    Greedy forward selection is myopic: a fund is chosen because it was
+    the best single addition at the time, and it can never be un-chosen,
+    even once later picks make it redundant. The classic case is a broad
+    fund taken in round one and then made worthless by the narrow funds
+    that follow:
+
+        targets 50% NA / 30% Europe / 20% Japan, max_funds=3
+        greedy  -> WORLD + JAPAN + EURO      = 2.19pp off
+        optimal -> SP500 + JAPAN + EURO      = 0.00pp off
+
+    Greedy spent its first slot on WORLD, which the optimal three-fund
+    answer does not use at all.
+
+    So after greedy converges, try every (selected, unselected) exchange
+    and keep any that lowers the residual. Repeat until a full round finds
+    no improvement. That is local search: it cannot guarantee the global
+    optimum, but it removes exactly the failure above, and it is cheap —
+    |selected| x |remaining| tiny solves per round, milliseconds at these
+    sizes. Deterministic, so the same inputs still give the same portfolio.
+
+    Ranked on residual, like greedy, for the same reason: it is smooth,
+    whereas max-deviation is not and makes the search path erratic. The
+    best swap in a round is applied, not the first found, so the result
+    does not depend on iteration order.
+
+    Args:
+        selected: Column indices chosen by :func:`_greedy_select`.
+        n_candidates: How many columns are selectable (frozen funds and
+            cash sit beyond this and must never be swapped in).
+        max_rounds: Safety bound. Each accepted round strictly lowers the
+            residual so cycling is impossible, but a bound keeps a
+            pathological case from running long.
+
+    Returns:
+        ``(selected, facet_devs, all_met, n_swaps)``.
+    """
+    cash_idx = A.shape[1] - 1
+    selected = list(selected)
+    # A locked position cannot be swapped out — that is what locking it
+    # means — so its slot is not a candidate for exchange.
+    forced_set = set(forced or [])
+
+    def _fit(cols: list[int], *, exact: bool = True,
+             warm: np.ndarray | None = None) -> tuple[float, np.ndarray]:
+        kw = {} if exact else {"max_iter": SCREEN_ITER, "tol": SCREEN_TOL}
+        full = cols + [cash_idx]
+        _l = None if lb is None else lb[full]
+        _u = None if ub is None else ub[full]
+        w, sse = _solve_weights(A[:, full], t, w0=warm, lb=_l, ub=_u, **kw)
+        w_full = np.zeros(A.shape[1])
+        for pos, col in enumerate(cols + [cash_idx]):
+            w_full[col] = w[pos]
+        return sse, w_full
+
+    # Incumbent scored at screening precision so challengers compare
+    # like with like; see the note in _greedy_select.
+    best_sse, _ = _fit(selected, exact=False)
+    _, best_w = _fit(selected)
+    n_swaps = 0
+
+    for _ in range(max_rounds):
+        remaining = [j for j in range(n_candidates) if j not in selected]
+        if not remaining or not selected:
+            break
+
+        # Shortlist the incoming candidates instead of trying all of them.
+        #
+        # A fund can only improve the fit by supplying exposure the
+        # portfolio is currently short of, so score each unselected fund
+        # by how strongly its column aligns with the current residual
+        # (r = A w - t) and try only the best few. This is the screening
+        # step from matching pursuit, and it is the difference between
+        # |selected| x |remaining| solves per round and |selected| x K.
+        #
+        # It is a heuristic: a fund outside the shortlist could in
+        # principle have made a good swap. But the alignment score is
+        # exactly the first-order estimate of how much a column can
+        # reduce the residual, so the ones it discards are the ones with
+        # least to offer — and the alternative, at ~7ms per solve, is an
+        # optimiser that takes ten seconds to answer.
+        resid = A @ best_w - t
+        align = np.abs(A[:, remaining].T @ resid)
+        shortlist = [remaining[i] for i in np.argsort(align)[::-1][:SWAP_CANDIDATES]]
+
+        best_move = None                      # (sse, position, incoming)
+        for pos in range(len(selected)):
+            if selected[pos] in forced_set:
+                # Locked: the user said not to sell it. Exchanging it is
+                # exactly that, however much it would improve the fit.
+                continue
+            for j in shortlist:
+                trial = list(selected)
+                trial[pos] = j
+                warm = np.array([best_w[c] for c in trial] + [best_w[cash_idx]])
+                sse, _w = _fit(trial, exact=False, warm=warm)
+                if sse < best_sse - 1e-12 and (best_move is None
+                                               or sse < best_move[0]):
+                    best_move = (sse, pos, j)
+
+        if best_move is None:
+            break                             # local optimum reached
+
+        best_sse, pos, j = best_move
+        selected[pos] = j
+        _, best_w = _fit(selected)
+        n_swaps += 1
+
+    devs = _facet_devs(A_raw, t_raw, mask, row_facet, best_w)
+    return selected, devs, _all_within(devs, tol), n_swaps
+
+
+def _portfolio_score(w_full: np.ndarray, cols: list[int],
+                     tickers: list[str], scores: dict) -> float | None:
+    """Weight-averaged peer score of a candidate selection.
+
+    Weighted, not a plain average: a 2% position in a mediocre fund
+    matters about a fiftieth as much as a 40% one, and an unweighted mean
+    would let a dust position veto a good design.
+
+    Funds with no peer score are excluded from BOTH sides of the average,
+    so an unscoreable fund neither helps nor hurts. Returns None when
+    nothing in the selection can be scored.
+    """
+    num = den = 0.0
+    for c in cols:
+        if c >= len(tickers):
+            continue
+        blk = scores.get(tickers[c].upper()) or {}
+        sc = blk.get("score_peer")
+        w = float(w_full[c])
+        if sc is None or w <= 0:
+            continue
+        num += w * sc
+        den += w
+    return (num / den) if den > 0 else None
+
+
+def _score_alternatives(A: np.ndarray, t: np.ndarray,
+                        A_raw: np.ndarray, t_raw: np.ndarray,
+                        mask: np.ndarray, row_facet: np.ndarray,
+                        selected: list[int], n_candidates: int,
+                        tol: dict, tickers: list[str], names: list[str],
+                        scores: dict, peer_of: list[str],
+                        lb: np.ndarray | None = None,
+                        ub: np.ndarray | None = None,
+                        forced: list[int] | None = None,
+                        top_n: int = 3) -> list[dict]:
+    """Price the better-scoring alternatives to each chosen fund.
+
+    For every fund in the design, find the higher-scoring funds in its
+    peer group and work out what substituting each would actually cost:
+    swap it in, re-solve the weights, measure the new deviation.
+
+    Nothing is applied. The point is to put the trade in front of the
+    user — "this fund scores 12, its peer scores 95, taking it costs you
+    1.2pp of country accuracy" — and let them decide. An optimiser that
+    spent an error budget automatically would be guessing at how much
+    accuracy the user is willing to trade, which varies per portfolio and
+    is exactly the judgement they are best placed to make.
+
+    Alternatives that break a tolerance are included and flagged, not
+    hidden: the user asked for the choice, and a substitution costing
+    2.5pp against a 2pp tolerance may still be the one they want.
+
+    Peer group, not the whole universe: the optimiser holds a European
+    bond fund because the targets demand one, and offering to replace it
+    with a high-scoring US equity tracker would be answering a question
+    nobody asked.
+
+    Each row is priced against the SAME baseline, independently. That is
+    what makes the numbers comparable — but it also means accepting two
+    rows does not cost the sum of their two prices, since deviations do
+    not add linearly. The caller must recompute the combined result
+    before applying, which is what ``substitutions`` is for.
+
+    Returns:
+        ``[{"ticker", "score", "peer_key", "alternatives": [...]}, ...]``,
+        one entry per selected fund, ordered as selected. A fund already
+        best in its group yields an empty ``alternatives`` list rather
+        than being omitted, so the table can say so.
+    """
+    cash_idx = A.shape[1] - 1
+    forced_set = set(forced or [])
+
+    def _fit(cols):
+        full = cols + [cash_idx]
+        _l = None if lb is None else lb[full]
+        _u = None if ub is None else ub[full]
+        w, sse = _solve_weights(A[:, full], t, lb=_l, ub=_u)
+        w_full = np.zeros(A.shape[1])
+        for pos, col in enumerate(cols + [cash_idx]):
+            w_full[col] = w[pos]
+        return w_full
+
+    base_devs = _facet_devs(A_raw, t_raw, mask, row_facet, _fit(selected))
+    base_worst = max(base_devs.values()) if base_devs else 0.0
+
+    def _nm(j):
+        return (names[j] if j < len(names) and names[j] else tickers[j])
+
+    def _score_of(j):
+        return (scores.get(tickers[j].upper()) or {}).get("score_peer")
+
+    out: list[dict] = []
+    for pos, j in enumerate(selected):
+        if j in forced_set:
+            # Locked: the user has said not to sell it, so offering a
+            # replacement would be proposing exactly that.
+            out.append({"ticker": tickers[j], "name": _nm(j),
+                        "score": (round(float(_score_of(j)), 2)
+                                  if _score_of(j) is not None else None),
+                        "peer_key": peer_of[j] if j < len(peer_of) else "",
+                        "locked": True, "alternatives": []})
+            continue
+        my_score = _score_of(j)
+        my_peer  = peer_of[j] if j < len(peer_of) else ""
+        alts: list[dict] = []
+
+        # Same peer group, better score, not already in the design.
+        cands = [k for k in range(n_candidates)
+                 if k != j and k not in selected
+                 and (peer_of[k] if k < len(peer_of) else "") == my_peer
+                 and _score_of(k) is not None
+                 and (my_score is None or _score_of(k) > my_score)]
+        cands.sort(key=lambda k: -_score_of(k))
+
+        for k in cands[:max(0, top_n)]:
+            trial = list(selected)
+            trial[pos] = k
+            devs = _facet_devs(A_raw, t_raw, mask, row_facet, _fit(trial))
+            worst = max(devs.values()) if devs else 0.0
+            # Per-facet before/after/delta, not just the worst figure.
+            # A substitution that costs 1.4pp overall may be spending all
+            # of it on a facet you barely care about, or all of it on the
+            # one you set the tightest tolerance on — and the headline
+            # number cannot tell those apart.
+            per_facet = {}
+            for f in set(list(devs.keys()) + list(base_devs.keys())):
+                b = base_devs.get(f, 0.0)
+                a = devs.get(f, 0.0)
+                per_facet[f] = {
+                    "before": round(b, 6),
+                    "after":  round(a, 6),
+                    "delta":  round(a - b, 6),
+                    "tolerance": round(float(tol.get(f, 0.0)), 6),
+                    "within":    a <= float(tol.get(f, float("inf"))) + 1e-9,
+                }
+            alts.append({
+                "ticker":       tickers[k],
+                "name":         _nm(k),
+                "score":        round(float(_score_of(k)), 2),
+                "score_delta":  (round(float(_score_of(k)) - float(my_score), 2)
+                                 if my_score is not None else None),
+                "dev_before":   round(base_worst, 6),
+                "dev_after":    round(worst, 6),
+                "dev_delta":    round(worst - base_worst, 6),
+                "facets":       per_facet,
+                "within_tol":   _all_within(devs, tol),
+            })
+
+        out.append({
+            "ticker":       tickers[j],
+            "name":         _nm(j),
+            "score":        round(float(my_score), 2) if my_score is not None else None,
+            "peer_key":     my_peer,
+            "alternatives": alts,
+        })
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +767,10 @@ def optimise_portfolio(candidates: list[dict],
                        min_weight: float = 0.01,
                        min_trade_base: float = 100.0,
                        max_error: dict | float = 0.05,
-                       facet_weights: dict | None = None) -> dict:
+                       facet_weights: dict | None = None,
+                       scores: dict | None = None,
+                       substitutions: dict | None = None,
+                       alternatives_top_n: int = 3) -> dict:
     """Design (or rebalance to) a portfolio matching the exposure targets.
 
     Args:
@@ -425,7 +827,16 @@ def optimise_portfolio(candidates: list[dict],
             ``1 / max_error[facet]``, i.e. residuals measured in units of
             "how much I care". Override only if you want importance to
             diverge from tolerance.
-        facet_weights: Per-facet importance, default 1.0 each.
+        scores: ``{ticker: {"score_peer": 0-100 or None}}`` from
+            :func:`porxpy.scoring.score_universe`. When supplied, the
+            result carries a ``alternatives`` block listing, per chosen
+            fund, the better-scoring funds in its peer group and what
+            substituting each would cost in deviation. Nothing is applied
+            automatically — see ``substitutions``.
+        substitutions: ``{held_ticker: replacement_ticker}`` to force into
+            the design after selection. This is how the caller applies
+            the alternatives the user accepted.
+        alternatives_top_n: How many alternatives to offer per fund.
 
     Returns:
         ::
@@ -483,12 +894,39 @@ def optimise_portfolio(candidates: list[dict],
     # sold or selected. A held position with no shares is not frozen in
     # any meaningful sense — there is nothing to freeze — so it is simply
     # dropped rather than carried as a zero-weight constraint.
+    # Two independent flags, four states:
+    #
+    #   include  locked   the optimiser may
+    #   -------  ------   -------------------------------------------
+    #   True     False    buy and sell freely
+    #   False    False    sell, but never buy       (upper bound)
+    #   True     True     buy more, but never sell  (lower bound)
+    #   False    True     neither — fully frozen
+    #
+    # `include` lives on the fund and applies everywhere: "never put this
+    # in a buy suggestion, in any portfolio". `locked` lives on the
+    # position and applies here only: "do not suggest selling what I hold
+    # in THIS portfolio".
+    #
+    # The middle two are not exclusions but BOUNDS, which is why the
+    # solver needed a capped-simplex projection. An unheld fund that
+    # cannot be bought is dropped outright — there is nothing to sell and
+    # nothing may be added.
     usable, frozen = [], []
     for c in priceable:
-        if c.get("include", True):
+        buyable  = bool(c.get("include", True))
+        sellable = not bool(c.get("locked", False))
+        held     = float(c.get("current_shares") or 0.0) > 0.0
+        if buyable and sellable:
             usable.append(c)
-        elif float(c.get("current_shares") or 0.0) > 0.0:
-            frozen.append(c)
+        elif not held:
+            if buyable:
+                usable.append(c)          # locked but unheld: nothing to lock
+            # unheld and unbuyable: not a candidate at all
+        elif not buyable and not sellable:
+            frozen.append(c)              # fully frozen, fixed baseline
+        else:
+            usable.append(c)              # bounded on one side
 
     # Total investable = every fund's current worth + cash. Rebalancing
     # can sell as well as buy, so held value is part of the budget —
@@ -517,6 +955,42 @@ def optimise_portfolio(candidates: list[dict],
                 "trades": [], "positions": [], "selected": []}
 
     frozen_share = frozen_base / total_base if total_base > 0 else 0.0
+
+    # ---- Per-column bounds ----------------------------------------------
+    # Expressed as fractions of the FREE budget, because that is the space
+    # the solver works in. Cash is the last column and is never bounded.
+    n_cols = len(usable) + len(frozen) + 1
+    lb_full = np.zeros(n_cols)
+    ub_full = np.ones(n_cols)
+    forced: list[int] = []
+    for j, c in enumerate(usable):
+        held_w = ((float(c.get("current_shares") or 0.0)
+                   * float(c.get("price_base") or 0.0)) / free_base
+                  if free_base > 0 else 0.0)
+        if held_w <= 0:
+            continue
+        if not bool(c.get("include", True)):
+            ub_full[j] = min(1.0, held_w)     # may shrink, never grow
+        if bool(c.get("locked", False)):
+            lb_full[j] = min(1.0, held_w)     # may grow, never shrink
+            # A lower bound only binds if the column is in the solve, so a
+            # locked holding is part of the design by right rather than by
+            # selection.
+            forced.append(j)
+
+    has_bounds = bool(forced) or bool((ub_full[:len(usable)] < 1.0).any())
+
+    # Locks can contradict each other, or contradict a cash target. Caught
+    # here rather than returning a silently wrong answer: the projection
+    # would clamp and produce weights that satisfy nothing.
+    if lb_full.sum() > 1.0 + 1e-9:
+        locked_tks = [usable[j]["ticker"] for j in forced]
+        return {"ok": False,
+                "reason": (f"locked positions already account for "
+                           f"{lb_full.sum()*100:.0f}% of the tradeable budget, "
+                           f"so no design is possible. Unlock one of: "
+                           f"{', '.join(locked_tks)}."),
+                "trades": [], "positions": [], "selected": []}
 
     # Normalise the tolerance to a per-facet dict.
     if isinstance(max_error, (int, float)):
@@ -585,21 +1059,76 @@ def optimise_portfolio(candidates: list[dict],
 
     # 1. Choose a small fund set — adding funds until the fit is good
     #    enough, not until it stops improving.
+    _lb = lb_full if has_bounds else None
+    _ub = ub_full if has_bounds else None
     sel, _devs, target_met = _greedy_select(
         A, t_free, A_raw, t_raw_free, mask, row_facet,
-        len(usable), max_funds, tol_free)
+        len(usable), max_funds, tol_free, lb=_lb, ub=_ub, forced=forced)
+
+    # 1b. Local search over exchanges, undoing greedy's myopia.
+    #
+    #     Runs unconditionally, including when greedy already met every
+    #     tolerance. It used to be skipped in that case, on the reasoning
+    #     that the user asked for "good enough" rather than "optimal".
+    #     That reasoning stopped holding once the alternatives table
+    #     existed.
+    #
+    #     Greedy stops at the FIRST design inside tolerance, so a
+    #     successful run lands just under the line — 1.8pp against a 2pp
+    #     budget. The swap pass exchanges funds within the existing set
+    #     size, adding none, so it can often take that to 0.4pp for free.
+    #     Two things follow from skipping it: the design shown is worse
+    #     than it needs to be at no saving, and every substitution in the
+    #     quality table is priced against an unnecessarily loose baseline,
+    #     so more of them read "exceeds tolerance" than truly do.
+    #
+    #     It costs a few hundred milliseconds and can only lower the
+    #     deviation, never raise it — an exchange is accepted only when
+    #     the residual falls.
+    sel, _devs, target_met, n_swaps = _swap_refine(
+        A, t_free, A_raw, t_raw_free, mask, row_facet,
+        sel, len(usable), tol_free, lb=_lb, ub=_ub, forced=forced)
+
+    # 1c. Caller-requested substitutions.
+    #
+    #     Applied here, after the fit passes have chosen a set and before
+    #     the weights are finalised, so a substituted design is solved
+    #     exactly like any other rather than being patched afterwards.
+    #     This is how the "best in class" table applies the user's picks:
+    #     it sends the substitutions it wants and gets back a real,
+    #     fully-recomputed result — which matters because deviations do
+    #     not add up linearly, so a set of individually-priced swaps can
+    #     cost more or less together than the sum of their parts.
+    applied_subs: list[dict] = []
+    if substitutions:
+        by_tk = {(c.get("ticker") or "").upper(): j for j, c in enumerate(usable)}
+        for out_tk, in_tk in substitutions.items():
+            oj = by_tk.get((out_tk or "").upper())
+            ij = by_tk.get((in_tk or "").upper())
+            if oj is None or ij is None or ij in sel:
+                continue
+            if oj in sel:
+                sel[sel.index(oj)] = ij
+                applied_subs.append({"out": out_tk.upper(), "in": in_tk.upper()})
 
     # 2. Solve weights on that set (+ cash).
     cols = sel + [cash_idx]
-    w, _ = _solve_weights(A[:, cols], t_free)
+    w, _ = _solve_weights(A[:, cols], t_free,
+                          lb=None if _lb is None else _lb[cols],
+                          ub=None if _ub is None else _ub[cols])
 
     # 3. Prune dust and re-solve, so the pruned weight is redistributed
     #    properly rather than just dropped on the floor.
-    keep = [i for i, j in enumerate(sel) if w[i] >= min_weight]
+    # Never prune a locked position: its weight is the user's instruction,
+    # not the solver's choice, and dropping it would silently sell it.
+    keep = [i for i, j in enumerate(sel)
+            if w[i] >= min_weight or j in set(forced)]
     if len(keep) < len(sel):
         sel = [sel[i] for i in keep]
         cols = sel + [cash_idx]
-        w, _ = _solve_weights(A[:, cols], t_free)
+        w, _ = _solve_weights(A[:, cols], t_free,
+                              lb=None if _lb is None else _lb[cols],
+                              ub=None if _ub is None else _ub[cols])
 
     # These are weights *within the free sub-portfolio*, so they sum to 1
     # across the selected funds plus cash — not across the whole
@@ -621,10 +1150,13 @@ def optimise_portfolio(candidates: list[dict],
         tgt_sh   = amount / price
         delta    = tgt_sh - cur
 
+        _sc = (scores or {}).get((c["ticker"] or "").upper()) or {}
         if weight > 0:
             positions.append({
                 "ticker":        c["ticker"],
                 "name":          c.get("name") or c["ticker"],
+                "score_all":     _sc.get("score_all"),
+                "score_peer":    _sc.get("score_peer"),
                 "weight":        round(weight * free, 6),
                 "target_shares": round(tgt_sh, 6),
                 "amount_base":   round(amount, 2),
@@ -637,6 +1169,10 @@ def optimise_portfolio(candidates: list[dict],
         trades.append({
             "ticker":         c["ticker"],
             "name":           c.get("name") or c["ticker"],
+            # Carried on the trade so the suggestion list can show what
+            # is being bought or sold in quality terms, not just size.
+            "score_all":      _sc.get("score_all"),
+            "score_peer":     _sc.get("score_peer"),
             "action":         "buy" if delta > 0 else "sell",
             "shares_delta":   round(delta, 6),
             "price_base":     round(price, 6),
@@ -663,6 +1199,22 @@ def optimise_portfolio(candidates: list[dict],
 
     positions.sort(key=lambda p: -p["weight"])
     trades.sort(key=lambda x: -abs(x["amount_base"]))
+
+    # Price the better-scoring peers of every chosen fund. Reported, never
+    # applied: the user decides whether the accuracy is worth the quality.
+    alternatives: list[dict] = []
+    if scores:
+        try:
+            from porxpy.scoring import peer_key as _peer_key
+            peer_of = [_peer_key(c) for c in usable]
+        except Exception:
+            peer_of = ["" for _ in usable]
+        alternatives = _score_alternatives(
+            A, t_free, A_raw, t_raw_free, mask, row_facet,
+            sel, len(usable), tol_free,
+            [c.get("ticker") or "" for c in usable],
+            [c.get("name") or "" for c in usable], scores, peer_of,
+            lb=_lb, ub=_ub, forced=forced, top_n=alternatives_top_n)
 
     # 5. Diagnostics: what exposure did we actually achieve, and where are
     #    we still off? This is what makes the result trustworthy rather
@@ -754,6 +1306,9 @@ def optimise_portfolio(candidates: list[dict],
         "achieved":    achieved,
         "deviation":   deviation,
         "facets":      facet_report,   # {facet: {max_dev, tolerance, met}}
+        "swaps":         n_swaps,      # exchanges the fit refinement applied
+        "alternatives":  alternatives, # per chosen fund, better-scoring peers
+        "substitutions": applied_subs, # substitutions the caller requested
         "frozen": {
             "share":   round(phi, 6),
             "base":    round(frozen_base, 2),

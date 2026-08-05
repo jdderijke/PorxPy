@@ -904,9 +904,33 @@ def _load_regions() -> tuple[list[dict], dict[str, str], dict[str, set]]:
             if norm and norm not in aliases:
                 aliases[norm] = key
 
-        if kind == "region":
-            for sup in row["super_regions"]:
-                super_members.setdefault(sup, set()).add(key)
+        # Membership is declared bottom-up: each row names the super
+        # regions it belongs to. Super regions may themselves belong to
+        # others — "world" contains "developed", which contains
+        # "northAmerica" — so supers register too, and the nesting is
+        # resolved transitively below.
+        for sup in row["super_regions"]:
+            super_members.setdefault(sup, set()).add(key)
+
+    # Flatten the nesting. Without this, "world" would contain only the
+    # keys that named it directly, and the containment rule in
+    # _derive_focus_from_name — which collapses several region hits into
+    # the one super region enclosing them all — would fail for any name
+    # matching both a super and something inside it. Iterating to a fixed
+    # point handles arbitrary depth; the vocabulary is tiny, so the cost
+    # is nil and a cycle simply stops adding members rather than hanging.
+    for _ in range(len(rows) + 1):
+        changed = False
+        for sup, members in list(super_members.items()):
+            expanded = set(members)
+            for m in members:
+                expanded |= super_members.get(m, set())
+            expanded.discard(sup)          # a region cannot contain itself
+            if expanded != members:
+                super_members[sup] = expanded
+                changed = True
+        if not changed:
+            break
 
     if raw_rows and not rows:
         first = raw_rows[0] if raw_rows else {}
@@ -956,7 +980,12 @@ def focus_detail_vocabulary(context: dict | None = None):
         since nothing can enumerate "Artificial Intelligence" ahead of
         time. ``focus_type: none`` allows only the empty string.
     """
-    ftype = ((context or {}).get("focus_type") or "none").strip().lower()
+    # Defensive str(): this is reachable from anything that validates an
+    # override, including an AI reply whose shape we do not control. A
+    # bad context should narrow the vocabulary, not raise.
+    raw_ft = (context or {}).get("focus_type")
+    ftype = (str(raw_ft) if isinstance(raw_ft, (str, int, float)) else "none")
+    ftype = (ftype or "none").strip().lower()
     if ftype == "region":
         return focus_region_vocabulary()
     if ftype == "sector":

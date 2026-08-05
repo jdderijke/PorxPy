@@ -19,15 +19,18 @@ that returns breakdown cards (``load_fund_data``, ``api_holdings_patch``,
 ``api_portfolio_view``) routes through here, so a card physically cannot
 go stale: there is nowhere to store a stale one.
 
-Three derivation levels, three functions:
+The derivation levels, and the function for each:
 
 * :func:`canonicalise_facet_key` — normalise one raw facet value to a
-  canonical rollup-bucket key (shared by the two rollups below).
+  canonical rollup-bucket key (shared by every rollup below).
 * :func:`rollup_holdings` — **fund / holding level.** One fund's
   per-position rows → that fund's look-through breakdowns.
-* :func:`rollup_portfolio_lookthrough` — **portfolio level.** A list of
-  already-valued funds (each carrying its own ``rollup_holdings``
-  output) → the portfolio-wide look-through breakdowns.
+* :func:`build_fund_breakdowns` — **fund level.** Resolves each of the
+  four cards to its pinned source.
+* :func:`rollup_portfolio_fundlevel` — **portfolio level.** A list of
+  already-valued funds (each carrying its own ``build_fund_breakdowns``
+  block) → the portfolio-wide cards. Every fund contributes on the basis
+  its own card is set to, so there is no portfolio-wide source switch.
 
 For backwards compatibility, :mod:`porxpy.utils` re-exports
 ``canonicalise_facet_key`` and ``rollup_holdings`` so existing
@@ -38,7 +41,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from porxpy.config import META_FACETS, TARGET_FACETS
+from porxpy.config import (BREAKDOWN_SOURCES, META_FACETS,
+                           SUPPLIED_BREAKDOWN_SOURCES, TARGET_FACETS)
+
+
+# The residual bucket. Every facet distribution in this module reserves
+# this key for weight that is genuinely unaccounted for — a holding with
+# a blank facet value, the shortfall of a partial roll-up, or a source
+# that has nothing to say about this facet at all. It is never
+# renormalised away: a top-10 list covering a fifth of a fund describes a
+# fifth of a fund, and scaling it to 100% would invent the rest.
+UNDEFINED_KEY = "undefined"
 
 
 # ---------------------------------------------------------------------------
@@ -156,15 +169,16 @@ def rollup_holdings(rows: list[dict]) -> dict:
     Facet values are canonicalised via :func:`canonicalise_facet_key`
     before bucketing — see that function for the per-facet rules.
 
-    Returned weights are FRACTIONS (0–1), normalised against the total
-    weight of all rows (including blanks-as-undefined), so each facet
-    sums to 1.0 by construction. Per-facet ``coverage`` is therefore
-    always 1.0 when ``total_weight_pct > 0``; the field is retained for
-    backwards compatibility with callers that read it.
+    Returned weights are FRACTIONS (0–1) of the WHOLE FUND, not of the
+    rows supplied. A holdings list that covers 60% of a fund yields items
+    summing to 0.60 plus an ``"undefined"`` bucket of 0.40 — it is not
+    rescaled to 100%, because doing so would report a top-10 list as if
+    it were the entire portfolio. Per-facet ``coverage`` is the share the
+    rows genuinely account for.
 
     Args:
-        rows: Full-holdings rows as parsed by ``ishares.parse_csv`` or
-            an upload commit.
+        rows: Full-holdings rows, as produced by a holdings upload
+            commit or by Yahoo enrichment.
 
     Returns:
         ::
@@ -192,7 +206,7 @@ def rollup_holdings(rows: list[dict]) -> dict:
     # Per-facet bucket dict keyed by the textual facet value (or
     # ``"undefined"`` for blanks). One row contributes its weight to
     # every facet's bucket — either to a real key or to "undefined".
-    UNDEFINED = "undefined"
+    UNDEFINED = UNDEFINED_KEY
     buckets: dict[str, dict[str, float]] = {f: {} for f in facets}
     total_w = 0.0
 
@@ -210,12 +224,33 @@ def rollup_holdings(rows: list[dict]) -> dict:
                 key = UNDEFINED
             buckets[facet][key] = buckets[facet].get(key, 0.0) + w
 
+    # Normalise against the WHOLE FUND, not against the rows we happen to
+    # have.
+    #
+    # Holdings weights are percentages of the fund, so a complete list
+    # sums to ~100. Dividing by the rows' own total made any list sum to
+    # exactly 1.0 — which silently rescaled a partial list up to a whole
+    # fund. A top-10 list covering 21% of a fund reported the largest
+    # holding's sector at 4.7x its real weight, and the card claimed
+    # 100% coverage while doing it.
+    #
+    # So the denominator is 100 unless the rows exceed it (rounding, or a
+    # leveraged fund whose exposures genuinely sum above par), and the
+    # shortfall becomes "undefined" — the same bucket a row with a blank
+    # facet value lands in. Both mean "weight we cannot attribute", which
+    # is exactly what the reader needs to know.
+    denom = max(total_w, 100.0)
+    shortfall = max(0.0, denom - total_w)
+
     out: dict = {"total_weight_pct": round(total_w, 4)}
     for facet in facets:
         if total_w > 0:
+            counts = dict(buckets[facet])
+            if shortfall > 0:
+                counts[UNDEFINED] = counts.get(UNDEFINED, 0.0) + shortfall
             items = [
-                {"key": k, "weight": round(w / total_w, 6)}
-                for k, w in buckets[facet].items()
+                {"key": k, "weight": round(w / denom, 6)}
+                for k, w in counts.items()
             ]
             # Sort by weight desc, but pin "undefined" at the end so
             # consumers can show it as a tail slice without resorting.
@@ -224,12 +259,12 @@ def rollup_holdings(rows: list[dict]) -> dict:
             items = []
         out[facet] = items
 
-    # Coverage is now 1.0 by construction whenever any rows exist (the
-    # "undefined" bucket absorbs everything that used to count as
-    # uncovered). Retained as a per-facet field for backwards compat.
-    out["coverage"] = {
-        f: 1.0 if total_w > 0 else 0.0 for f in facets
-    }
+    # Coverage is the share of the fund the rows actually account for —
+    # a real number again, rather than 1.0 by construction. It is what
+    # the card's coverage badge should report: a top-10 list is 21%
+    # covered however tidily its own weights add up.
+    covered = (total_w / denom) if total_w > 0 else 0.0
+    out["coverage"] = {f: round(covered, 6) for f in facets}
     return out
 
 
@@ -240,7 +275,7 @@ def rollup_holdings(rows: list[dict]) -> dict:
 # asset_class / sector / country / currency. Each card is a *distribution
 # over the fund's holdings* and has three possible data sources:
 #
-#   "fund"     — the issuer's own published aggregate of its holdings on
+#   "yahoo"    — the issuer's own published aggregate of its holdings on
 #                that facet (Yahoo funds_data). Available for asset_class
 #                (asset_classes) and sector (sector_weightings) only;
 #                Yahoo publishes NO country or currency distribution, so
@@ -256,7 +291,7 @@ def rollup_holdings(rows: list[dict]) -> dict:
 #                a fund factsheet (typically by screenshotting the
 #                issuer's fund page and asking an LLM to extract a CSV).
 #
-# Per fund, per facet, the user can override the source from "fund" to
+# Per fund, per facet, the user can override the source from "yahoo" to
 # "holdings" or "upload" (persisted as "breakdown_source.<facet>"
 # in the per-field override store — see porxpy.utils.override_put).
 # Once overridden, that card *is* the fund's Fund/ETF-level data: it rolls up
@@ -314,17 +349,28 @@ def build_fund_breakdowns(holdings_breakdowns: dict,
                           sectors: list[dict] | None,
                           asset_allocation: list[dict] | None,
                           overrides: dict | None,
-                          uploaded_facets: dict | None = None) -> dict:
+                          uploaded_facets: dict | None = None,
+                          sources_present: dict | None = None) -> dict:
     """Resolve the four fund-level breakdown cards into one uniform block.
 
     This is a pure function: it reads only its arguments and does no I/O.
 
-    For each of the four facets it decides, from ``overrides``, whether
-    the card is sourced from issuer data (``"fund"``), the holdings
-    roll-up (``"holdings"``), or a user CSV upload (``"upload"``), then
-    emits the resolved item list together with enough metadata for the
-    frontend to render the source label, the per-source availability
-    flags, and the "populate from holdings" nudge.
+    For each facet it reads the pinned source from ``overrides`` and
+    emits that source's item list. **The pin is always honoured.** A
+    source that exists but has nothing to say about this facet yields a
+    single 100% ``"undefined"`` bucket rather than falling back to
+    Yahoo — silently substituting another source made the selector look
+    broken, because picking one with no data for that facet snapped the
+    card straight back to Yahoo.
+
+    "Has this source anything for this facet" and "does this source
+    exist for this fund" are different questions, and only the second
+    decides whether the selector offers it. A factsheet that omits the
+    currency split is still a factsheet, and answering "unknown" from it
+    is a real answer. That existence cannot be read off the arguments
+    here — an empty holdings roll-up may mean no holdings at all or
+    holdings that classified to nothing, and a factsheet leaves no trace
+    in any of them — so callers pass it in ``sources_present``.
 
     Args:
         holdings_breakdowns: The fund's look-through roll-up — the dict
@@ -336,53 +382,49 @@ def build_fund_breakdowns(holdings_breakdowns: dict,
             ``extract_asset_allocation`` (``[{"key", "weight"}]``).
         overrides: The fund's ``{facet: source}`` override map (from
             the ``breakdown_source.*`` override fields). A facet absent
-            from the map defaults to ``"fund"``.
-        uploaded_facets: Per-facet user-uploaded item lists (from
+            from the map defaults to ``"yahoo"``.
+        uploaded_facets: Per-facet, per-source supplied item lists (from
             :func:`porxpy.utils.uploaded_breakdowns_get`). Shape
-            ``{facet: [{"key","weight"}, ...]}``. A facet with an empty
-            list is treated as "no upload" — the card can't be flipped
-            to source ``"upload"`` until an upload covers it. ``None``
-            is equivalent to all-empty lists (the default before any
-            CSV is uploaded for the fund).
+            ``{facet: {source: [{"key","weight"}, ...]}}``. ``None`` is
+            equivalent to all-empty.
+        sources_present: ``{"holdings": bool, "factsheet": bool}`` —
+            whether the fund has any holdings at all, and whether it has
+            a factsheet that has been extracted. Yahoo is always
+            present; ``upload`` is per-facet, because a CSV covers the
+            facets it covers and claims nothing about the others.
+            ``None`` means neither is present.
 
     Returns:
         ::
 
             {
               "asset_class": {
-                  "items":              [{"key","weight"}, ...],
-                  "source":             "fund" | "holdings" | "upload",
-                  "issuer_available":   bool,   # issuer published anything
-                  "holdings_available": bool,   # roll-up has anything
-                  "upload_available":   bool,   # an upload covers this facet
+                  "items":     [{"key","weight"}, ...],
+                  "source":    "yahoo" | "factsheet" | "holdings" | "upload",
+                  "available": {source: bool, ...},
               },
               "sector":   {...},
               "country":  {...},
               "currency": {...},
             }
 
-        Item weights are fractions (0–1). For the ``"fund"`` source they
-        are issuer fractions as published (may not sum to 1.0); for
-        ``"holdings"`` they are the roll-up's normalised fractions; for
-        ``"upload"`` they are the fractions written at commit time
-        (the upload pipeline normalises percent → fraction on ingest).
+        ``available`` says which sources the selector may offer. ``items``
+        is never empty: a source with nothing for this facet gives
+        ``[{"key": "undefined", "weight": 1.0}]``.
 
-        Fallback rule: if ``overrides`` requests a source that has no
-        data for that facet, the card silently falls back to ``"fund"``
-        and ``source`` reflects what was actually picked. This handles
-        two cases gracefully: the user removes an upload that was
-        previously selected, or holdings data is wiped via Reset. The
-        fallback never panics — it just shows whatever issuer-side data
-        exists (which may itself be empty, in which case the card
-        renders empty with its three availability flags so the user
-        can pick another source).
+        Item weights are fractions (0-1). For ``"yahoo"`` they are issuer
+        fractions as published (which may not sum to 1.0); for
+        ``"holdings"`` the roll-up's fractions; for the supplied sources
+        the fractions written at ingest.
     """
     overrides = overrides or {}
     hb = holdings_breakdowns if isinstance(holdings_breakdowns, dict) else {}
     ub = uploaded_facets if isinstance(uploaded_facets, dict) else {}
+    sp = sources_present if isinstance(sources_present, dict) else {}
 
     # Issuer-published item lists per facet. Yahoo publishes only
-    # asset_class and sector; country and currency have no issuer source.
+    # asset_class and sector; country and currency have no issuer source
+    # and answer "undefined" like any other source with nothing to say.
     issuer: dict[str, list[dict]] = {
         "asset_class": _items_from_issuer_asset_allocation(asset_allocation),
         "sector":      _items_from_issuer_sectors(sectors),
@@ -397,170 +439,51 @@ def build_fund_breakdowns(holdings_breakdowns: dict,
             it for it in (hb.get(facet) or [])
             if isinstance(it, dict) and it.get("key")
         ]
-        upload_items   = [
-            it for it in (ub.get(facet) or [])
-            if isinstance(it, dict) and it.get("key")
-        ]
-        src = overrides.get(facet, "fund")
-        if src not in ("fund", "holdings", "upload"):
-            src = "fund"
+        # ``ub`` is {facet: {source: items}} since v0.44.0 - one entry per
+        # supplied source, because a factsheet extraction and a user CSV
+        # are both "someone handed us these numbers" and neither should
+        # overwrite the other.
+        per_source = (ub.get(facet) or {}) if isinstance(ub.get(facet), dict) else {}
+        supplied = {
+            name: [it for it in (per_source.get(name) or [])
+                   if isinstance(it, dict) and it.get("key")]
+            for name in SUPPLIED_BREAKDOWN_SOURCES
+        }
 
-        # Resolve the items for the requested source, with graceful
-        # fallback to "fund" when that source has no data for this
-        # facet. ``src`` is reassigned to reflect what was actually
-        # picked so the frontend's "data: <source>" label is honest.
-        if src == "holdings":
-            if holdings_items:
-                items = holdings_items
-            else:
-                items = issuer_items
-                src = "fund"
-        elif src == "upload":
-            if upload_items:
-                items = upload_items
-            else:
-                items = issuer_items
-                src = "fund"
-        else:
-            items = issuer_items
+        items_by_source = {
+            "yahoo":    issuer_items,
+            "holdings": holdings_items,
+            **supplied,
+        }
+
+        # Yahoo is always there. Holdings and the factsheet exist per
+        # fund. An upload exists per facet: one CSV may carry sectors and
+        # say nothing about countries, and offering "Upload" on the
+        # country card would promise a source that was never given.
+        available = {
+            "yahoo":     True,
+            "holdings":  bool(sp.get("holdings")),
+            "factsheet": bool(sp.get("factsheet")),
+            "upload":    bool(supplied.get("upload")),
+        }
+
+        src = overrides.get(facet, "yahoo")
+        if src not in BREAKDOWN_SOURCES or not available.get(src):
+            # The pin names a source this fund does not have — the
+            # factsheet was deleted, the holdings were reset. Yahoo is
+            # the only source that is always there.
+            src = "yahoo"
+
+        items = [dict(it) for it in (items_by_source.get(src) or [])]
+        if not items:
+            items = [{"key": UNDEFINED_KEY, "weight": 1.0}]
 
         out[facet] = {
-            "items":              [dict(it) for it in items],
-            "source":             src,
-            "issuer_available":   bool(issuer_items),
-            "holdings_available": bool(holdings_items),
-            "upload_available":   bool(upload_items),
+            "items":     items,
+            "source":    src,
+            "available": available,
         }
     return out
-
-
-# ---------------------------------------------------------------------------
-# Portfolio level — many valued funds → portfolio-wide look-through
-# ---------------------------------------------------------------------------
-# Facets carried up to portfolio level. Same four as rollup_holdings, but
-# ordered asset_class-first to match the portfolio view's card grid.
-_LT_FACETS: tuple[str, ...] = ("asset_class", "sector", "country", "currency")
-
-
-def rollup_portfolio_lookthrough(enriched: list[dict],
-                                 total_base: float) -> dict:
-    """Aggregate per-fund look-through breakdowns into portfolio-level ones.
-
-    Each fund contributes ``value_base × fund_facet_weight`` to every
-    facet's portfolio-level bucket. Funds with no breakdowns
-    (``breakdowns_source == "none"``) contribute nothing — their
-    ``value_base`` counts toward "uncovered" portfolio value, surfaced
-    via per-facet coverage.
-
-    Per-fund rollups already include an ``"undefined"`` bucket for blank
-    facet values (see :func:`rollup_holdings`). At the portfolio level,
-    ``"undefined"`` gets a final pass that drops it if the accumulated
-    weight is essentially zero — the frontend asked for "hide if 0%".
-
-    Each output item carries ``weight`` (fraction of the COVERED
-    portfolio value) and ``value`` (base-currency money). Items are
-    sorted descending, with ``"undefined"`` pinned at the end when
-    present.
-
-    This is a pure function: it reads only the ``enriched`` list passed
-    in (each entry's ``valuation.value_base`` and
-    ``data.holdings_breakdowns``) and ``total_base``. It does no I/O.
-
-    Args:
-        enriched: Per-fund dicts as built by ``api_portfolio_view`` —
-            each carries a ``valuation`` dict (with ``value_base``) and
-            a ``data`` dict (with ``holdings_breakdowns``).
-        total_base: Portfolio total value in base currency. Used as the
-            denominator for per-facet coverage.
-
-    Returns:
-        ::
-
-            {
-              "lookthrough_breakdowns": {
-                  "asset_class": [{"key": ..., "weight": ..., "value": ...}, ...],
-                  "sector":      [...],
-                  "country":     [...],
-                  "currency":    [...],
-              },
-              "lookthrough_coverage": {
-                  "asset_class": 0.97, "sector": 0.81, ...
-              },
-            }
-    """
-    UNDEFINED = "undefined"
-    # Per-facet accumulators: key → base-currency money.
-    lt_buckets:       dict[str, dict[str, float]] = {f: {} for f in _LT_FACETS}
-    # Per-facet covered value: sum of value_base across funds that
-    # contributed any rollup data on that facet (i.e. the fund had
-    # holdings_breakdowns and the facet list was non-empty).
-    lt_covered_value: dict[str, float] = {f: 0.0 for f in _LT_FACETS}
-
-    for e in enriched:
-        v = (e.get("valuation") or {}).get("value_base")
-        if v is None or v <= 0:
-            continue
-        bd = (e.get("data") or {}).get("holdings_breakdowns") or {}
-        if not isinstance(bd, dict):
-            continue
-        for facet in _LT_FACETS:
-            items = bd.get(facet) or []
-            if not items:
-                continue
-            lt_covered_value[facet] += float(v)
-            for it in items:
-                raw_key = (it.get("key") or "").strip()
-                # Per-fund rollups already emit canonical keys (see
-                # canonicalise_facet_key), but we run the canonicaliser
-                # again here as a defence-in-depth pass. This ensures
-                # the portfolio merge correctly collapses duplicates
-                # whatever shape upstream sent. The literal "undefined"
-                # bucket is preserved as-is so it stays as the
-                # blank-value residual.
-                if not raw_key:
-                    key = UNDEFINED
-                elif raw_key == UNDEFINED:
-                    key = UNDEFINED
-                else:
-                    key = canonicalise_facet_key(facet, raw_key) or UNDEFINED
-                try:
-                    w = float(it.get("weight") or 0.0)
-                except (TypeError, ValueError):
-                    continue
-                lt_buckets[facet][key] = (
-                    lt_buckets[facet].get(key, 0.0) + float(v) * w)
-
-    lookthrough_breakdowns: dict[str, list[dict]] = {}
-    lookthrough_coverage:   dict[str, float] = {}
-    for facet in _LT_FACETS:
-        covered = lt_covered_value[facet]
-        lookthrough_coverage[facet] = round(
-            covered / total_base, 6) if total_base > 0 else 0.0
-        if covered <= 0:
-            lookthrough_breakdowns[facet] = []
-            continue
-        items: list[dict] = []
-        for k, val in lt_buckets[facet].items():
-            # Drop a 0% undefined slice (the frontend doesn't want
-            # noise when everything's mapped). Real keys with a
-            # nonzero contribution always pass through.
-            if k == UNDEFINED and val <= 1e-9:
-                continue
-            items.append({
-                "key":    k,
-                "weight": round(val / covered, 6),
-                "value":  round(val, 2),
-            })
-        # Sort by weight desc, with "undefined" pinned at the end so
-        # the chart legend reads "real categories first, residual
-        # last" without the frontend having to resort.
-        items.sort(key=lambda x: (x["key"] == UNDEFINED, -x["weight"]))
-        lookthrough_breakdowns[facet] = items
-
-    return {
-        "lookthrough_breakdowns": lookthrough_breakdowns,
-        "lookthrough_coverage":   lookthrough_coverage,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -689,19 +612,25 @@ def rollup_portfolio_fundlevel(enriched: list[dict],
                 items = (fb.get(facet) or {}).get("items") or []
             if not items:
                 continue
-            # The fund has data on this facet → its whole value counts
-            # as covered, regardless of whether the item weights sum to
-            # exactly 1.0 (issuer fractions sometimes don't).
-            covered_value[facet] += fv
+            undefined_w = 0.0
             for it in items:
                 key = (it.get("key") or "").strip()
                 if not key:
-                    key = "undefined"
+                    key = UNDEFINED_KEY
                 try:
                     w = float(it.get("weight") or 0.0)
                 except (TypeError, ValueError):
                     continue
+                if key == UNDEFINED_KEY:
+                    undefined_w += w
                 buckets[facet][key] = buckets[facet].get(key, 0.0) + fv * w
+            # Coverage measures IDENTIFIED exposure, so the undefined
+            # residual is excluded — a fund whose card is entirely
+            # undefined contributes nothing to coverage even though it
+            # contributes a full slice to the chart. Everything else
+            # counts in full, including issuer fractions that don't quite
+            # total 1.0: an incomplete answer is still an answer.
+            covered_value[facet] += fv * max(0.0, 1.0 - undefined_w)
 
     fundlevel_breakdowns: dict[str, list[dict]] = {}
     fundlevel_coverage:   dict[str, float] = {}

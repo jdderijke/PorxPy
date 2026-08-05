@@ -432,7 +432,7 @@ BREAKDOWN_FACETS: tuple[str, ...] = (
 )
 
 # Valid values for a per-card breakdown-source override.
-#   "fund"     — issuer-published Fund/ETF-level data (the default; no
+#   "yahoo"    — issuer-published Fund/ETF-level data (the default; no
 #                override entry is stored for this value).
 #   "holdings" — populate this card from the fund's physical holdings
 #                roll-up instead.
@@ -440,7 +440,23 @@ BREAKDOWN_FACETS: tuple[str, ...] = (
 #                item lists live in the ``uploaded_breakdowns`` fund-
 #                level cache category (see below); only facets the CSV
 #                actually covered can be flipped to this source.
-BREAKDOWN_SOURCES: tuple[str, ...] = ("fund", "holdings", "upload")
+# Where a breakdown card's numbers come from.
+#
+#   yahoo     the issuer's own card as Yahoo reports it
+#   factsheet the issuer's own numbers, read off an uploaded factsheet
+#   holdings  computed by looking through the fund's holdings
+#   upload    a CSV the user supplied
+#
+# "yahoo" was called "fund" until v0.44.0. That name meant "the issuer
+# card" back when Yahoo was the only way to get one; with a second issuer
+# source it says nothing that distinguishes the two, and a stored key
+# whose name contradicts its label is how confusion starts. Renamed, with
+# a migration.
+BREAKDOWN_SOURCES: tuple[str, ...] = ("yahoo", "factsheet", "holdings", "upload")
+
+# Which sources supply their own item lists rather than deriving them.
+# Both are stored per facet per source in the uploaded_breakdowns cache.
+SUPPLIED_BREAKDOWN_SOURCES: tuple[str, ...] = ("upload", "factsheet")
 
 
 # ---------------------------------------------------------------------------
@@ -616,9 +632,26 @@ TARGET_FACETS: tuple[str, ...] = BREAKDOWN_FACETS + META_FACETS
 #             them directly (breakdown sources, include_in_optimizer)
 #             have no payload slot to write into.
 OVERRIDABLE_FIELDS: dict[str, dict] = {
-    "asset_class": {
+    # Renamed from "asset_class" in v0.47.0.
+    #
+    # Two different things carried that name: this one — what kind of fund
+    # this is, a single value from the issuer or Yahoo's classification —
+    # and the asset_class BREAKDOWN FACET, which is what the fund holds,
+    # as a distribution derived from look-through. Labels alone could have
+    # separated them in the UI, but the AI extraction prompt is generated
+    # from this registry and from BREAKDOWN_FACETS, so it listed
+    # "asset_class" twice, asking the model for one name with two
+    # meanings. That is a correctness problem, not a cosmetic one.
+    #
+    # The facet keeps its name; only the metadata field moves.
+    "primary_asset_class": {
         "type": "enum", "vocab": tuple(ASSET_CLASSES), "neutral": None,
-        "label": "Asset class",
+        "label": "Primary asset class",
+        # Targeted so it reaches the payload like every other field — and,
+        # more to the point, so it appears in the extraction prompt, which
+        # is built from the targeted fields. Without a target it was
+        # silently unextractable.
+        "target": "asset_class.class",
     },
     "structure": {
         "type": "enum", "vocab": FUND_STRUCTURES, "neutral": "unknown",
@@ -669,6 +702,49 @@ OVERRIDABLE_FIELDS: dict[str, dict] = {
         "type": "number", "min": 0.0, "unit": "currency",
         "label": "Total net assets", "target": "profile.totalNetAssets",
     },
+    # The rest of the sourceable fields. They were displayed and cached
+    # but never in the registry, so they could not be validated, could
+    # not be extracted from a factsheet, and could not carry a pin.
+    "trailingYieldPct": {
+        "type": "number", "min": 0.0, "max": 100.0, "unit": "%",
+        "label": "Trailing yield", "target": "profile.trailingYieldPct",
+    },
+    "forwardYieldPct": {
+        "type": "number", "min": 0.0, "max": 100.0, "unit": "%",
+        "label": "Forward yield", "target": "profile.forwardYieldPct",
+    },
+    "holdingsCount": {
+        # What the FUND says it holds — "Aantal aandelen 1442" — not how
+        # many rows we managed to load. Ours may be a top-10.
+        "type": "number", "min": 0.0, "max": 100000.0,
+        "label": "Number of holdings", "target": "profile.holdingsCount",
+    },
+    "previousClose": {
+        "type": "number", "min": 0.0, "unit": "currency",
+        "label": "Last close", "target": "profile.previousClose",
+    },
+    "navPrice": {
+        "type": "number", "min": 0.0, "unit": "currency",
+        "label": "NAV", "target": "profile.navPrice",
+    },
+    "regularMarketVolume": {
+        "type": "number", "min": 0.0,
+        "label": "Volume", "target": "profile.regularMarketVolume",
+    },
+    "fiftyTwoWeekHigh": {
+        "type": "number", "min": 0.0, "unit": "currency",
+        "label": "52w high", "target": "profile.fiftyTwoWeekHigh",
+    },
+    "fiftyTwoWeekLow": {
+        "type": "number", "min": 0.0, "unit": "currency",
+        "label": "52w low", "target": "profile.fiftyTwoWeekLow",
+    },
+    "turnoverPct": {
+        # Was displayed and cached but never overridable, so it could be
+        # neither corrected by hand nor read from a factsheet.
+        "type": "number", "min": 0.0, "max": 1000.0, "unit": "%",
+        "label": "Portfolio turnover", "target": "profile.turnoverPct",
+    },
 }
 
 # The four breakdown-source selectors are one registry entry each, built
@@ -676,7 +752,279 @@ OVERRIDABLE_FIELDS: dict[str, dict] = {
 # without its override coming along.
 for _facet in BREAKDOWN_FACETS:
     OVERRIDABLE_FIELDS[f"breakdown_source.{_facet}"] = {
-        "type": "enum", "vocab": BREAKDOWN_SOURCES, "neutral": "fund",
+        "type": "enum", "vocab": BREAKDOWN_SOURCES, "neutral": "yahoo",
         "label": f"{_facet} card source",
     }
 del _facet
+
+
+# ---------------------------------------------------------------------------
+# Best-in-class scoring (v0.35.0)
+# ---------------------------------------------------------------------------
+# Funds that fit the exposure targets equally well are not equally good.
+# Scoring ranks the pre-loaded universe on cost, size and trailing
+# returns so the optimiser can prefer the better ones — and so the fund
+# list can show what "better" means before the optimiser is involved.
+#
+# Everything is a PERCENTILE (0-100, higher is better), not a raw value.
+# Percentiles are scale-free, so a TER in percent and a fund size in
+# billions combine without normalisation and no single outlier can
+# dominate. They also survive the universe changing size: a preset tuned
+# against 35 funds means the same thing at 50.
+
+# Trailing-return windows, in calendar days. Approximate by design — the
+# nearest available close is used, and markets are shut on plenty of
+# exact anniversaries.
+RETURN_PERIODS: dict[str, int] = {
+    "1m":  30,
+    "3m":  91,
+    "6m":  182,
+    "1y":  365,
+    "3y":  1095,
+    "5y":  1825,
+}
+
+# A peer group smaller than this cannot be ranked within.
+#
+# Peer groups are asset class x focus, which produces groups of one — the
+# only technology-sector fund, the only European bond fund. A percentile
+# within a group of one is 100 by construction, so every uniquely
+# positioned fund would score perfectly and be preferentially swapped in:
+# precisely backwards. Below this size the peer score is None and the
+# optimiser leaves the fund alone on score grounds. It stays fully
+# eligible on targets — which is why it is held anyway.
+MIN_PEER_GROUP: int = 3
+
+# Fund size is a FLOOR TEST, not a percentile.
+#
+# Size matters as "big enough not to be at risk of closure or to trade
+# badly", and above that threshold more of it is not better: a EUR 100bn
+# fund is not twice the fund a EUR 50bn one is. So the component scores
+# 100 when the fund clears the floor and 0 when it does not, rather than
+# ranking the whole universe on a quantity whose differences stop meaning
+# anything past a certain point.
+DEFAULT_SIZE_FLOOR_BASE: float = 500_000_000.0
+
+# The three weight models, selectable per optimiser run.
+#
+# Cost driven is the default deliberately. Ranking on trailing returns is
+# performance chasing, and the evidence that past returns predict future
+# ones is weak at best; cost is the one component that reliably persists.
+SCORING_PRESETS: dict[str, dict] = {
+    "cost_driven": {
+        "label":      "Cost driven",
+        "components": {"ter": 0.70, "size": 0.30, "returns": 0.00},
+        "wtrr":       {"1m": 0.0, "3m": 0.0, "6m": 0.0,
+                       "1y": 0.0, "3y": 0.0, "5y": 0.0},
+    },
+    "cost_and_returns": {
+        "label":      "Cost and returns",
+        "components": {"ter": 0.40, "size": 0.20, "returns": 0.40},
+        "wtrr":       {"1m": 0.05, "3m": 0.10, "6m": 0.15,
+                       "1y": 0.20, "3y": 0.25, "5y": 0.25},
+    },
+    "returns_driven": {
+        "label":      "Returns driven",
+        "components": {"ter": 0.15, "size": 0.15, "returns": 0.70},
+        "wtrr":       {"1m": 0.10, "3m": 0.15, "6m": 0.15,
+                       "1y": 0.20, "3y": 0.20, "5y": 0.20},
+    },
+}
+
+DEFAULT_SCORING_PRESET: str = "cost_driven"
+SCORE_COMPONENTS: tuple[str, ...] = ("ter", "size", "returns")
+
+
+# ---------------------------------------------------------------------------
+# Factsheets (v0.43.0)
+# ---------------------------------------------------------------------------
+# Issuer factsheets, uploaded by the user for funds Yahoo covers badly.
+# Stored under cache/ because they are fetched artefacts rather than user
+# intent — but see FACTSHEET_STALE_DAYS below for why they are never
+# expired automatically.
+FACTSHEETS_DIR = CACHE_DIR / "factsheets"
+
+# What a factsheet may be. PDF is the norm; images are accepted because a
+# photograph of a printed sheet is a perfectly good source document, and
+# HTML because some issuers publish a page rather than a file.
+FACTSHEET_EXTENSIONS: tuple[str, ...] = (
+    ".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".html", ".htm",
+)
+
+FACTSHEET_MIME: dict[str, str] = {
+    ".pdf":  "application/pdf",
+    ".png":  "image/png",
+    ".jpg":  "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif":  "image/gif",
+    ".html": "text/html",
+    ".htm":  "text/html",
+}
+
+# A factsheet older than this is flagged as stale — NOT deleted.
+#
+# Deliberately NOT in the per-portfolio cache config, and not a TTL.
+# Those settings answer "how long may we reuse this before refetching",
+# which presumes a source we can refetch from. There is no such source
+# here: the document arrived by hand, so there is nothing to expire
+# toward. What the number actually controls is when the UI says "this
+# document is old, you may want a newer one" — a display threshold, and
+# one that belongs to the fund rather than to any portfolio holding it.
+#
+# It lives in app settings alongside the other global preferences. See
+# ``settings.factsheet.stale_days``; this constant is the default.
+#
+# Every other cache entry can be re-fetched, so expiry means "throw it
+# away and ask again". A hand-uploaded document cannot be re-fetched:
+# expiring it would destroy the user's own file to save nothing. So this
+# is a staleness threshold, and the file stays until explicitly replaced.
+#
+# Measured against the factsheet's OWN as-of date where known, not the
+# upload date. The Northern Trust sheet used in testing says "per
+# Augustus 31, 2023" — nearly three years old when uploaded, and an
+# upload-date rule would have called it fresh for six months.
+FACTSHEET_STALE_DAYS: int = 183
+
+
+# ---------------------------------------------------------------------------
+# Field groups and per-field sources (v0.48.0)
+# ---------------------------------------------------------------------------
+# Every fund data item, grouped as it is presented, with the sources that
+# can supply it.
+#
+# The override envelope now means "this field is PINNED to this source",
+# where it previously meant "this value was asserted by this source". For
+# stored data the two coincide — a value justETF asserted is a field
+# pinned to justETF — so nothing needs migrating; what changes is that a
+# pin now survives a reload and drives the refetch.
+#
+# A source that has nothing for a field answers "unknown". That is a real
+# answer about that source, not a failure, and it is why the pin has to
+# be recorded rather than inferred from whether a value arrived.
+
+# Sources that can supply data, in the order a fresh fund tries them.
+FIELD_SOURCES: tuple[str, ...] = ("yahoo", "openfigi", "justetf",
+                                  "factsheet", "user")
+
+SOURCE_LABELS: dict[str, str] = {
+    "yahoo":     "Yahoo",
+    "openfigi":  "OpenFIGI",
+    "justetf":   "justETF",
+    "factsheet": "Factsheet",
+    "user":      "My own value",
+}
+
+# The four presentation groups. ``sources`` lists what may supply each
+# field; ``calculated`` fields are derived by PorxPy and have no source
+# to choose.
+# How long each group's data may be reused before a reload refetches it.
+#
+# Per GROUP rather than per cache category, because the groups are how
+# the data is now organised and how often it changes is a property of the
+# group: a fund's structure barely moves, its costs shift a couple of
+# times a year, its price moves daily. The old per-category TTLs answered
+# a question about storage layout rather than about the data.
+#
+# 0 means "always refetch"; a large number means "effectively never".
+DEFAULT_GROUP_TTL_DAYS: dict[str, int] = {
+    "identity":    3650,   # an ISIN does not change; re-resolving risks harm
+    "structure":   365,    # replication and domicile move rarely, but do move
+    "operational": 90,     # TER and fund size are restated a few times a year
+    "trading":     1,      # prices are stale the next morning
+}
+
+FIELD_GROUPS: tuple[dict, ...] = (
+    {
+        "key":   "identity",
+        "label": "Identification",
+        "note":  "How the fund is identified. Read-only: the ISIN is the "
+                 "key every fund-level record hangs on — holdings, "
+                 "breakdowns, overrides, factsheet — so re-sourcing it "
+                 "would orphan all of them. Correcting an ISIN is a "
+                 "separate, deliberate act.",
+        "fields": (
+            {"key": "isin",             "label": "ISIN",             "readonly": True},
+            {"key": "ticker",           "label": "Ticker",           "readonly": True},
+            {"key": "longName",         "label": "Name",             "readonly": True},
+            {"key": "exchange",         "label": "Exchange",         "readonly": True},
+            {"key": "currency",         "label": "Trading currency", "readonly": True},
+        ),
+    },
+    {
+        "key":   "structure",
+        "label": "Structure",
+        "note":  "What kind of fund this is. Rarely changes, so these are "
+                 "the fields most worth pinning to a source you trust.",
+        "fields": (
+            {"key": "primary_asset_class", "label": "Primary asset class"},
+            {"key": "structure",           "label": "Fund structure"},
+            {"key": "replication",         "label": "Replication"},
+            {"key": "style",               "label": "Management style"},
+            {"key": "distribution",        "label": "Distribution"},
+            {"key": "market_cap",          "label": "Market cap"},
+            {"key": "style_box",           "label": "Equity style"},
+            {"key": "focus_type",          "label": "Focus"},
+            {"key": "focus_detail",        "label": "Focus detail"},
+        ),
+    },
+    {
+        "key":   "operational",
+        "label": "Operational",
+        "note":  "Cost, size and activity. Changes a few times a year.",
+        "fields": (
+            {"key": "trailingYieldPct", "label": "Trailing yield"},
+            {"key": "forwardYieldPct",  "label": "Forward yield"},
+            {"key": "expenseRatioPct",  "label": "Expense ratio (TER)"},
+            {"key": "turnoverPct",      "label": "Turnover"},
+            {"key": "totalNetAssets",   "label": "Total assets"},
+            # What the FUND says it holds, not what we managed to load.
+            # A factsheet stating 1,442 holdings is the fund's own count;
+            # our holdings list may be a top-10.
+            {"key": "holdingsCount",    "label": "Number of holdings",
+             "sources": ("yahoo", "factsheet", "user")},
+            {"key": "dataPoints",       "label": "Data points",  "calculated": True},
+            {"key": "score", "label": "Score (all / peer)", "calculated": True},
+        ),
+    },
+    {
+        "key":   "trading",
+        "label": "Trading",
+        "note":  "Prices and volume. Defaults to Yahoo and should usually "
+                 "stay there — a price pinned to a document never updates "
+                 "again, and stale prices feed valuations and the "
+                 "optimiser.",
+        "fields": (
+            {"key": "previousClose",    "label": "Last close"},
+            {"key": "navPrice",         "label": "NAV"},
+            {"key": "regularMarketVolume", "label": "Volume (last day)"},
+            {"key": "fiftyTwoWeekHigh", "label": "52w high",
+             "sources": ("yahoo", "user")},
+            {"key": "fiftyTwoWeekLow",  "label": "52w low",
+             "sources": ("yahoo", "user")},
+            {"key": "ytdReturnPct",     "label": "YTD return",   "calculated": True},
+            {"key": "totalReturnPct",   "label": "Total return", "calculated": True},
+        ),
+    },
+)
+
+# Which sources may supply each field. Defaults to everything except
+# OpenFIGI, which only ever answers identity.
+DEFAULT_FIELD_SOURCES: tuple[str, ...] = ("yahoo", "justetf", "factsheet", "user")
+
+
+def field_spec(field: str) -> dict | None:
+    """The group entry for a field, or None if it is not one we present."""
+    for grp in FIELD_GROUPS:
+        for f in grp["fields"]:
+            if f["key"] == field:
+                return {**f, "group": grp["key"], "group_label": grp["label"]}
+    return None
+
+
+def field_sources(field: str) -> tuple[str, ...]:
+    """Sources that may supply a field. Empty when it is calculated."""
+    spec = field_spec(field) or {}
+    if spec.get("calculated") or spec.get("readonly"):
+        return ()
+    return tuple(spec.get("sources") or DEFAULT_FIELD_SOURCES)

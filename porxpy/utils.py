@@ -38,12 +38,16 @@ import yfinance as yf
 from porxpy.config import (
     CACHE_CATEGORIES,
     CACHE_DIR,
+    FACTSHEETS_DIR,
+    FACTSHEET_EXTENSIONS,
+    FACTSHEET_STALE_DAYS,
     LISTINGS_DIR,
     FUNDS_DIR,
     LISTING_CATEGORIES,
     FUND_CATEGORIES,
     ASSET_CLASSES,
     BREAKDOWN_FACETS,
+    SUPPLIED_BREAKDOWN_SOURCES,
     BREAKDOWN_SOURCES,
     DEFAULT_CACHE_CONFIG,
     DEFAULT_FUND_STRUCTURE,
@@ -1874,7 +1878,8 @@ def isin_map_put(isin: str, mic: str | None, ticker: str,
 
 # Envelope fields carried alongside the value. ``source`` says who
 # asserted it, not where the number originally came from.
-OVERRIDE_SOURCES: tuple[str, ...] = ("user", "justetf", "csv")
+OVERRIDE_SOURCES: tuple[str, ...] = ("user", "justetf", "csv",
+                                    "factsheet", "yahoo")
 
 
 def _ov_key(isin: str) -> str:
@@ -1930,7 +1935,9 @@ def _migrate_override_entry(entry: dict) -> dict:
 
     ac = entry.get("asset_class")
     if isinstance(ac, str):
-        _add("asset_class", ac)
+        # Pre-0.33 blocks called it "asset_class"; the registry field is
+        # "primary_asset_class" since 0.47.0.
+        _add("primary_asset_class", ac)
     inc = entry.get("include_in_optimizer")
     if isinstance(inc, bool):
         _add("include_in_optimizer", inc)
@@ -1939,13 +1946,61 @@ def _migrate_override_entry(entry: dict) -> dict:
     for field, value in (entry.get("fund_structure") or {}).items():
         _add(field, value)
 
-    # Anything already in the new shape is kept as-is, so a half-migrated
-    # file (interrupted write, hand-edit) converges rather than losing data.
-    for field, env in entry.items():
-        if field in _LEGACY_OV_KEYS:
+    return _migrate_breakdown_source_values(_migrate_renamed_override_fields(out))
+
+
+# Override fields renamed since the per-field store landed. Applied to
+# every entry on read, because a rename postdates the store: an entry
+# written before it is already in envelope shape and would never be
+# visited by the legacy-shape migration.
+_RENAMED_OVERRIDE_FIELDS: dict[str, str] = {
+    # v0.47.0 — disambiguated from the asset_class BREAKDOWN FACET.
+    "asset_class": "primary_asset_class",
+}
+
+
+def _migrate_renamed_override_fields(entry: dict) -> dict:
+    """Move values from retired field names to their replacements.
+
+    Exact-key matching only. A substring or prefix rule would also rewrite
+    ``breakdown_source.asset_class`` — a different field, added in
+    v0.44.0, that happens to end with the old name — and quietly break
+    that facet's source selection.
+
+    An existing value under the new name wins: the user has since set it
+    deliberately, and a migration should not undo that.
+    """
+    out = dict(entry)
+    for old_name, new_name in _RENAMED_OVERRIDE_FIELDS.items():
+        if old_name not in out:
             continue
-        if _is_envelope(env):
-            out[field] = env
+        env = out.pop(old_name)
+        if new_name not in out and isinstance(env, dict) and "value" in env:
+            out[new_name] = env
+    return out
+
+
+def _migrate_breakdown_source_values(entry: dict) -> dict:
+    """Rename the ``fund`` breakdown source to ``yahoo`` (v0.44.0).
+
+    Applied to every entry on read, not only to legacy-shaped ones: the
+    rename landed after the per-field store existed, so a value written
+    in 0.33–0.43 is already in envelope shape and would otherwise never
+    be visited.
+
+    ``yahoo`` is also the neutral value, so an override carrying it is
+    not an assertion at all — it is dropped rather than translated,
+    leaving the field to track the default as it would have anyway.
+    """
+    from porxpy.config import BREAKDOWN_FACETS
+
+    out = dict(entry)
+    for facet in BREAKDOWN_FACETS:
+        field = f"breakdown_source.{facet}"
+        env = out.get(field)
+        if not (isinstance(env, dict) and env.get("value") == "fund"):
+            continue
+        del out[field]
     return out
 
 
@@ -1974,6 +2029,11 @@ def load_overrides() -> dict:
         if _is_legacy_entry(entry):
             entry = _migrate_override_entry(entry)
             changed = True
+        else:
+            renamed = _migrate_breakdown_source_values(
+                _migrate_renamed_override_fields(entry))
+            if renamed != entry:
+                entry, changed = renamed, True
         if entry:
             migrated[key] = entry
     if changed:
@@ -2060,6 +2120,78 @@ def overrides_for(isin: str) -> dict:
         return {}
     return {f: dict(e) for f, e in (load_overrides().get(key) or {}).items()
             if isinstance(e, dict)}
+
+
+def field_source_get(isin: str, field: str) -> str:
+    """Which source a field is pinned to. "yahoo" when nothing is pinned.
+
+    A pin is the durable choice; the value stored beside it is the last
+    answer that source gave. Absence means the default, which keeps an
+    untouched fund free of an override per field just to say "normal".
+    """
+    env = overrides_for(isin).get(field)
+    src = (env or {}).get("source")
+    return src if src else "yahoo"
+
+
+def field_source_set(isin: str, field: str, source: str, value=None,
+                     note: str = "") -> dict | None:
+    """Pin a field to a source, recording the answer that source gave.
+
+    The envelope carries both because they answer different questions.
+    ``source`` is the instruction — where to look, now and on every
+    reload. ``value`` is the last answer, cached so opening a fund page
+    does not re-scrape justETF for every pinned field.
+
+    ``None`` as a value is meaningful: it records that the pinned source
+    was asked and had nothing. Without it a fund page could not tell
+    "not yet fetched" from "fetched, and the answer was unknown", and
+    would re-ask a source that has already said no.
+
+    Pinning back to the default clears the entry — presence is the
+    assertion, as everywhere else in this store.
+
+    Returns:
+        The stored envelope, or None when the pin was cleared.
+    """
+    from porxpy.config import FIELD_SOURCES
+
+    key = _ov_key(isin)
+    if not key:
+        raise ValueError("an ISIN is required")
+    src = (source or "").strip().lower()
+    if src not in FIELD_SOURCES:
+        raise ValueError(f"source must be one of {FIELD_SOURCES}")
+
+    m = load_overrides()
+    entry = dict(m.get(key) or {})
+
+    if src == "yahoo" and value is None:
+        # Back to the default with nothing to remember: drop the entry
+        # rather than storing "normal" as a fact.
+        if field not in entry:
+            return None
+        del entry[field]
+        if entry:
+            m[key] = entry
+        else:
+            m.pop(key, None)
+        save_overrides(m)
+        return None
+
+    env = {"source": src, "value": value, "ts": now_iso()}
+    if note:
+        env["note"] = str(note).strip()
+    entry[field] = env
+    m[key] = entry
+    save_overrides(m)
+    return env
+
+
+def field_pins(isin: str) -> dict:
+    """``{field: {source, value, ts}}`` for every pinned field."""
+    return {f: e for f, e in overrides_for(isin).items()
+            if isinstance(e, dict) and e.get("source")}
 
 
 def override_get(isin: str, field: str, default=None):
@@ -2220,38 +2352,88 @@ def apply_overrides(isin: str, payload: dict) -> dict:
 # Only facets present with a non-empty list count as "uploaded"; absent
 # or empty facets cannot be flipped to source "upload" on the fund page.
 
-def uploaded_breakdowns_get(isin: str) -> dict:
-    """Return the per-facet uploaded item lists for ``isin``.
+def _clean_items(items) -> list[dict]:
+    """Coerce a raw item list to ``[{"key","weight"}, ...]``."""
+    if not isinstance(items, list):
+        return []
+    return [
+        {"key": str(it.get("key") or ""),
+         "weight": float(it.get("weight") or 0.0)}
+        for it in items
+        if isinstance(it, dict) and it.get("key")
+    ]
 
-    Always returns a fresh dict with the four facet keys present (some
-    possibly empty lists) so callers can index without checking for
-    None. An ISIN with no upload returns ``{facet: []}`` across all four.
+
+def _migrate_supplied_breakdowns(val: dict) -> tuple[dict, bool]:
+    """Rewrite a pre-0.44.0 ``{facet: items}`` blob to ``{facet: {source: items}}``.
+
+    Until 0.44.0 there was one non-derived source — a user CSV — so one
+    item list per facet said everything. A factsheet extraction is a
+    second, and storing both flat would mean each silently overwriting
+    the other: upload a CSV, extract a factsheet, and selecting "Upload"
+    would quietly show factsheet numbers.
+
+    Detection is by SHAPE, not by a version marker: the old value maps a
+    facet to a list, the new one maps it to a dict of source → list. That
+    converges, whereas a key-name test would not (the facet names are
+    unchanged).
     """
-    out: dict[str, list[dict]] = {
-        "asset_class": [], "sector": [], "country": [], "currency": [],
-    }
+    out: dict[str, dict] = {}
+    changed = False
+    for facet in BREAKDOWN_FACETS:
+        cur = (val or {}).get(facet)
+        if isinstance(cur, list):
+            # Legacy: everything stored flat came from a CSV upload.
+            out[facet] = {"upload": _clean_items(cur)}
+            changed = True
+        elif isinstance(cur, dict):
+            out[facet] = {
+                src: _clean_items(items)
+                for src, items in cur.items()
+                if src in SUPPLIED_BREAKDOWN_SOURCES
+            }
+        else:
+            out[facet] = {}
+    return out, changed
+
+
+def uploaded_breakdowns_get(isin: str, source: str | None = None) -> dict:
+    """Per-facet item lists supplied by a non-derived source.
+
+    Args:
+        isin: Fund ISIN.
+        source: One of :data:`SUPPLIED_BREAKDOWN_SOURCES` to get that
+            source's lists as ``{facet: items}``. Omit for every source,
+            as ``{facet: {source: items}}``.
+
+    Always returns all four facet keys so callers can index without
+    checking. Pre-0.44.0 entries are migrated on read.
+    """
+    empty_flat = {f: [] for f in BREAKDOWN_FACETS}
     if not isin:
-        return out
+        return dict(empty_flat) if source else {f: {} for f in BREAKDOWN_FACETS}
+
     blob  = cache_read(isin, "uploaded_breakdowns")
     entry = blob.get("uploaded_breakdowns")
-    if not isinstance(entry, dict):
-        return out
-    val = entry.get("value")
-    if not isinstance(val, dict):
-        return out
-    for facet in BREAKDOWN_FACETS:
-        items = val.get(facet)
-        if isinstance(items, list):
-            out[facet] = [
-                {"key": str(it.get("key") or ""),
-                 "weight": float(it.get("weight") or 0.0)}
-                for it in items
-                if isinstance(it, dict) and it.get("key")
-            ]
-    return out
+    val   = entry.get("value") if isinstance(entry, dict) else None
+    val   = val if isinstance(val, dict) else {}
+
+    migrated, changed = _migrate_supplied_breakdowns(val)
+    if changed:
+        blob["uploaded_breakdowns"] = {
+            "fetched_at": (entry or {}).get("fetched_at") or now_iso(),
+            "value":      migrated,
+        }
+        cache_write((isin or "").strip().upper(), "uploaded_breakdowns", blob)
+
+    if source:
+        return {f: list(migrated.get(f, {}).get(source, []))
+                for f in BREAKDOWN_FACETS}
+    return migrated
 
 
-def uploaded_breakdowns_put(isin: str, facets: dict) -> dict:
+def uploaded_breakdowns_put(isin: str, facets: dict,
+                            source: str = "upload") -> dict:
     """Replace the uploaded breakdowns for ``isin`` with ``facets``.
 
     Replace semantics: any existing entry is overwritten in full. The
@@ -2274,37 +2456,49 @@ def uploaded_breakdowns_put(isin: str, facets: dict) -> dict:
     isin_u = (isin or "").strip().upper()
     if not isin_u:
         return {}
-    normalised: dict[str, list[dict]] = {
-        "asset_class": [], "sector": [], "country": [], "currency": [],
-    }
+    src = (source or "upload").strip().lower()
+    if src not in SUPPLIED_BREAKDOWN_SOURCES:
+        raise ValueError(f"source must be one of {SUPPLIED_BREAKDOWN_SOURCES}")
+
+    # Read-then-merge, so writing one source leaves the other alone. The
+    # read also migrates any legacy flat entry.
+    existing = uploaded_breakdowns_get(isin_u)
+
+    normalised: dict[str, list[dict]] = {f: [] for f in BREAKDOWN_FACETS}
     if isinstance(facets, dict):
         for facet in BREAKDOWN_FACETS:
-            items = facets.get(facet)
-            if isinstance(items, list):
-                normalised[facet] = [
-                    {"key": str(it.get("key") or ""),
-                     "weight": float(it.get("weight") or 0.0)}
-                    for it in items
-                    if isinstance(it, dict) and it.get("key")
-                ]
+            normalised[facet] = _clean_items(facets.get(facet))
+
+    merged = {f: dict(existing.get(f) or {}) for f in BREAKDOWN_FACETS}
+    for facet in BREAKDOWN_FACETS:
+        merged[facet][src] = normalised[facet]
+
     blob = cache_read(isin_u, "uploaded_breakdowns")
     blob["uploaded_breakdowns"] = {
         "fetched_at": now_iso(),
-        "value":      normalised,
+        "value":      merged,
     }
     cache_write(isin_u, "uploaded_breakdowns", blob)
     return normalised
 
 
-def uploaded_breakdowns_delete(isin: str, facet: str | None = None) -> bool:
-    """Remove uploaded breakdowns for ``isin``.
+def uploaded_breakdowns_delete(isin: str, facet: str | None = None,
+                               source: str = "upload") -> bool:
+    """Remove one supplied source's breakdowns for ``isin``.
+
+    The store is ``{facet: {source: items}}``, and the two supplied
+    sources are independent assertions about the same fund: a factsheet
+    extraction and a hand-uploaded CSV. Removing one must leave the
+    other untouched — deleting the CSV used to take the factsheet's
+    items with it, because the clear wrote a bare list where the
+    source-keyed dict belongs, and the next read then re-keyed that
+    list to ``upload`` as though it were a pre-0.44 flat entry.
 
     Args:
         isin: Fund ISIN.
-        facet: If given, clear only that one facet (the other three
-            survive). If None, clear the whole entry — the on-disk
-            cache entry is deleted so the fund returns to the
-            two-source state.
+        facet: Clear only this facet. None clears every facet.
+        source: Which supplied source to clear. One of
+            :data:`~porxpy.config.SUPPLIED_BREAKDOWN_SOURCES`.
 
     Returns:
         True if anything changed on disk.
@@ -2312,31 +2506,34 @@ def uploaded_breakdowns_delete(isin: str, facet: str | None = None) -> bool:
     isin_u = (isin or "").strip().upper()
     if not isin_u:
         return False
-    blob  = cache_read(isin_u, "uploaded_breakdowns")
-    entry = blob.get("uploaded_breakdowns")
-    if not isinstance(entry, dict):
-        return False
-    val = entry.get("value")
-    if not isinstance(val, dict):
+    src = (source or "upload").strip().lower()
+    if src not in SUPPLIED_BREAKDOWN_SOURCES:
+        raise ValueError(f"source must be one of {SUPPLIED_BREAKDOWN_SOURCES}")
+    if facet is not None and facet not in BREAKDOWN_FACETS:
         return False
 
-    if facet is None:
-        del blob["uploaded_breakdowns"]
-        cache_write(isin_u, "uploaded_breakdowns", blob)
-        return True
+    # Read through the accessor so a legacy flat entry is migrated to the
+    # source-keyed shape before we edit it.
+    val    = uploaded_breakdowns_get(isin_u)
+    facets = BREAKDOWN_FACETS if facet is None else (facet,)
 
-    if facet not in BREAKDOWN_FACETS:
+    changed = False
+    for f in facets:
+        per_source = dict(val.get(f) or {})
+        if per_source.pop(src, None):
+            changed = True
+        val[f] = per_source
+    if not changed:
         return False
-    if not val.get(facet):
-        return False
-    val[facet] = []
-    # If every facet is now empty, drop the whole entry rather than
-    # leaving an empty husk behind.
-    if not any(val.get(f) for f in BREAKDOWN_FACETS):
-        del blob["uploaded_breakdowns"]
+
+    blob = cache_read(isin_u, "uploaded_breakdowns")
+    # Nothing left from any source: drop the entry rather than leaving an
+    # empty husk behind.
+    if not any(any(v for v in (val.get(f) or {}).values())
+               for f in BREAKDOWN_FACETS):
+        blob.pop("uploaded_breakdowns", None)
     else:
-        entry["fetched_at"] = now_iso()
-        entry["value"]      = val
+        blob["uploaded_breakdowns"] = {"fetched_at": now_iso(), "value": val}
     cache_write(isin_u, "uploaded_breakdowns", blob)
     return True
 
@@ -2848,6 +3045,92 @@ def normalise_settings(raw: dict | None) -> dict:
     if not isinstance(match_key, str) or match_key not in HOLDINGS_MATCH_KEYS:
         match_key = hm_def["key"]
 
+    # ── scoring ───────────────────────────────────────────────────────
+    # Three named weight models plus the size floor. Each preset is
+    # validated independently and falls back to its config default, so a
+    # hand-edited settings file with one broken preset does not cost the
+    # user the other two.
+    from porxpy.config import (DEFAULT_SIZE_FLOOR_BASE, RETURN_PERIODS,
+                               SCORE_COMPONENTS, SCORING_PRESETS)
+
+    sc_src = raw.get("scoring") if isinstance(raw.get("scoring"), dict) else {}
+
+    def _weights(src, keys, defaults):
+        """Non-negative floats for every key, defaulting per key.
+
+        Not renormalised to sum to 1: the blend divides by the weights it
+        actually used, so the absolute scale is irrelevant and forcing a
+        sum would silently rewrite numbers the user typed.
+        """
+        out = {}
+        for k in keys:
+            v = (src or {}).get(k, defaults[k])
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                f = float(defaults[k])
+            out[k] = f if f >= 0 else 0.0
+        return out
+
+    presets_out = {}
+    for name, dflt in SCORING_PRESETS.items():
+        src = (sc_src.get("presets") or {}).get(name) or {}
+        presets_out[name] = {
+            "label":      str(src.get("label") or dflt["label"]),
+            "components": _weights(src.get("components"), SCORE_COMPONENTS,
+                                   dflt["components"]),
+            "wtrr":       _weights(src.get("wtrr"), tuple(RETURN_PERIODS),
+                                   dflt["wtrr"]),
+        }
+
+    # ── group TTLs ────────────────────────────────────────────────────
+    # One age limit per field group. Replaces the per-cache-category TTLs
+    # as the thing the user actually sets: how often a fund's structure
+    # or its costs go stale is a fact about that data, not about which
+    # cache file it happens to live in.
+    from porxpy.config import DEFAULT_GROUP_TTL_DAYS
+    gt_src = raw.get("group_ttl_days") if isinstance(raw.get("group_ttl_days"), dict) else {}
+    group_ttl = {}
+    for g, dflt in DEFAULT_GROUP_TTL_DAYS.items():
+        try:
+            v = int(float(gt_src.get(g, dflt)))
+        except (TypeError, ValueError):
+            v = dflt
+        group_ttl[g] = max(0, v)
+
+    # ── ai ────────────────────────────────────────────────────────────
+    # Consent to send an uploaded factsheet to the Anthropic API. Off by
+    # default and stored separately from the key, which lives only in the
+    # environment: settings.json sits in the project directory in
+    # plaintext and gets copied around, which is no place for a
+    # credential.
+    ai_src = raw.get("ai") if isinstance(raw.get("ai"), dict) else {}
+    ai_enabled = bool(ai_src.get("enabled", False))
+    # Whether the extraction report offers an editable prompt. Off by
+    # default: the generated prompt is built from the live registry, so
+    # hand-editing it is a debugging affordance rather than something
+    # most runs should involve.
+    ai_edit_prompt = bool(ai_src.get("edit_prompt", False))
+
+    # ── factsheet ─────────────────────────────────────────────────────
+    # How old a factsheet may be before the UI flags it. Not a TTL: a
+    # hand-uploaded document has no source to refetch from, so nothing
+    # expires — this only decides when to say "this looks out of date".
+    fs_src = raw.get("factsheet") if isinstance(raw.get("factsheet"), dict) else {}
+    try:
+        stale_days = int(float(fs_src.get("stale_days", FACTSHEET_STALE_DAYS)))
+    except (TypeError, ValueError):
+        stale_days = FACTSHEET_STALE_DAYS
+    if stale_days < 0:
+        stale_days = 0
+
+    try:
+        size_floor = float(sc_src.get("size_floor_base", DEFAULT_SIZE_FLOOR_BASE))
+    except (TypeError, ValueError):
+        size_floor = DEFAULT_SIZE_FLOOR_BASE
+    if size_floor < 0:
+        size_floor = 0.0
+
     return {
         "enrichment": {
             "fields": fields,
@@ -2855,6 +3138,18 @@ def normalise_settings(raw: dict | None) -> dict:
         "holdings_match": {
             "key": match_key,
         },
+        "scoring": {
+            "presets":         presets_out,
+            "size_floor_base": size_floor,
+        },
+        "factsheet": {
+            "stale_days": stale_days,
+        },
+        "ai": {
+            "enabled":     ai_enabled,
+            "edit_prompt": ai_edit_prompt,
+        },
+        "group_ttl_days": group_ttl,
     }
 
 
@@ -2892,3 +3187,171 @@ def save_settings(settings: dict) -> dict:
     except Exception as exc:
         print(f"[Settings] save error: {exc}")
     return norm
+
+
+# ---------------------------------------------------------------------------
+# Factsheets (v0.43.0)
+# ---------------------------------------------------------------------------
+# One factsheet per fund, keyed by ISIN, stored as the original bytes plus
+# a JSON sidecar. Two files rather than one blob because the document is
+# what the user wants to look at — serving it should be a file read, not a
+# base64 decode — while everything about it needs to be queryable without
+# opening it.
+#
+# A newer upload replaces the older wholesale, including any extraction
+# derived from it. Keeping both would mean answering "which one did this
+# TER come from" for every field, and the override store already records
+# that per field in its note.
+
+
+def _factsheet_paths(isin: str) -> tuple[Path, Path]:
+    """``(directory, sidecar_path)`` for a fund. The doc's suffix varies."""
+    key = (isin or "").strip().upper()
+    return FACTSHEETS_DIR, FACTSHEETS_DIR / f"{key}.json"
+
+
+def factsheet_get(isin: str) -> dict | None:
+    """The stored factsheet's metadata, or None when there isn't one.
+
+    Returns:
+        ``{isin, filename, ext, bytes, uploaded_at, as_of, note,
+        extraction, stale, age_days}``. ``as_of`` is the factsheet's own
+        publication date when known; ``stale`` and ``age_days`` are
+        computed against it, falling back to the upload date when it is
+        not.
+    """
+    key = (isin or "").strip().upper()
+    if not key:
+        return None
+    _, side = _factsheet_paths(key)
+    if not side.exists():
+        return None
+    try:
+        meta = json.loads(side.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(meta, dict):
+        return None
+
+    # Age from the factsheet's own date where we have it. A document can
+    # be years old on the day it is uploaded, so upload date answers
+    # "when did I do this", not "how current is this data".
+    ref = (meta.get("as_of") or "").strip() or (meta.get("uploaded_at") or "")
+    meta["age_days"] = age_days(ref) if ref else None
+    meta["age_from"] = "as_of" if (meta.get("as_of") or "").strip() else "upload"
+    threshold = FACTSHEET_STALE_DAYS
+    try:
+        threshold = int((load_settings().get("factsheet") or {})
+                        .get("stale_days", FACTSHEET_STALE_DAYS))
+    except Exception:
+        pass
+    meta["stale_days"] = threshold
+    meta["stale"] = (meta["age_days"] is not None
+                     and threshold > 0
+                     and meta["age_days"] > threshold)
+    return meta
+
+
+def factsheet_put(isin: str, filename: str, data: bytes,
+                  as_of: str = "", note: str = "") -> dict:
+    """Store a factsheet, replacing any previous one for this fund.
+
+    Args:
+        isin: Fund ISIN. Required — factsheets are fund-level, and a
+            listing without an ISIN has nothing to hang one on.
+        filename: The user's filename, used for its extension and shown
+            back to them. Never used as a path.
+        data: The document bytes.
+        as_of: The factsheet's own publication date (``YYYY-MM-DD``) when
+            known. Optional; staleness falls back to the upload date.
+        note: Free text.
+
+    Returns:
+        The stored metadata, as :func:`factsheet_get` would return it.
+
+    Raises:
+        ValueError: Missing ISIN, empty file, or an unsupported type.
+    """
+    key = (isin or "").strip().upper()
+    if not key:
+        raise ValueError("an ISIN is required to store a factsheet")
+    if not data:
+        raise ValueError("the file is empty")
+
+    ext = Path(filename or "").suffix.lower()
+    if ext not in FACTSHEET_EXTENSIONS:
+        raise ValueError(
+            f"unsupported factsheet type {ext or '(none)'} — "
+            f"expected one of {', '.join(FACTSHEET_EXTENSIONS)}")
+
+    FACTSHEETS_DIR.mkdir(parents=True, exist_ok=True)
+    # Drop any previous document: the extension may differ, so replacing
+    # by name alone would leave the old file orphaned beside the new one.
+    for old in FACTSHEETS_DIR.glob(f"{key}.*"):
+        if old.suffix.lower() != ".json":
+            try:
+                old.unlink()
+            except OSError:
+                pass
+
+    doc = FACTSHEETS_DIR / f"{key}{ext}"
+    doc.write_bytes(data)
+
+    meta = {
+        "isin":        key,
+        "filename":    Path(filename or "").name,
+        "ext":         ext,
+        "bytes":       len(data),
+        "uploaded_at": now_iso(),
+        "as_of":       (as_of or "").strip(),
+        "note":        (note or "").strip(),
+        # Filled by the extraction step; replaced wholesale with the
+        # document, so an extraction can never outlive its source.
+        "extraction":  None,
+    }
+    _, side = _factsheet_paths(key)
+    side.write_text(json.dumps(meta, ensure_ascii=False, indent=2),
+                    encoding="utf-8")
+    return factsheet_get(key) or meta
+
+
+def factsheet_file(isin: str) -> Path | None:
+    """Path to the stored document, or None when there isn't one."""
+    key = (isin or "").strip().upper()
+    if not key:
+        return None
+    meta = factsheet_get(key)
+    if not meta:
+        return None
+    doc = FACTSHEETS_DIR / f"{key}{meta.get('ext') or ''}"
+    return doc if doc.exists() else None
+
+
+def factsheet_delete(isin: str) -> bool:
+    """Remove a fund's factsheet and its metadata. True if anything went."""
+    key = (isin or "").strip().upper()
+    if not key or not FACTSHEETS_DIR.exists():
+        return False
+    gone = False
+    for fp in FACTSHEETS_DIR.glob(f"{key}.*"):
+        try:
+            fp.unlink()
+            gone = True
+        except OSError:
+            pass
+    return gone
+
+
+def factsheet_set_extraction(isin: str, extraction: dict | None) -> dict | None:
+    """Attach (or clear) the AI extraction on a stored factsheet."""
+    key = (isin or "").strip().upper()
+    meta = factsheet_get(key)
+    if not meta:
+        return None
+    meta = {k: v for k, v in meta.items()
+            if k not in ("age_days", "age_from", "stale")}
+    meta["extraction"] = extraction
+    _, side = _factsheet_paths(key)
+    side.write_text(json.dumps(meta, ensure_ascii=False, indent=2),
+                    encoding="utf-8")
+    return factsheet_get(key)

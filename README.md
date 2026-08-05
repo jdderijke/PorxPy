@@ -114,6 +114,8 @@ porxpy/
   resolver.py         Ticker variant generation and resolution chain
   breakdowns.py       Holdings roll-up → per-facet weighted breakdown
   targets.py          Target-vs-actual deviation computation
+  scoring.py          Best-in-class fund ranking (cost / size / returns)
+  ai.py               Factsheet extraction via the Anthropic API (opt-in)
   optimizer.py        Greedy portfolio design against exposure targets
   trades.py           Atomic trade execution (cash ↔ fund positions)
   upload.py           Holdings file parsing, column mapping, enrichment
@@ -134,6 +136,7 @@ overrides.json        Per-fund overrides, keyed by ISIN, then by field
                       ({value, source, ts, note} per assertion)
 isin_map.json         Cached ISIN → ticker resolutions (from OpenFIGI)
 cache/
+  factsheets/<isin>.*       Uploaded issuer factsheets + metadata sidecar
   listings/<ticker>.json    Per-listing data (price history, profile)
   funds/<isin>.json         Per-fund data (holdings, breakdowns, sectors)
   _symbol_info.json         Shared per-symbol info cache (HQ country, etc.)
@@ -233,7 +236,7 @@ You should see a startup banner:
 
 ```
 =======================================================
-  PorxPy  v0.33.8  (built 2026-07-26)
+  PorxPy  v0.49.2  (built 2026-07-26)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -268,6 +271,11 @@ leaves your machine. The only outbound traffic is:
 - OpenFIGI — ISIN-to-ticker resolution (public, unauthenticated API).
 - justETF — only when you explicitly trigger the structure lookup, and
   only for ETFs by ISIN.
+- Anthropic API — only if you switch on the AI helper in Settings, and
+  only the factsheet document you uploaded. That document is public
+  issuer material; no holdings, portfolios or positions are ever sent.
+  Off by default, and the API key is read from the environment rather
+  than stored.
 
 There are no telemetry, analytics, or update checks.
 
@@ -275,6 +283,6 @@ There are no telemetry, analytics, or update checks.
 
 ## Version
 
-Current release: **0.33.8** (2026-07-26)
+Current release: **0.49.2** (2026-07-26)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

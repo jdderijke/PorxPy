@@ -17,13 +17,16 @@ Routes are grouped (in order):
 
 from __future__ import annotations
 
+import json
 import math
 import re
 import uuid
 from pathlib import Path
 
 import requests
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import (Flask, Response, jsonify, request, send_file,
+                   send_from_directory)
+from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
 
 from porxpy import NAME, VERSION, BUILD_DATE
@@ -31,9 +34,14 @@ from porxpy.config import (
     ASSET_CLASSES,
     BASE_DIR,
     BREAKDOWN_FACETS,
+    UPLOAD_DIR,
+    FACTSHEET_EXTENSIONS,
+    FACTSHEET_MIME,
     DEFAULT_FUND_STRUCTURE,
     DEFAULT_INCLUDE_IN_OPTIMIZER,
+    DEFAULT_SIZE_FLOOR_BASE,
     OVERRIDABLE_FIELDS,
+    FIELD_SOURCES,
     BREAKDOWN_SOURCES,
     CACHE_CATEGORIES,
     CACHE_DIR,
@@ -73,7 +81,6 @@ from porxpy.breakdowns import (
     canonicalise_facet_key,
     rollup_holdings,
     rollup_portfolio_fundlevel,
-    rollup_portfolio_lookthrough,
 )
 from porxpy.utils import (
     age_days,
@@ -86,6 +93,14 @@ from porxpy.utils import (
     fx_rate,
     fx_history,
     holdings_status_from_cache,
+    factsheet_delete,
+    factsheet_file,
+    factsheet_get,
+    factsheet_put,
+    coerce_override_value,
+    field_pins,
+    field_source_set,
+    factsheet_set_extraction,
     apply_overrides,
     override_delete,
     override_get,
@@ -130,6 +145,40 @@ def create_app() -> Flask:
     app = Flask(__name__, static_folder=str(BASE_DIR))
     CORS(app)
 
+    # ---- JSON that the browser will actually parse -----------------------
+    # Python's encoder emits bare `NaN`, `Infinity` and `-Infinity` for
+    # those float values. They are legal to json.dumps and to json.loads,
+    # and they are rejected outright by the browser's JSON.parse — so one
+    # NaN anywhere in a response makes the WHOLE response unreadable, with
+    # an error naming a line number rather than a field.
+    #
+    # Yahoo hands us NaN routinely: 0P00015UO7.F carries them in `info`,
+    # and extract_profile copies info values through verbatim. That makes
+    # this a property of every endpoint, not of the one where it happened
+    # to be noticed, so it is fixed once here rather than at each call
+    # site — where a single missed spot breaks the response anyway.
+    #
+    # null is the honest rendering: NaN means "no value", which is exactly
+    # what null means to the client.
+    class _SafeJSONProvider(DefaultJSONProvider):
+        @staticmethod
+        def _clean(o, depth: int = 0):
+            if depth > 24:
+                return "<max depth>"
+            if isinstance(o, float):
+                return o if math.isfinite(o) else None
+            if isinstance(o, dict):
+                return {k: _SafeJSONProvider._clean(v, depth + 1)
+                        for k, v in o.items()}
+            if isinstance(o, (list, tuple)):
+                return [_SafeJSONProvider._clean(v, depth + 1) for v in o]
+            return o
+
+        def dumps(self, obj, **kwargs):
+            return super().dumps(self._clean(obj), **kwargs)
+
+    app.json = _SafeJSONProvider(app)
+
     # -----------------------------------------------------------------------
     # App meta
     # -----------------------------------------------------------------------
@@ -160,6 +209,25 @@ def create_app() -> Flask:
             if v:
                 out[f] = v
         return out
+
+    # Which breakdown sources this fund HAS — not which have data for a
+    # given facet. A factsheet that never mentions currencies is still a
+    # factsheet, and "the factsheet does not say" is a real answer the
+    # user is entitled to select. build_fund_breakdowns cannot work this
+    # out from its arguments: an empty holdings roll-up looks identical
+    # whether the fund has no holdings or holdings that classified to
+    # nothing, and a factsheet leaves no trace in them at all.
+    def _bd_presence(isin: str, rows: list | None = None) -> dict:
+        if rows is None:
+            blob = cache_read(isin, "holdings")
+            rows = ((blob.get("holdings") or {}).get("value") or {}).get("rows") or []
+        meta = factsheet_get(isin) or {}
+        return {
+            "holdings":  bool(rows),
+            # Uploaded but never extracted means there are no numbers to
+            # read off it yet, so the card cannot be pinned to it.
+            "factsheet": bool(meta.get("extraction")),
+        }
 
     @app.route("/api/regions")
     def api_regions() -> Response:
@@ -463,6 +531,17 @@ def create_app() -> Flask:
             resolved_isin = isin
             resolved_mic  = exchange
             resolved_note = note
+            # Where each identity field actually came from. Recorded at
+            # resolution time because this is the only place that knows:
+            # by the time the fund page renders, an ISIN the user typed
+            # and a ticker OpenFIGI found look alike.
+            identity_sources = {
+                "isin":     "user",
+                "ticker":   "openfigi",
+                "exchange": "user",
+                "currency": "yahoo",
+                "longName": "yahoo",
+            }
 
         else:
             # ════ Mode 2: full Yahoo ticker (suffix included) ══════════
@@ -520,6 +599,16 @@ def create_app() -> Flask:
             resolved_mic  = suffix_mic
             resolved_cur  = cur
             resolved_note = (f"{vnote} ISIN key {key_isin} supplied by user.")
+            # Mode 2 differs from mode 1 in provenance, not just in
+            # input: the user typed the ticker, and the MIC is read off
+            # its suffix rather than chosen. OpenFIGI is not consulted.
+            identity_sources = {
+                "isin":     "user",
+                "ticker":   "user",
+                "exchange": "user",
+                "currency": "yahoo",
+                "longName": "yahoo",
+            }
 
         print(f"\n{'='*55}")
         print(f"  ISIN={resolved_isin}  Ticker={resolved_tkr}  "
@@ -571,6 +660,7 @@ def create_app() -> Flask:
                     "ticker":    resolved_tkr,
                     "exchange":  resolved_mic,
                     "currency":  resolved_cur,
+                    "sources":   identity_sources,
                 })
             except Exception as exc:
                 print(f"[Identity] write failed for {resolved_tkr}: {exc}")
@@ -657,6 +747,24 @@ def create_app() -> Flask:
             return jsonify({"error": "portfolio not found"}), 404
         return jsonify({"deleted": pid})
 
+    def _optimizer_scores(preset_name):
+        """Peer scores for the optimiser, or None to skip score refinement.
+
+        Returns the same score blocks the fund list shows, so the number
+        the optimiser acts on is the number the user can see next to each
+        fund — a scoring model that disagreed with the visible one would
+        make the optimiser's choices unexplainable.
+        """
+        name = (preset_name or "").strip()
+        if not name or name.lower() == "none":
+            return None
+        try:
+            return (_score_universe_cached(name) or {}).get("scores") or None
+        except Exception as exc:
+            print(f"[Optimizer] scoring unavailable ({exc}); "
+                  f"proceeding on fit alone")
+            return None
+
     @app.route("/api/portfolios/<pid>/optimize", methods=["POST"])
     def api_portfolio_optimize(pid: str) -> Response:
         """Propose a portfolio design (or rebalance) matching the targets.
@@ -724,6 +832,10 @@ def create_app() -> Flask:
 
         held = {(f.get("ticker") or "").upper(): float(f.get("shares") or 0.0)
                 for f in (p.get("funds") or [])}
+        # Per-portfolio lock flags. Absent means unlocked, which is the
+        # default and the overwhelmingly common case.
+        locked_by_ticker = {(f.get("ticker") or "").upper(): bool(f.get("locked"))
+                            for f in (p.get("funds") or [])}
 
         # Universe: explicit list, else every pre-loaded fund. Held funds
         # are always in, so a rebalance can sell them.
@@ -819,7 +931,7 @@ def create_app() -> Flask:
                 src = "holdings"
                 if not items:
                     items = (bks.get(facet) or {}).get("items") or []
-                    src = (bks.get(facet) or {}).get("source") or "fund"
+                    src = (bks.get(facet) or {}).get("source") or "yahoo"
                 if not items:
                     src = "none"
                 fund_src[facet] = src
@@ -849,6 +961,9 @@ def create_app() -> Flask:
                 # has to design around it, not pretend it isn't there.
                 "include":        bool(override_get(
                     isin, "include_in_optimizer", True)),
+                # Per-portfolio, unlike `include`: this position is not to
+                # be sold here, which says nothing about other portfolios.
+                "locked":         bool(locked_by_ticker.get(tk, False)),
                 "exposures":      exposures,
                 "sources":        fund_src,   # {facet: holdings|fund|upload|none}
             })
@@ -944,6 +1059,16 @@ def create_app() -> Flask:
             # A bare float is still accepted and applied to every facet.
             max_error=body.get("max_error") or 0.05,
             facet_weights=body.get("facet_weights") or None,
+            # Fund quality, consulted only after the fit is inside every
+            # tolerance. A preset of "" or "none" turns it off, which is
+            # how the user asks for the best fit and nothing else.
+            scores=_optimizer_scores(body.get("score_preset")),
+            # Substitutions the user accepted from the alternatives table.
+            # Sent back through the full optimiser rather than patched on
+            # top of the previous answer: deviations do not add linearly,
+            # so two swaps each costing 0.7pp may together cost 0.3pp or
+            # 2.1pp, and only a real re-solve knows which.
+            substitutions=body.get("substitutions") or None,
         )
         result["base_currency"]   = base_cur
         result["candidate_count"] = len(candidates)
@@ -1075,12 +1200,24 @@ def create_app() -> Flask:
 
     @app.route("/api/portfolios/<pid>/funds/<ticker>", methods=["PUT"])
     def api_portfolio_update_fund(pid: str, ticker: str) -> Response:
-        """Update the shares held for a fund within a portfolio.
+        """Update the shares held, or the lock flag, for a fund here.
 
-        Shares are the only per-portfolio, per-fund property under the
-        slim portfolio model (0.12.0+). The asset class and other
-        identity / metadata are fund-level — see
-        ``PUT /api/funds/<ticker>/asset_class``.
+        Two per-portfolio, per-fund properties: ``shares`` and ``locked``.
+        Everything else — asset class, structure, cost — is fund-level and
+        shared across portfolios.
+
+        ``locked`` means "do not suggest selling what I hold of this fund
+        in THIS portfolio". It is deliberately not the same thing as the
+        fund-level ``include_in_optimizer`` flag, which means "never put
+        this fund in a buy suggestion, in any portfolio". The two are
+        independent and give four states:
+
+            include  locked   the optimiser may
+            -------  ------   ---------------------------------
+            True     False    buy and sell freely
+            False    False    sell, but never buy
+            True     True     buy more, but never sell
+            False    True     neither — fully frozen
 
         Path params:
             pid:    portfolio id.
@@ -1113,6 +1250,15 @@ def create_app() -> Flask:
                     return jsonify({"error": "shares must be ≥ 0"}), 400
                 target["shares"] = fv
             target.pop("weight", None)   # drop any legacy weight field
+
+        if "locked" in body:
+            # Stored only when True: the default is unlocked, and writing
+            # False everywhere would put a flag on every position in every
+            # portfolio to record that nothing special is happening.
+            if bool(body["locked"]):
+                target["locked"] = True
+            else:
+                target.pop("locked", None)
 
         upsert_portfolio(p)
         return jsonify(p)
@@ -1582,20 +1728,6 @@ def create_app() -> Flask:
             for e in enriched if e["valuation"].get("value_base") is None
         ]
 
-        # ──────────────────────────────────────────────────────────────
-        # Look-through breakdowns — aggregate each fund's per-position
-        # rollup (data.holdings_breakdowns) into portfolio-level rollups,
-        # weighted by base-currency value. The derivation itself lives in
-        # :func:`porxpy.breakdowns.rollup_portfolio_lookthrough` — the
-        # same pure module that produces the fund-page cards — so the
-        # portfolio cards are guaranteed consistent with the fund cards
-        # and can never go stale (the cache is the only source; this is
-        # recomputed on every /view read).
-        # ──────────────────────────────────────────────────────────────
-        lt = rollup_portfolio_lookthrough(enriched, total_base)
-        lookthrough_breakdowns = lt["lookthrough_breakdowns"]
-        lookthrough_coverage   = lt["lookthrough_coverage"]
-
         # Per-portfolio exposure targets (Targets tab). Computed from
         # the just-built fund-level rollup. Cash positions are already
         # folded into ``enriched`` above as synthetic entries with
@@ -1625,13 +1757,6 @@ def create_app() -> Flask:
             # Trading-currency exposure of the fund wrappers themselves
             # (distinct from the look-through currency breakdown).
             "trading_currency_breakdown": trading_currency_breakdown,
-            # Look-through rollups — same four facets, normalised against
-            # COVERED portfolio value. coverage[facet] = covered / total
-            # so the frontend can render "X% covered" alongside each
-            # chart and toggle Yahoo-meta vs look-through views without
-            # another round-trip.
-            "lookthrough_breakdowns": lookthrough_breakdowns,
-            "lookthrough_coverage":   lookthrough_coverage,
             # Targets-tab data: the user's stored targets, plus the
             # per-facet deviation block. ``target_deviations`` is the
             # render-ready shape (see :func:`compute_target_deviations`);
@@ -2251,6 +2376,7 @@ def create_app() -> Flask:
                                    or ticker_q,
                 "currency_native": effective_cur,
                 "shares":          shares,
+                "locked":          bool(f.get("locked")),
                 "date_to_val":     date_to_val,
                 "is_cash":         False,
             })
@@ -2402,6 +2528,7 @@ def create_app() -> Flask:
                 "name":            fund["name"],
                 "currency_native": fund["currency_native"],
                 "shares":          fund["shares"],
+                "locked":          fund.get("locked", False),
                 "values":          values,
                 "inception_date":  inception,
                 "is_cash":         fund.get("is_cash", False),
@@ -2418,6 +2545,1117 @@ def create_app() -> Flask:
     # -----------------------------------------------------------------------
     # Cache management
     # -----------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # Best-in-class scoring (v0.35.0)
+    # -----------------------------------------------------------------------
+    def _score_universe_cached(preset_name: str | None = None) -> dict:
+        """Score every saved fund from cache. No network, no writes.
+
+        Assembles the universe from the listing and fund caches — cost,
+        size and price history — and hands it to
+        :func:`porxpy.scoring.score_universe`.
+
+        Read-only on purpose: scoring is displayed on every fund list
+        render, and a scoring pass that could trigger a Yahoo fetch would
+        turn opening a tab into 35 network round-trips.
+        """
+        from porxpy.scoring import score_universe, trailing_returns
+        from porxpy.config import SCORING_PRESETS, DEFAULT_SCORING_PRESET
+
+        settings = load_settings()
+        presets  = (settings.get("scoring") or {}).get("presets") or SCORING_PRESETS
+        name     = preset_name if preset_name in presets else DEFAULT_SCORING_PRESET
+        preset   = presets.get(name) or SCORING_PRESETS[DEFAULT_SCORING_PRESET]
+        floor    = float((settings.get("scoring") or {})
+                         .get("size_floor_base", DEFAULT_SIZE_FLOOR_BASE))
+
+        funds = []
+        for fp in sorted(LISTINGS_DIR.glob("*.json")):
+            # Narrow: a corrupt cache file should be skipped, but a bug in
+            # this function should not be. A bare `except Exception` here
+            # swallowed a NameError on every file during development and
+            # reported an empty universe rather than failing loudly.
+            try:
+                blob = json.loads(fp.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                print(f"[Scoring] skipping unreadable cache file {fp.name}")
+                continue
+            prof  = ((blob.get("profile") or {}).get("value")) or {}
+            ident = blob.get("identity") if isinstance(blob.get("identity"), dict) else {}
+            ticker = (prof.get("symbol") or ident.get("ticker") or fp.stem).upper()
+            isin   = (ident.get("isin") or prof.get("isin") or "").upper()
+
+            ph = ((blob.get("price_history") or {}).get("value")) or []
+            ac = ""
+            fs = {}
+            if isin:
+                ac = (((cache_read(isin, "asset_class").get("asset_class") or {})
+                       .get("value") or {}).get("class") or "")
+                fs = {f: e.get("value") for f, e in overrides_for(isin).items()}
+                # Overrides are a view over the cached data, applied at
+                # response-assembly time — so reading the cache blob
+                # directly sees Yahoo's value, not the user's. Scoring a
+                # fund on a TER the user has explicitly corrected would
+                # make the score disagree with every screen that shows it.
+                _view = {"profile": dict(prof)}
+                apply_overrides(isin, _view)
+                prof = _view["profile"]
+
+            funds.append({
+                "ticker":       ticker,
+                "isin":         isin,
+                "name":         prof.get("longName") or prof.get("shortName") or ticker,
+                "asset_class":  ac or "unknown",
+                "focus_type":   fs.get("focus_type") or "none",
+                "focus_detail": fs.get("focus_detail") or "",
+                "ter":          prof.get("expenseRatioPct"),
+                # No FX: sizes are in the fund's own currency. Mixing
+                # currencies matters only at the floor boundary, and the
+                # floor is a round number chosen with that slack in mind.
+                "size_base":    prof.get("totalNetAssets"),
+                "returns":      trailing_returns(ph),
+            })
+
+        scores = score_universe(funds, preset["components"], preset["wtrr"],
+                                size_floor=floor)
+        return {"preset": name, "label": preset.get("label") or name,
+                "size_floor_base": floor, "scores": scores,
+                "universe": len(funds)}
+
+    # -----------------------------------------------------------------------
+    # Source inspector (v0.36.0)
+    # -----------------------------------------------------------------------
+    @app.route("/api/ai/status", methods=["GET"])
+    def api_ai_status() -> Response:
+        """Whether the AI helper can run, and why not when it cannot.
+
+        Two independent conditions — the user's consent and the presence
+        of a key — reported separately, because the fix differs: one is a
+        switch in Settings, the other an environment variable and a
+        restart. Collapsing them to a single "unavailable" would leave
+        the user guessing which.
+        """
+        from porxpy import ai as _ai
+        settings = load_settings()
+        enabled = bool((settings.get("ai") or {}).get("enabled"))
+        has_key = _ai.api_key_present()
+        return jsonify({
+            "enabled":  enabled,
+            "has_key":  has_key,
+            "ready":    enabled and has_key,
+            "key_env":  _ai.API_KEY_ENV,
+            "model":    _ai.DEFAULT_MODEL,
+            "edit_prompt": bool((settings.get("ai") or {}).get("edit_prompt")),
+            # The default prompt, so the report can show exactly what was
+            # sent. It is generated from the registry and the resource
+            # CSVs, so it changes as those do — quoting a stale copy in
+            # the UI would be worse than not showing it.
+            "prompt":   _ai.build_extraction_prompt(),
+        })
+
+    def field_pin_values(isin: str) -> dict:
+        """``{field: value}`` for pinned fields, for cross-field validation."""
+        return {f: e.get("value") for f, e in field_pins(isin).items()}
+
+    def fetch_field_from_source(ticker: str, isin: str, field: str,
+                                source: str):
+        """Ask one source for one field. ``(value, note)``.
+
+        ``value`` is None when the source has nothing for that field —
+        an answer, not a failure. Every source is asked through the same
+        path the bulk fetch uses, so a field cannot mean one thing here
+        and another there.
+        """
+        if source == "yahoo":
+            from porxpy.extractors import (extract_profile, detect_asset_class,
+                                           _seed_fund_structure)
+            t = yf.Ticker(ticker)
+            prof = extract_profile(t) or {}
+            if field == "primary_asset_class":
+                ac = detect_asset_class(t, prof) or {}
+                return (ac.get("class") or None), "detected"
+            if field == "holdingsCount":
+                # Yahoo does not publish the fund's own holding count;
+                # what it has is however many top-10 rows it returned,
+                # which is a different number and would be a lie here.
+                return None, "Yahoo does not publish a holdings count"
+            seed, origins = _seed_fund_structure(prof, None)
+            if field in seed:
+                v = seed.get(field)
+                return (None if v in ("unknown", "none", "") else v), origins.get(field)
+            return prof.get(field), "profile"
+
+        if source == "justetf":
+            from porxpy.extractors import lookup_fund_structure
+            res = lookup_fund_structure(isin) or {}
+            blk = res.get(field)
+            if isinstance(blk, dict):
+                v = blk.get("value")
+                return (None if v in ("unknown", "none", "") else v), "justETF"
+            return None, res.get("note") or "justETF has no value for this field"
+
+        if source == "factsheet":
+            meta = factsheet_get(isin) or {}
+            ex = meta.get("extraction") or {}
+            if not meta:
+                raise ValueError("no factsheet stored for this fund")
+            if not ex:
+                raise ValueError("this factsheet has not been extracted yet")
+            blk = (ex.get("fields") or {}).get(field) or {}
+            v = blk.get("value")
+            note = (f"p{blk.get('page')}: {blk.get('quote')}"
+                    if blk.get("quote") else "not stated in the factsheet")
+            return (v if v is not None else None), note
+
+        if source == "openfigi":
+            return None, "OpenFIGI supplies identity only"
+        raise ValueError(f"unknown source {source!r}")
+
+    @app.route("/api/funds/<ticker>/fields", methods=["GET"])
+    def api_fund_fields(ticker: str) -> Response:
+        """The field taxonomy, with each field's pin and current value.
+
+        One call gives the Edit dialog everything it needs: the groups in
+        presentation order, which sources may supply each field, where
+        each is currently pinned, and what that pin last produced.
+        """
+        from porxpy.config import (FIELD_GROUPS, SOURCE_LABELS,
+                                   field_sources as _fsrc)
+        isin = listing_identity_lookup_isin(ticker)
+        pins = field_pins(isin) if isin else {}
+        # Identification is read-only and so has no pin, but it does have
+        # a provenance: the resolver records which of the ISIN, ticker,
+        # exchange, currency and name it got from where. Caches written
+        # before that was recorded carry nothing, and report nothing —
+        # a blank is honest where a guessed "Yahoo" would not be. The
+        # next fund load fills it in.
+        ident_src = (listing_identity_get(ticker) or {}).get("sources") or {}
+        out_groups = []
+        for grp in FIELD_GROUPS:
+            fields = []
+            for f in grp["fields"]:
+                env = pins.get(f["key"]) or {}
+                # The field's own type and vocabulary, so the dialog can
+                # offer a dropdown for a closed vocabulary instead of a
+                # free-text box. Typing "lrge" into a box that accepts
+                # only six values is a mistake the UI should not permit.
+                spec = OVERRIDABLE_FIELDS.get(f["key"]) or {}
+                fields.append({
+                    "key":        f["key"],
+                    "label":      f["label"],
+                    "type":       spec.get("type") or "str",
+                    "vocab":      list(spec.get("vocab") or ()),
+                    "unit":       spec.get("unit") or "",
+                    "min":        spec.get("min"),
+                    "max":        spec.get("max"),
+                    "calculated": bool(f.get("calculated")),
+                    "readonly":   bool(f.get("readonly")),
+                    "sources":    list(_fsrc(f["key"])),
+                    # Absent means the default, which is what an untouched
+                    # fund should look like — no override per field just
+                    # to record "normal".
+                    "source":     env.get("source") or (
+                        "" if f.get("calculated")
+                        else ident_src.get(f["key"], "") if f.get("readonly")
+                        else "yahoo"),
+                    "pinned":     bool(env),
+                    "value":      env.get("value"),
+                    "ts":         env.get("ts"),
+                })
+            out_groups.append({
+                "key": grp["key"], "label": grp["label"],
+                "note": grp.get("note") or "",
+                # How stale this group's data may get before a reload
+                # refetches it. Carried with the group so the UI can show
+                # and edit it where the data lives.
+                "ttl_days": int((load_settings().get("group_ttl_days") or {})
+                                .get(grp["key"], 0)),
+                "fields": fields})
+        return jsonify({"ticker": ticker, "isin": isin,
+                        "groups": out_groups, "source_labels": SOURCE_LABELS})
+
+    @app.route("/api/funds/<ticker>/fields/<field>/source", methods=["PUT"])
+    def api_fund_field_source(ticker: str, field: str) -> Response:
+        """Pin a field to a source and fetch that source's answer at once.
+
+        Fetching immediately, per field, rather than batching per source
+        on save: the point of choosing a source is to find out whether it
+        has anything worth having, and a batch that resolves later hides
+        exactly that. A source with nothing to say answers "unknown",
+        which is a result — it tells the user not to bother asking again.
+
+        Body: ``{"source": "...", "value": <only for source "user">}``.
+        """
+        from porxpy.config import field_sources as _fsrc, FIELD_SOURCES
+
+        allowed = _fsrc(field)
+        if not allowed:
+            return jsonify({"error": f"{field} is calculated or read-only "
+                                     f"and has no source to choose"}), 400
+
+        body = request.get_json(force=True, silent=True) or {}
+        src = (body.get("source") or "").strip().lower()
+        if src not in allowed:
+            return jsonify({"error": f"{field} can come from "
+                                     f"{', '.join(allowed)} — not {src!r}"}), 400
+
+        # Preview: fetch and answer, but store nothing.
+        #
+        # The dialog fetches the moment a source is chosen, because the
+        # whole point of choosing one is to see whether it has anything —
+        # but the choice itself is not committed until Save, or Cancel
+        # would have to undo writes that had already happened. So the
+        # fetch and the commit are separate operations on the same path.
+        persist = body.get("persist", True) is not False
+
+        isin = listing_identity_lookup_isin(ticker)
+        if not isin:
+            return jsonify({"error": f"no identity recorded for {ticker!r}"}), 404
+
+        if src == "user":
+            # The user's own value IS the assertion; there is nothing to
+            # fetch. Validated through the registry where the field has
+            # one, so a typed value is held to the same standard as a
+            # fetched one.
+            value = body.get("value")
+            if field in OVERRIDABLE_FIELDS:
+                try:
+                    value = coerce_override_value(field, value,
+                                                  context=field_pin_values(isin))
+                except ValueError as exc:
+                    return jsonify({"error": str(exc)}), 400
+            env = field_source_set(isin, field, "user", value) if persist else None
+            return jsonify({"ticker": ticker, "field": field, "source": "user",
+                            "value": value, "pinned": bool(env),
+                            "persisted": persist})
+
+        try:
+            value, note = fetch_field_from_source(ticker, isin, field, src)
+        except (RuntimeError, ValueError) as exc:
+            return jsonify({"error": str(exc)}), 502
+
+        env = field_source_set(isin, field, src, value) if persist else None
+        return jsonify({"ticker": ticker, "field": field, "source": src,
+                        "value": value, "note": note, "pinned": bool(env),
+                        "persisted": persist,
+                        # An explicit flag, because None is a legitimate
+                        # answer and the client must not read it as
+                        # "the request failed".
+                        "unknown": value is None})
+
+    @app.route("/api/funds/<ticker>/fields/refresh", methods=["POST"])
+    def api_fund_fields_refresh(ticker: str) -> Response:
+        """Refetch pinned fields whose group TTL has elapsed.
+
+        This is what the TTLs are for. A field pinned to a source carries
+        the timestamp of the last answer; once that is older than its
+        group's limit, the pin is re-asked automatically. The Reload Fund
+        Data button is a different instruction — "refetch now, whatever
+        the ages say" — and passing ``force`` expresses it.
+
+        Fields pinned to ``user`` are never refetched. There is nothing
+        to ask: the value IS the assertion, and re-asking would mean
+        overwriting the user with a source they chose to replace.
+
+        Unpinned fields are not touched here either — they follow the
+        ordinary profile cache, which has its own freshness rules.
+        """
+        from porxpy.config import field_spec
+
+        isin = listing_identity_lookup_isin(ticker)
+        if not isin:
+            return jsonify({"error": f"no identity recorded for {ticker!r}"}), 404
+
+        body  = request.get_json(force=True, silent=True) or {}
+        force = bool(body.get("force"))
+        ttls  = load_settings().get("group_ttl_days") or {}
+
+        refreshed, skipped, errors = {}, {}, []
+        for field, env in field_pins(isin).items():
+            src = env.get("source")
+            if src == "user":
+                skipped[field] = "your own value"
+                continue
+            spec = field_spec(field) or {}
+            ttl = int(ttls.get(spec.get("group") or "", 0) or 0)
+            age = age_days(env.get("ts") or "")
+            if not force:
+                if ttl <= 0 and age is not None:
+                    pass                      # 0 means always refetch
+                elif age is None or age <= ttl:
+                    skipped[field] = (f"{age:.0f}d old, limit {ttl}d"
+                                      if age is not None else "no timestamp")
+                    continue
+            try:
+                value, note = fetch_field_from_source(ticker, isin, field, src)
+            except (RuntimeError, ValueError) as exc:
+                errors.append(f"{field}: {exc}")
+                continue
+            field_source_set(isin, field, src, value)
+            refreshed[field] = {"source": src, "value": value,
+                                "unknown": value is None, "note": note}
+
+        return jsonify({"ticker": ticker, "isin": isin, "forced": force,
+                        "refreshed": refreshed, "skipped": skipped,
+                        "errors": errors})
+
+    @app.route("/api/funds/<ticker>/fields/sources", methods=["PUT"])
+    def api_fund_field_sources(ticker: str) -> Response:
+        """Commit a set of pins in one go — what Save does.
+
+        Body: ``{"pins": {field: {"source": ..., "value": ...}}}``.
+        Values are supplied by the caller rather than re-fetched: the
+        dialog already fetched them when each source was chosen, and
+        asking again on Save would double every network call and could
+        return something different from what the user just approved.
+
+        Fields absent from ``pins`` are left alone. A pin of "yahoo" with
+        no value clears the entry, since that is the default.
+        """
+        isin = listing_identity_lookup_isin(ticker)
+        if not isin:
+            return jsonify({"error": f"no identity recorded for {ticker!r}"}), 404
+
+        body = request.get_json(force=True, silent=True) or {}
+        pins = body.get("pins") if isinstance(body.get("pins"), dict) else {}
+        from porxpy.config import field_sources as _fsrc
+
+        applied, errors = {}, []
+        for field, blk in pins.items():
+            if not isinstance(blk, dict):
+                continue
+            allowed = _fsrc(field)
+            src = (blk.get("source") or "").strip().lower()
+            if not allowed or src not in allowed:
+                errors.append(f"{field}: cannot come from {src or '(none)'}")
+                continue
+            value = blk.get("value")
+            if src == "user" and field in OVERRIDABLE_FIELDS:
+                try:
+                    value = coerce_override_value(field, value,
+                                                  context=field_pin_values(isin))
+                except ValueError as exc:
+                    errors.append(f"{field}: {exc}")
+                    continue
+            try:
+                field_source_set(isin, field, src, value)
+                applied[field] = {"source": src, "value": value}
+            except ValueError as exc:
+                errors.append(f"{field}: {exc}")
+
+        return jsonify({"ticker": ticker, "isin": isin,
+                        "applied": applied, "errors": errors}), (400 if errors and not applied else 200)
+
+    @app.route("/api/funds/<ticker>/source_fields", methods=["POST"])
+    def api_fund_source_fields(ticker: str) -> Response:
+        """Ask one source for its answer on a set of fields.
+
+        Body: ``{"source": "yahoo"|"justetf", "fields": [name, ...]}``
+
+        Every requested field comes back with a value. A source that has
+        nothing to say about a field answers ``"unknown"`` (or None for
+        the numeric fields) rather than being omitted — the caller asked
+        this source what it thinks, and "I don't know" is an answer. That
+        is what makes the Edit dialog's per-field fetch honest: a ticked
+        field always changes to reflect the source that was pressed, and
+        an unticked field is never touched.
+
+        Note Yahoo does answer on focus, via the fund's own name — the
+        issuer writes "MSCI Europe Small Cap" on the tin, and
+        ``derive_structure_from_name`` reads it. A source having no
+        dedicated field for something does not mean it has no
+        information about it.
+
+        Nothing is persisted here. The dialog stages the returned values
+        into the form and the user's Save commits them, so a fetch can be
+        reviewed — or abandoned — before it becomes durable.
+        """
+        body   = request.get_json(force=True, silent=True) or {}
+        source = (body.get("source") or "").strip().lower()
+        fields = [f for f in (body.get("fields") or []) if isinstance(f, str)]
+        if source not in ("yahoo", "justetf", "factsheet"):
+            return jsonify({"error": f"unknown source: {source!r}"}), 400
+        if not fields:
+            return jsonify({"error": "no fields requested"}), 400
+
+        isin = listing_identity_lookup_isin(ticker)
+        values: dict = {}
+        notes:  dict = {}
+
+        # Numeric fields answer None rather than the string "unknown" —
+        # they have no such vocabulary, and None is what "no value" means
+        # everywhere else in the profile.
+        NUMERIC = {"expenseRatioPct", "totalNetAssets", "turnoverPct"}
+
+        def _unknown(f):
+            return None if f in NUMERIC else ("none" if f == "focus_type"
+                                              else "" if f == "focus_detail"
+                                              else "unknown")
+
+        if source == "yahoo":
+            try:
+                from porxpy.extractors import (extract_profile,
+                                               detect_asset_class,
+                                               _seed_fund_structure)
+                t = yf.Ticker(ticker)
+                prof = extract_profile(t) or {}
+                ac_block = detect_asset_class(t, prof) or {}
+                seed, origins = _seed_fund_structure(prof, ac_block.get("class"))
+                for f in fields:
+                    if f == "primary_asset_class":
+                        values[f] = ac_block.get("class") or "unknown"
+                    elif f in seed:
+                        values[f] = seed.get(f)
+                        notes[f] = origins.get(f) or "yahoo"
+                    elif f in NUMERIC:
+                        values[f] = prof.get(f)
+                    else:
+                        values[f] = _unknown(f)
+            except Exception as exc:
+                return jsonify({"error": f"Yahoo lookup failed: {exc}"}), 502
+
+        elif source == "factsheet":
+            # Reads the stored extraction rather than calling the API
+            # again: one document, one reading. Re-extract is the button
+            # for wanting a fresh one.
+            meta = factsheet_get(isin) if isin else None
+            ex = (meta or {}).get("extraction") or {}
+            got = (ex.get("fields") or {})
+            if not meta:
+                return jsonify({"error": "no factsheet stored for this fund"}), 404
+            if not ex:
+                return jsonify({"error": "this factsheet has not been "
+                                         "extracted yet"}), 409
+            for f in fields:
+                blk = got.get(f)
+                if isinstance(blk, dict) and blk.get("value") is not None:
+                    values[f] = blk["value"]
+                    notes[f] = "factsheet"
+                else:
+                    values[f] = _unknown(f)
+            # Citations travel with the values so the dialog can show
+            # what each was read from — the whole guard against a
+            # confident wrong number.
+            return jsonify({"ticker": ticker, "isin": isin, "source": source,
+                            "values": values, "notes": notes,
+                            "citations": {f: {k: v for k, v in (got.get(f) or {}).items()
+                                              if k in ("page", "quote", "confidence")}
+                                          for f in fields if got.get(f)}})
+
+        else:   # justetf
+            if not isin:
+                return jsonify({"error": "justETF is ISIN-keyed and no ISIN "
+                                         "is on record for this ticker"}), 404
+            try:
+                from porxpy.extractors import lookup_fund_structure
+                res = lookup_fund_structure(isin) or {}
+                got = {k: (res.get(k) or {}).get("value")
+                       for k in ("replication", "style", "distribution")}
+                for f in fields:
+                    v = got.get(f)
+                    values[f] = v if v else _unknown(f)
+                    if v:
+                        notes[f] = "justetf"
+                if not res.get("ok"):
+                    notes["_source"] = res.get("note") or "justETF lookup failed"
+            except Exception as exc:
+                return jsonify({"error": f"justETF lookup failed: {exc}"}), 502
+
+        return jsonify({"ticker": ticker, "isin": isin, "source": source,
+                        "values": values, "notes": notes})
+
+    def _json_safe(obj, _depth: int = 0):
+        """Coerce arbitrary upstream data into something JSON.parse accepts.
+
+        Python's encoder emits bare ``NaN`` and ``Infinity`` for those
+        float values. Both are legal to it and to json.loads, and both are
+        rejected outright by the browser's JSON.parse — so a single NaN
+        anywhere in Yahoo's payload makes the entire inspector response
+        unreadable, with an error pointing at a line number rather than at
+        the field. 0P00015UO7.F is one such fund.
+
+        Also flattens numpy scalars, pandas Timestamps, sets and anything
+        else without a JSON representation, since the whole point of the
+        inspector is to dump upstream data whose shape we do not control.
+        The depth cap guards against a self-referencing structure.
+        """
+        import math
+        if _depth > 12:
+            return "<max depth>"
+        if obj is None or isinstance(obj, (str, bool, int)):
+            return obj
+        if isinstance(obj, float):
+            return obj if math.isfinite(obj) else None
+        if isinstance(obj, dict):
+            return {str(k): _json_safe(v, _depth + 1) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple, set)):
+            return [_json_safe(v, _depth + 1) for v in obj]
+        # numpy scalars and anything else numeric-ish
+        item = getattr(obj, "item", None)
+        if callable(item):
+            try:
+                return _json_safe(item(), _depth + 1)
+            except Exception:
+                pass
+        try:
+            return str(obj)
+        except Exception:
+            return "<unrepresentable>"
+
+    # -----------------------------------------------------------------------
+    # Factsheets (v0.43.0)
+    # -----------------------------------------------------------------------
+    @app.route("/api/funds/<ticker>/factsheet", methods=["GET", "POST", "DELETE"])
+    def api_fund_factsheet(ticker: str) -> Response:
+        """Store, describe or remove a fund's factsheet.
+
+        ``GET``    — metadata only (see ``/factsheet/file`` for the bytes).
+        ``POST``   — multipart ``file``, or JSON ``{"source": "url or path"}``.
+                     Optional ``as_of`` (YYYY-MM-DD) and ``note``.
+        ``DELETE`` — removes the document and its metadata.
+
+        Keyed by ISIN, like every other fund-level fact, so both listings
+        of a dual-listed fund share one factsheet.
+
+        A newer upload replaces the older wholesale, extraction included —
+        an extraction must never outlive the document it came from.
+        """
+        isin = listing_identity_lookup_isin(ticker)
+        if not isin:
+            return jsonify({"error": f"no identity recorded for {ticker!r}; "
+                                     "refetch the fund first"}), 404
+
+        if request.method == "GET":
+            meta = factsheet_get(isin)
+            if not meta:
+                return jsonify({"ticker": ticker, "isin": isin,
+                                "factsheet": None}), 200
+            return jsonify({"ticker": ticker, "isin": isin, "factsheet": meta})
+
+        if request.method == "DELETE":
+            return jsonify({"ticker": ticker, "isin": isin,
+                            "deleted": factsheet_delete(isin)})
+
+        # ---- POST --------------------------------------------------------
+        as_of = note = ""
+        filename = ""
+        data: bytes | None = None
+
+        if request.files and "file" in request.files:
+            f = request.files["file"]
+            filename = f.filename or "factsheet.pdf"
+            data = f.read() or b""
+            as_of = (request.form.get("as_of") or "").strip()
+            note  = (request.form.get("note") or "").strip()
+        else:
+            body = request.get_json(force=True, silent=True) or {}
+            source = (body.get("source") or "").strip()
+            as_of  = (body.get("as_of") or "").strip()
+            note   = (body.get("note") or "").strip()
+            if not source:
+                return jsonify({"error": "provide a file or a source"}), 400
+            # Same resolver the holdings and breakdown uploads use, so a
+            # URL, a path and a dropped-then-stashed file all work here
+            # too without a third way of naming a file.
+            from porxpy.upload import resolve_source
+            try:
+                filename, data, _kind = resolve_source(source)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            # A dropped file resolves through the scratch copy, whose name
+            # is "drop_f126105f_vaneck.pdf" — an implementation detail the
+            # user has never seen. When the caller tells us what they
+            # actually dropped, store that instead. The extension still
+            # comes from the resolved file, so a mismatched display name
+            # cannot change how the document is typed or served.
+            display = (body.get("filename") or "").strip()
+            if display:
+                filename = Path(display).name + Path(filename).suffix \
+                           if not Path(display).suffix else Path(display).name
+
+        try:
+            meta = factsheet_put(isin, filename, data or b"",
+                                 as_of=as_of, note=note)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        return jsonify({"ticker": ticker, "isin": isin, "factsheet": meta})
+
+    @app.route("/api/funds/<ticker>/factsheet/extract", methods=["POST"])
+    def api_fund_factsheet_extract(ticker: str) -> Response:
+        """Read the stored factsheet with the AI helper.
+
+        One call extracts metadata fields AND all four facet breakdowns,
+        so the two provably come from a single reading of the document.
+        The result is stored against the factsheet, not applied: fields
+        stage into the Edit dialog's "Fetch from factsheet" button, and
+        facets become the ``factsheet`` source on the breakdown cards.
+
+        Off unless ``settings.ai.enabled`` is set AND an API key is in
+        the environment. Both, deliberately: the switch is the user's
+        consent, and the key's absence is a configuration fact the switch
+        cannot conjure away.
+        """
+        from porxpy import ai as _ai
+
+        settings = load_settings()
+        if not (settings.get("ai") or {}).get("enabled"):
+            return jsonify({"error": "the AI helper is switched off — "
+                                     "enable it in Settings"}), 409
+        if not _ai.api_key_present():
+            return jsonify({"error": f"no API key: set {_ai.API_KEY_ENV} in "
+                                     f"the environment and restart PorxPy"}), 409
+
+        isin = listing_identity_lookup_isin(ticker)
+        if not isin:
+            return jsonify({"error": f"no identity recorded for {ticker!r}"}), 404
+        meta = factsheet_get(isin)
+        fp = factsheet_file(isin)
+        if not meta or not fp:
+            return jsonify({"error": "no factsheet stored for this fund"}), 404
+
+        # An edited prompt, when the user has that option switched on.
+        # Sent per call rather than stored: a prompt that persisted would
+        # silently apply to every future extraction, including ones where
+        # the user had forgotten they changed it.
+        body = request.get_json(force=True, silent=True) or {}
+        custom = (body.get("prompt") or "").strip()
+        if custom and not (settings.get("ai") or {}).get("edit_prompt"):
+            return jsonify({"error": "prompt editing is switched off"}), 409
+
+        try:
+            raw = _ai.extract_from_document(fp.read_bytes(), meta.get("ext") or "",
+                                            prompt=custom or None)
+        except (RuntimeError, ValueError) as exc:
+            return jsonify({"error": str(exc)}), 502
+
+        # The API call has already succeeded and been paid for by this
+        # point, so everything after it is wrapped: a bug in our own
+        # parsing should not surface as an HTML traceback the browser
+        # reports as "NetworkError", losing both the diagnosis and the
+        # result. The raw reply is returned alongside the error so the
+        # extraction can be salvaged or the bug reproduced without
+        # spending another call.
+        try:
+            result = _ai.validate_extraction(raw)
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            return jsonify({
+                "error": f"the factsheet was read, but processing the reply "
+                         f"failed: {type(exc).__name__}: {exc}",
+                "raw": {k: v for k, v in (raw or {}).items()
+                        if not str(k).startswith("_")},
+            }), 500
+
+        # Facet items go through the same canonicaliser an uploaded CSV's
+        # keys do. A key the model invented survives as itself rather than
+        # being dropped — the breakdown card will show it as an unmapped
+        # bucket, which is visible and fixable, where a silent drop is
+        # neither.
+        from porxpy.breakdowns import canonicalise_facet_key
+        facet_items: dict[str, list] = {}
+        for facet, blk in (result.get("facets") or {}).items():
+            rows = []
+            for it in blk.get("items") or []:
+                key = canonicalise_facet_key(facet, it.get("key")) or it.get("key")
+                # The extractor reports percentages, because that is what
+                # a factsheet prints. The store holds FRACTIONS — the CSV
+                # commit divides by 100 before writing, and every consumer
+                # assumes 0–1. Storing percentages here put every card a
+                # factor of 100 out.
+                rows.append({"key": key,
+                             "weight": round(float(it.get("weight") or 0.0) / 100.0, 8)})
+            if rows:
+                facet_items[facet] = rows
+        if facet_items:
+            try:
+                uploaded_breakdowns_put(isin, facet_items, source="factsheet")
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                result.setdefault("rejected", []).append(
+                    {"item": "facets", "reason": f"could not be stored: {exc}"})
+
+        # Adopt the document's own date when we did not have one. This is
+        # what makes staleness honest: a factsheet is usually months old
+        # on the day it is uploaded, and only the document knows by how
+        # much.
+        if result.get("as_of") and not (meta.get("as_of") or "").strip():
+            factsheet_put(isin, meta.get("filename") or "factsheet",
+                          fp.read_bytes(), as_of=result["as_of"],
+                          note=meta.get("note") or "")
+
+        # Keep the prompt with the result. Six months on, "why did it read
+        # it that way" is answerable only if the instruction is on record
+        # alongside the answer.
+        result["prompt"] = custom or _ai.build_extraction_prompt()
+        result["prompt_edited"] = bool(custom)
+
+        try:
+            stored = factsheet_set_extraction(isin, result)
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            return jsonify({"error": f"extraction succeeded but could not be "
+                                     f"stored: {exc}",
+                            "extraction": result}), 500
+        return jsonify({"ticker": ticker, "isin": isin,
+                        "extraction": result,
+                        "factsheet": stored})
+
+    @app.route("/api/funds/<ticker>/factsheet/file", methods=["GET"])
+    def api_fund_factsheet_file(ticker: str) -> Response:
+        """Serve the stored document itself, for the viewer popup.
+
+        Inline rather than as an attachment: the point is to read it in a
+        window beside the data it produced, not to download it again.
+        """
+        isin = listing_identity_lookup_isin(ticker)
+        if not isin:
+            return jsonify({"error": "no identity recorded"}), 404
+        fp = factsheet_file(isin)
+        if not fp:
+            return jsonify({"error": "no factsheet stored for this fund"}), 404
+        meta = factsheet_get(isin) or {}
+        return send_file(
+            str(fp),
+            mimetype=FACTSHEET_MIME.get(meta.get("ext") or "",
+                                        "application/octet-stream"),
+            as_attachment=False,
+            download_name=meta.get("filename") or fp.name,
+        )
+
+    @app.route("/api/upload/stash", methods=["POST"])
+    def api_upload_stash() -> Response:
+        """Write dropped file bytes to scratch and return a real path.
+
+        The holdings pipeline is path-based throughout — resolve_source,
+        the remembered source_value, one-click re-upload — because the
+        server runs on the user's own machine and a path can be re-read
+        later. A browser drag-and-drop gives bytes and no path, so
+        supporting it would otherwise mean a second, parallel pipeline.
+
+        Instead the bytes are written to the upload scratch directory and
+        the caller gets a path back, which then flows through the existing
+        preview/commit flow untouched.
+
+        The tradeoff is honest and worth stating in the UI: a stashed file
+        lives in scratch, so "re-upload from the same source" will work
+        only until that directory is cleared. A file chosen by path is
+        re-readable indefinitely.
+        """
+        f = request.files.get("file")
+        if f is None or not (f.filename or "").strip():
+            return jsonify({"error": "no file in request"}), 400
+
+        # Keep the extension — the parser dispatches on it — but not the
+        # rest of the client-supplied name, which is attacker-controlled
+        # in principle and path-bearing in practice on some platforms.
+        name = Path(f.filename).name
+        ext = Path(name).suffix.lower()
+        # Data files plus factsheet documents: this endpoint backs every
+        # drop zone, and a list that omitted PDFs would let the factsheet
+        # zone accept a file the server then refused.
+        STASHABLE = ((".csv", ".tsv", ".txt", ".xlsx", ".xlsm", ".xls")
+                     + FACTSHEET_EXTENSIONS)
+        if ext not in STASHABLE:
+            return jsonify({"error": f"unsupported file type: {ext or '(none)'}"}), 400
+
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", Path(name).stem)[:60] or "dropped"
+        dest = UPLOAD_DIR / f"drop_{uuid.uuid4().hex[:8]}_{safe}{ext}"
+        try:
+            f.save(str(dest))
+        except OSError as exc:
+            return jsonify({"error": f"could not save file: {exc}"}), 500
+
+        return jsonify({"path": str(dest), "filename": name,
+                        "bytes": dest.stat().st_size, "stashed": True})
+
+    @app.route("/api/tools/inspect", methods=["GET"])
+    def api_tools_inspect() -> Response:
+        """Raw, uninterpreted responses from every upstream source.
+
+        Query:
+            ``ticker`` and/or ``isin``. A ticker inspects Yahoo directly;
+            an ISIN additionally inspects OpenFIGI and justETF.
+
+        Returns a per-source block containing exactly what the source
+        said, with no coercion, no unit conversion and no fallback
+        chain applied — plus, for the fee-and-size fields, what PorxPy
+        *would* derive from it, so the two can be compared side by side.
+
+        This exists because that comparison could not be made. Total net
+        assets was wrong in three consecutive releases, each time because
+        a value was being interpreted without anyone being able to see
+        what had actually arrived. A diagnostic that shows the raw
+        response next to the derived value turns "the number looks wrong"
+        into "this field says X and we turned it into Y".
+
+        Live network calls, deliberately: the point is to see what the
+        source returns NOW, not what the cache remembers. Nothing is
+        written — no cache, no overrides, no identity records.
+        """
+        ticker = (request.args.get("ticker") or "").strip()
+        isin   = (request.args.get("isin") or "").strip().upper()
+        if not ticker and not isin:
+            return jsonify({"error": "provide ticker and/or isin"}), 400
+
+        # Fill in the ISIN when only a ticker was given, so the OpenFIGI
+        # and justETF blocks are not silently skipped. Cache first, then
+        # what Yahoo reports. Tracked separately so the report can say
+        # where it came from rather than appearing to have been typed.
+        isin_source = "supplied" if isin else ""
+        if not isin and ticker:
+            cached_isin = listing_identity_lookup_isin(ticker)
+            if cached_isin:
+                isin, isin_source = cached_isin.upper(), "listing identity cache"
+
+        out: dict = {"ticker": ticker, "isin": isin,
+                     "isin_source": isin_source, "sources": {}}
+
+        # ---- Yahoo ------------------------------------------------------
+        if ticker:
+            y: dict = {"ok": False}
+            try:
+                t = yf.Ticker(ticker)
+                info = dict(t.info or {})
+                y["info"] = info
+                y["info_key_count"] = len(info)
+
+                # The fee-and-size keys, pulled out because they are the
+                # ones that have caused trouble, with each candidate shown
+                # under every plausible unit reading.
+                def _n(v):
+                    try:
+                        f = float(v)
+                        return None if f != f else f
+                    except (TypeError, ValueError):
+                        return None
+                interesting = {}
+                for k in ("netExpenseRatio", "annualReportExpenseRatio",
+                          "annualHoldingsTurnover", "netAssets", "totalAssets",
+                          "totalNetAssets", "fundFamily", "category",
+                          "currency", "quoteType", "longName"):
+                    if k in info:
+                        v = info[k]
+                        n = _n(v)
+                        interesting[k] = {
+                            "raw": v,
+                            "as_units": n,
+                            "x1e3": (n * 1e3) if n is not None else None,
+                            "x1e6": (n * 1e6) if n is not None else None,
+                        }
+                y["fee_and_size_candidates"] = interesting
+
+
+                # funds_data.fund_operations, with the category column
+                # kept. Where the fund column and the category column
+                # carry the same number, the field is not fund-specific —
+                # that is how totalNetAssets was caught returning a
+                # category aggregate for every fund.
+                try:
+                    ops_df = t.funds_data.fund_operations
+                    if ops_df is not None and not ops_df.empty:
+                        cols = [str(c) for c in ops_df.columns]
+                        rows = []
+                        for idx in ops_df.index:
+                            vals = [(None if v != v else v) for v in ops_df.loc[idx].tolist()]
+                            same = (len(vals) >= 2 and vals[0] is not None
+                                    and vals[0] == vals[1])
+                            rows.append({"attribute": str(idx), "values": vals,
+                                         "same_as_category": same})
+                        y["fund_operations"] = {"columns": cols, "rows": rows}
+                    else:
+                        y["fund_operations"] = {"columns": [], "rows": [],
+                                                "note": "empty — Yahoo has no "
+                                                        "fundProfile for this listing"}
+                except Exception as exc:
+                    y["fund_operations"] = {"error": str(exc)}
+
+                # Everything else yfinance exposes for a fund. Each is
+                # optional and each fails independently — a listing with
+                # no bond holdings should not cost you the sector
+                # weightings. Dumped whole rather than filtered: the
+                # point of an inspector is to show what is there, and a
+                # renderer that decided what mattered would be answering
+                # the question instead of reporting it.
+                def _frame(obj):
+                    """DataFrame / Series / dict -> plain JSON."""
+                    if obj is None:
+                        return None
+                    try:
+                        if hasattr(obj, "empty") and obj.empty:
+                            return {}
+                        if hasattr(obj, "to_dict"):
+                            d = obj.to_dict()
+                            return json.loads(json.dumps(d, default=str))
+                        return json.loads(json.dumps(obj, default=str))
+                    except Exception as exc:
+                        return {"_error": str(exc)}
+
+                fd = {}
+                try:
+                    funds = t.funds_data
+                    for attr in ("description", "fund_overview",
+                                 "asset_classes", "top_holdings",
+                                 "sector_weightings", "equity_holdings",
+                                 "bond_holdings", "bond_ratings"):
+                        try:
+                            fd[attr] = _frame(getattr(funds, attr, None))
+                        except Exception as exc:
+                            fd[attr] = {"_error": str(exc)}
+                except Exception as exc:
+                    fd["_error"] = str(exc)
+                y["funds_data"] = fd
+
+                # Price history summary rather than the series itself —
+                # thousands of bars would bury everything else, and the
+                # span and endpoints are what you actually check.
+                try:
+                    h = t.history(period="max")
+                    if h is not None and not h.empty:
+                        y["history"] = {
+                            "rows":  int(len(h)),
+                            "first": str(h.index[0])[:10],
+                            "last":  str(h.index[-1])[:10],
+                            "columns": [str(c) for c in h.columns],
+                            "last_close": float(h["Close"].iloc[-1]),
+                        }
+                    else:
+                        y["history"] = {"rows": 0}
+                except Exception as exc:
+                    y["history"] = {"_error": str(exc)}
+
+                for attr in ("fast_info", "isin"):
+                    try:
+                        v = getattr(t, attr, None)
+                        y[attr] = _frame(dict(v)) if attr == "fast_info" and v else v
+                    except Exception as exc:
+                        y[attr] = {"_error": str(exc)}
+
+                # What PorxPy derives from all of the above.
+                from porxpy.extractors import extract_profile
+                try:
+                    derived = extract_profile(t) or {}
+                    y["porxpy_derived"] = {
+                        k: derived.get(k) for k in
+                        ("expenseRatioPct", "turnoverPct", "totalNetAssets",
+                         "totalNetAssetsSrc", "currency", "isin",
+                         "market_cap", "style_box", "distribution")
+                    }
+                except Exception as exc:
+                    y["porxpy_derived"] = {"error": str(exc)}
+                y["ok"] = True
+            except Exception as exc:
+                y["error"] = str(exc)
+            out["sources"]["yahoo"] = y
+
+        # Yahoo occasionally reports the ISIN inline; last fallback before
+        # the ISIN-keyed sources below decide they have nothing to work
+        # with.
+        if not isin:
+            y_isin = ((out["sources"].get("yahoo") or {})
+                      .get("porxpy_derived") or {}).get("isin")
+            if y_isin:
+                isin = str(y_isin).upper()
+                out["isin"] = isin
+                out["isin_source"] = "Yahoo"
+
+        # ---- What is actually stored -------------------------------------
+        # The live source and the derived value can both be right while
+        # the screen is still wrong, because the screen reads the CACHE
+        # with overrides applied on top. Showing all three side by side
+        # is the only way to tell "the source is wrong" from "the cache
+        # is stale" from "an override is pinning it" — three very
+        # different problems that look identical from the fund tile.
+        stored: dict = {}
+        if ticker:
+            blob = cache_read(ticker, "profile")
+            entry = blob.get("profile") if isinstance(blob, dict) else None
+            prof_cached = (entry or {}).get("value") or {}
+            stored["cached_profile"] = {
+                k: prof_cached.get(k) for k in
+                ("expenseRatioPct", "turnoverPct", "totalNetAssets",
+                 "totalNetAssetsSrc", "currency", "isin", "longName")
+            }
+            stored["cached_at"] = (entry or {}).get("ts")
+        if isin:
+            stored["overrides"] = overrides_for(isin)
+        if stored:
+            out["sources"]["stored"] = stored
+
+        # ---- OpenFIGI ---------------------------------------------------
+        # Both of these are ISIN-keyed. When no ISIN could be found the
+        # block still appears, saying so — silently omitting it looked
+        # like the source had been queried and returned nothing.
+        if isin:
+            try:
+                from porxpy.resolver import _figi_post
+                req = [{"idType": "ID_ISIN", "idValue": isin}]
+                out["sources"]["openfigi"] = {
+                    "ok": True, "request": req, "response": _figi_post(req),
+                }
+            except Exception as exc:
+                out["sources"]["openfigi"] = {"ok": False, "error": str(exc)}
+        else:
+            out["sources"]["openfigi"] = {
+                "ok": False, "skipped": True,
+                "note": "no ISIN supplied and none on record for this ticker",
+            }
+
+        # ---- justETF ----------------------------------------------------
+        if isin:
+            try:
+                from porxpy.extractors import lookup_fund_structure
+                out["sources"]["justetf"] = lookup_fund_structure(isin)
+            except Exception as exc:
+                out["sources"]["justetf"] = {"ok": False, "error": str(exc)}
+        else:
+            out["sources"]["justetf"] = {
+                "ok": False, "skipped": True,
+                "note": "no ISIN supplied and none on record for this ticker",
+            }
+
+        # Sanitised once, at the boundary, rather than at each of the
+        # dozen places that add data to `out` — a single missed spot
+        # breaks the whole response.
+        return jsonify(_json_safe(out))
+
+    @app.route("/api/scores", methods=["GET"])
+    def api_scores() -> Response:
+        """Best-in-class scores for every saved fund.
+
+        Query:
+            ``preset`` — weight model name; defaults to the configured
+            default.
+
+        Returns:
+            ``{preset, label, size_floor_base, universe, scores}`` where
+            ``scores`` maps ticker to its score block. ``score_all`` ranks
+            against the whole universe; ``score_peer`` against funds with
+            the same asset class and focus, and is None when the peer
+            group is too small to rank within.
+        """
+        return jsonify(_score_universe_cached(request.args.get("preset")))
+
+    @app.route("/api/scores/presets", methods=["GET"])
+    def api_score_presets() -> Response:
+        """The configured weight models, for the optimiser's picker."""
+        from porxpy.config import SCORING_PRESETS, DEFAULT_SCORING_PRESET
+        settings = load_settings()
+        presets  = (settings.get("scoring") or {}).get("presets") or SCORING_PRESETS
+        return jsonify({
+            "presets": [{"key": k, "label": v.get("label") or k,
+                         "components": v.get("components") or {},
+                         "wtrr": v.get("wtrr") or {}}
+                        for k, v in presets.items()],
+            "default": DEFAULT_SCORING_PRESET,
+            "size_floor_base": (settings.get("scoring") or {})
+                               .get("size_floor_base", DEFAULT_SIZE_FLOOR_BASE),
+        })
+
     @app.route("/api/cache/list", methods=["GET"])
     def api_cache_list() -> Response:
         """List every cached ticker with category ages and holdings status.
@@ -2778,7 +4016,9 @@ def create_app() -> Flask:
 
         # Extensions the upload parser understands. Kept in step with
         # upload_preview()'s format sniffing.
-        PICKABLE_EXT = {".csv", ".tsv", ".txt", ".xlsx", ".xlsm"}
+        # Factsheet documents are pickable too — the same browser backs
+        # the factsheet dialog's Browse button.
+        PICKABLE_EXT = {".csv", ".tsv", ".txt", ".xlsx", ".xlsm"} | set(FACTSHEET_EXTENSIONS)
 
         raw = (request.args.get("path") or "").strip()
 
@@ -3198,7 +4438,7 @@ def create_app() -> Flask:
         uploaded_facets  = uploaded_breakdowns_get(isin)
         fund_breakdowns  = build_fund_breakdowns(
             holdings_breakdowns, issuer_sectors, issuer_alloc,
-            bd_overrides, uploaded_facets)
+            bd_overrides, uploaded_facets, _bd_presence(isin, rows))
 
         return jsonify({
             "ticker":              ticker,
@@ -3313,7 +4553,7 @@ def create_app() -> Flask:
         uploaded_facets  = uploaded_breakdowns_get(isin)
         fund_breakdowns  = build_fund_breakdowns(
             holdings_breakdowns, issuer_sectors, issuer_alloc,
-            bd_overrides, uploaded_facets)
+            bd_overrides, uploaded_facets, _bd_presence(isin, rows))
 
         return jsonify({
             "ticker":              ticker,
@@ -3397,8 +4637,14 @@ def create_app() -> Flask:
         body = request.get_json(force=True, silent=True) or {}
         if "value" not in body:
             return jsonify({"error": "body must contain 'value'"}), 400
+        # Who is asserting this. Defaults to "user" — a hand-typed value —
+        # but a value staged from a fetch must keep its own provenance,
+        # or the fund page would report a factsheet reading as something
+        # the user typed, and the "where did this come from" question
+        # the override store exists to answer becomes unanswerable.
+        src = (body.get("source") or "user").strip().lower()
         try:
-            env = override_put(isin, field, body["value"],
+            env = override_put(isin, field, body["value"], source=src,
                                note=body.get("note") or "")
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
@@ -3455,7 +4701,7 @@ def create_app() -> Flask:
                                      "refetch the fund first"}), 404
 
         if request.method == "DELETE":
-            cleared = override_delete(isin, "asset_class")
+            cleared = override_delete(isin, "primary_asset_class")
             return jsonify({"ticker": ticker, "asset_class": None,
                             "cleared": cleared})
 
@@ -3463,7 +4709,7 @@ def create_app() -> Flask:
         ac   = body.get("asset_class")
         if ac not in ASSET_CLASSES:
             return jsonify({"error": f"asset_class must be one of {ASSET_CLASSES}"}), 400
-        override_put(isin, "asset_class", ac)
+        override_put(isin, "primary_asset_class", ac)
         return jsonify({"ticker": ticker, "asset_class": ac})
 
     # -----------------------------------------------------------------------
@@ -3482,8 +4728,8 @@ def create_app() -> Flask:
         "Reload fund data" — it is not Yahoo-sourced. The URL takes a
         ticker for the user's convenience and resolves to the ISIN.
 
-        ``PUT``    — body ``{"source": "holdings"}`` (or ``"fund"``).
-                     ``"fund"`` is equivalent to a clear.
+        ``PUT``    — body ``{"source": "holdings"|"yahoo"|"upload"|"factsheet"}``.
+                     ``"yahoo"`` is equivalent to a clear.
         ``DELETE`` — clears the override for this card.
 
         Path params:
@@ -3491,11 +4737,33 @@ def create_app() -> Flask:
             facet:  One of :data:`~porxpy.config.BREAKDOWN_FACETS`.
 
         Returns:
-            ``{ticker, facet, source, overrides}`` — ``source`` is the
-            value now in force (``"fund"`` after a clear) and
-            ``overrides`` is the fund's full ``{facet: source}`` map
-            after the change.
+            ``{ticker, facet, source, overrides, fund_breakdowns}`` —
+            ``source`` is the value now in force (``"yahoo"`` after a
+            clear), ``overrides`` the fund's full ``{facet: source}`` map,
+            and ``fund_breakdowns`` the rebuilt cards.
+
+        The cards are rebuilt and returned here, as the upload endpoints
+        already do, so the caller does not have to re-request the fund to
+        see its own change. It used to, and that was the bug: a fund
+        reload arrives carrying both a ticker and an ISIN, which
+        ``/api/fund`` reads as mode 2 and answers by re-validating the
+        ticker against Yahoo. A rate-limited or merely unlucky Yahoo then
+        failed the redraw of four cards that were already correct on
+        disk, and the selector looked inert.
         """
+
+        def _cards(isin_: str) -> dict:
+            """Rebuild this fund's four cards from what is now stored."""
+            hold_blob = cache_read(isin_, "holdings")
+            rows      = ((hold_blob.get("holdings") or {}).get("value")
+                         or {}).get("rows") or []
+            sect_blob = cache_read(isin_, "sectors")
+            return build_fund_breakdowns(
+                rollup_holdings(rows) if rows else {},
+                (sect_blob.get("sectors") or {}).get("value") or [],
+                (sect_blob.get("asset_allocation") or {}).get("value") or [],
+                _bd_sources(isin_), uploaded_breakdowns_get(isin_),
+                _bd_presence(isin_, rows))
         if facet not in BREAKDOWN_FACETS:
             return jsonify(
                 {"error": f"facet must be one of {list(BREAKDOWN_FACETS)}"}), 400
@@ -3508,10 +4776,11 @@ def create_app() -> Flask:
         if request.method == "DELETE":
             override_delete(isin, f"breakdown_source.{facet}")
             return jsonify({
-                "ticker":    ticker,
-                "facet":     facet,
-                "source":    "fund",
-                "overrides": _bd_sources(isin),
+                "ticker":          ticker,
+                "facet":           facet,
+                "source":          "yahoo",
+                "overrides":       _bd_sources(isin),
+                "fund_breakdowns": _cards(isin),
             })
 
         body   = request.get_json(force=True, silent=True) or {}
@@ -3520,15 +4789,16 @@ def create_app() -> Flask:
             return jsonify(
                 {"error": f"source must be one of {list(BREAKDOWN_SOURCES)}"}), 400
         # "fund" is the default, so selecting it withdraws the override.
-        if source == "fund":
+        if source == "yahoo":
             override_delete(isin, f"breakdown_source.{facet}")
         else:
             override_put(isin, f"breakdown_source.{facet}", source)
         return jsonify({
-            "ticker":    ticker,
-            "facet":     facet,
-            "source":    source,
-            "overrides": _bd_sources(isin),
+            "ticker":          ticker,
+            "facet":           facet,
+            "source":          source,
+            "overrides":       _bd_sources(isin),
+            "fund_breakdowns": _cards(isin),
         })
 
     # -----------------------------------------------------------------------
@@ -3576,6 +4846,10 @@ def create_app() -> Flask:
         the unresolved facets / keys for the resolution modal.
 
         Body (JSON):
+            ``{"source": "https://… or C:\\path\\to\\breakdowns.csv"}``
+            — resolved by the same :func:`porxpy.upload.resolve_source`
+            the holdings upload uses, so a URL, a filesystem path and a
+            ``file://`` URI all work and the two dialogs can be identical.
             ``{"filename": "...", "csv": "facet,key,weight\\n..."}``
         Or multipart form-data:
             ``file`` — the CSV file.
@@ -3599,8 +4873,16 @@ def create_app() -> Flask:
             data = f.read() or b""
         else:
             body = request.get_json(force=True, silent=True) or {}
+            source = (body.get("source") or "").strip()
             csv_text = body.get("csv")
-            if isinstance(csv_text, str) and csv_text:
+            if source:
+                from porxpy.upload import resolve_source
+                try:
+                    fname, data, _kind = resolve_source(source)
+                except ValueError as exc:
+                    return jsonify({"error": str(exc)}), 400
+                filename = fname or filename
+            elif isinstance(csv_text, str) and csv_text:
                 filename = (body.get("filename") or filename).strip() or filename
                 data = csv_text.encode("utf-8")
 
@@ -3672,9 +4954,14 @@ def create_app() -> Flask:
         issuer_sectors = (sectors_blob.get("sectors") or {}).get("value") or []
         issuer_alloc   = (sectors_blob.get("asset_allocation") or {}).get("value") or []
         bd_overrides   = _bd_sources(isin)
+        # Read the supplied breakdowns back from the store rather than
+        # reusing the commit's return value: that is the flat
+        # {facet: items} for the source just written, and the cards need
+        # the source-keyed {facet: {source: items}} across every source.
         fund_breakdowns = build_fund_breakdowns(
             holdings_breakdowns, issuer_sectors, issuer_alloc,
-            bd_overrides, result["facets"])
+            bd_overrides, uploaded_breakdowns_get(isin),
+            _bd_presence(isin, rows))
 
         return jsonify({
             "ticker":              ticker,
@@ -3699,7 +4986,7 @@ def create_app() -> Flask:
         Side effect: if this clear leaves any cards still set to source
         ``"upload"`` for the now-empty facet, ``build_fund_breakdowns``'
         graceful-fallback rule kicks in on the next read — the card
-        falls back to source ``"fund"``. We don't auto-clear the
+        falls back to source ``"yahoo"``. We don't auto-clear the
         breakdown_source override entry here; the user can flip it
         explicitly if they want, but the fallback keeps the card
         rendering sensibly in the meantime.
@@ -3720,7 +5007,7 @@ def create_app() -> Flask:
 
         # Also clear any source=upload override entries that no longer
         # have data to back them. The fallback in build_fund_breakdowns
-        # would render those as "fund" anyway, but explicitly clearing
+        # would render those as "yahoo" anyway, but explicitly clearing
         # makes the stored state match what's actually in effect.
         current_overrides = _bd_sources(isin)
         upload_now        = uploaded_breakdowns_get(isin)
@@ -3739,7 +5026,7 @@ def create_app() -> Flask:
         bd_overrides   = _bd_sources(isin)
         fund_breakdowns = build_fund_breakdowns(
             holdings_breakdowns, issuer_sectors, issuer_alloc,
-            bd_overrides, upload_now)
+            bd_overrides, upload_now, _bd_presence(isin, rows))
 
         return jsonify({
             "ticker":              ticker,
@@ -3822,6 +5109,10 @@ def create_app() -> Flask:
         #
         # v0.33.0: withdrawal is now a delete rather than storing a
         # neutral value, so the file records only deliberate exceptions.
+        # Per-field provenance from the client: which source supplied each
+        # staged value. Absent means the user typed it.
+        sources_in = body.get("sources") if isinstance(body.get("sources"), dict) else {}
+
         from porxpy.extractors import _seed_fund_structure, _merge_fund_structure
         prof = (cache_read(ticker, "profile").get("profile") or {}).get("value") or {}
         # Asset class is a fund-level (ISIN-keyed) category. Read-only —
@@ -3834,11 +5125,24 @@ def create_app() -> Flask:
 
         for field, seed_val in seed.items():
             submitted = block.get(field)
-            if submitted == seed_val:
+            # A field the user explicitly fetched from a source is stored
+            # even when it matches the seed.
+            #
+            # Withdrawing on agreement is right for a hand-typed value —
+            # it keeps the field tracking the seed instead of pinning a
+            # snapshot. It is wrong for a fetch: "justETF says unknown"
+            # is an answer about justETF, and "unknown" is usually what
+            # the seed says too, so the override was deleted and the
+            # source silently reverted to Yahoo. The user asked a
+            # question and the answer disappeared.
+            explicit = field in sources_in
+            if submitted == seed_val and not explicit:
                 override_delete(isin, field)
             else:
                 try:
-                    override_put(isin, field, submitted, context=block)
+                    override_put(isin, field, submitted,
+                                 source=(sources_in.get(field) or "user"),
+                                 context=block)
                 except ValueError as exc:
                     return jsonify({"error": str(exc)}), 400
 

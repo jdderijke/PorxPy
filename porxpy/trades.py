@@ -229,16 +229,28 @@ def apply_trades(pid: str, trades: list[dict], price_lookup) -> dict:
                 "warnings": warnings}
 
     # ---- Commit ---------------------------------------------------------
+    sold_out: list[str] = []
     for ticker, sh in shares_run.items():
-        # Clamp float dust to a clean zero so a fully-sold position reads
-        # as 0 rather than 4.4e-16.
-        by_ticker[ticker]["shares"] = 0.0 if abs(sh) < SHARES_EPS else round(sh, 8)
         if abs(sh) < SHARES_EPS:
-            # Selling out leaves the fund in the portfolio at zero shares
-            # rather than removing it: it stays a candidate the optimiser
-            # can buy back into. Removing it is a separate, explicit act.
-            warnings.append(
-                f"{ticker} fully sold — kept in the portfolio at 0 shares")
+            # Selling out removes the fund from the portfolio.
+            #
+            # It used to stay at zero shares on the reasoning that it
+            # remained a candidate to buy back into. That reasoning was
+            # wrong about where candidacy comes from: the optimiser
+            # draws candidates from the pre-loaded fund list, not from
+            # the portfolio, so a removed fund is just as buyable as it
+            # was before. All the zero-shares row bought was a portfolio
+            # holding nothing, cluttering every table that lists it.
+            sold_out.append(ticker)
+            warnings.append(f"{ticker} fully sold — removed from the portfolio")
+        else:
+            # Clamp float dust so a near-exact position reads cleanly.
+            by_ticker[ticker]["shares"] = round(sh, 8)
+
+    if sold_out:
+        gone = set(sold_out)
+        funds = [f for f in funds
+                 if (f.get("ticker") or "").upper() not in gone]
 
     for cash_id, amt in cash_run.items():
         by_cash[cash_id]["amount"] = round(max(0.0, amt), 2)

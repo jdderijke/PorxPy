@@ -1361,13 +1361,31 @@ def _derive_focus_from_name(padded: str) -> tuple[str, str]:
         return "region", regions.pop()
 
     supers = regions & set(SUPER_REGION_KEYS)
-    for sup in supers:
-        members = SUPER_REGION_MEMBERS.get(sup, set())
-        # Every other hit must be this super region's own member, or
-        # the super region itself. "Emerging Markets Asia" hits two
-        # super regions with no containment either way — decline.
-        if regions - {sup} <= members:
-            return "region", sup
+    plain  = regions - supers
+
+    # Collapse several hits to the SMALLEST super region that covers
+    # every plain region hit.
+    #
+    # Smallest, not merely "one that works", because the hierarchy nests:
+    # "MSCI World" matches both `developed` and `world`, and answering
+    # `world` would be true but useless — MSCI World is a developed-markets
+    # index, and the narrower answer is the informative one. Ranking by
+    # member count picks it without hard-coding a precedence order.
+    #
+    # This also handles names that intersect two supers with no
+    # containment either way. "Developed Europe ex UK" hits `developed`,
+    # `europe` and `unitedKingdom`; neither super contains the other, but
+    # both cover the region hit, and `europe` is the tighter of the two.
+    # Requiring one super to contain the other returned nothing at all
+    # for such names.
+    candidates = [
+        sup for sup in supers
+        if plain <= SUPER_REGION_MEMBERS.get(sup, set())
+    ]
+    if candidates:
+        return "region", min(
+            candidates,
+            key=lambda k: (len(SUPER_REGION_MEMBERS.get(k, set())), k))
     return "none", ""
 
 
@@ -2763,7 +2781,7 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
     # the holdings work below means enriched/top-10 holdings rows inherit
     # the overridden class via ``default_holding_asset_class`` too.
     from porxpy.utils import override_get               # local: avoid cycle
-    ac_override = override_get(isin, "asset_class")
+    ac_override = override_get(isin, "primary_asset_class")
     if asset_class is None:
         asset_class = {"class": "other", "confidence": "low", "signals": []}
     asset_class["detected_class"] = asset_class.get("class")
@@ -3044,7 +3062,7 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
     # forced refresh.
     # ──────────────────────────────────────────────────────────────────
     from porxpy.utils import (   # local: avoid cycle
-        override_get, uploaded_breakdowns_get,
+        factsheet_get, override_get, uploaded_breakdowns_get,
     )
     # Per-facet card source. One registry field per facet now, so this
     # rebuilds the {facet: source} map build_fund_breakdowns expects.
@@ -3054,9 +3072,17 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
         if override_get(isin, f"breakdown_source.{f}")
     }
     uploaded_facets = uploaded_breakdowns_get(isin)
+    # Which sources this fund HAS, which is what decides whether the
+    # selector offers them — distinct from whether they happen to carry
+    # data for a given facet. An extracted factsheet that omits the
+    # currency split still answers the currency card, with "unknown".
+    sources_present = {
+        "holdings":  bool(rollup_rows),
+        "factsheet": bool((factsheet_get(isin) or {}).get("extraction")),
+    }
     fund_breakdowns = build_fund_breakdowns(
         breakdowns, sectors or [], asset_allocation or [],
-        bd_overrides, uploaded_facets)
+        bd_overrides, uploaded_facets, sources_present)
 
     # ──────────────────────────────────────────────────────────────────
     # Fund "Structure" block — {structure, replication, style}.
@@ -3180,8 +3206,8 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
         # cash / other split). [] when the issuer published nothing.
         "asset_allocation": asset_allocation or [],
         # Unified Fund/ETF-level breakdown cards (asset_class / sector /
-        # country / currency), each {items, source, issuer_available,
-        # holdings_available} — see build_fund_breakdowns. Per-card
+        # country / currency), each {items, source, available} — see
+        # build_fund_breakdowns. Per-card
         # holdings overrides are already applied here.
         "fund_breakdowns":  fund_breakdowns,
         # The fund's persisted per-card breakdown-source overrides
