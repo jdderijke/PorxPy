@@ -176,6 +176,19 @@
      the hover state. */
   .fp-row:hover{background:rgba(255,255,255,.05);}
   .fp-row{user-select:none;border-bottom:1px solid rgba(255,255,255,.03);}
+  /* Brief highlight when a peer is brought into view. An animation
+     rather than a class left behind: the row is the answer to a question
+     just asked, not a selection to keep track of. */
+  @keyframes rowflash {
+    from { background: var(--accent-dim, rgba(96,165,250,.22)); }
+    to   { background: transparent; }
+  }
+  #cacheBody tr.rowflash > td { animation: rowflash 1.4s ease-out; }
+
+  /* A clickable popover row. */
+  .crpop-item.clk { cursor: pointer; }
+  .crpop-item.clk:hover { background: var(--surface2); }
+
   /* Click-to-open popover dropdowns (used for Categories and Portfolios columns).
      Anchor wrapper has position:relative so the absolute popover positions
      beneath it. Popover stays open until next click anywhere; closeAllPopovers
@@ -3118,6 +3131,7 @@ function renderCachePanel(){
           <col>                       <!-- Name (flex) -->
           <col style="width:110px">  <!-- Holdings -->
           <col style="width:104px">  <!-- Score (all / peer) -->
+          <col style="width:96px">   <!-- Peers -->
           <col style="width:150px">  <!-- Portfolios -->
           <col style="width:48px">   <!-- Incl (optimiser opt-in) -->
           <col style="width:54px">   <!-- Actions (delete only) -->
@@ -3131,6 +3145,8 @@ function renderCachePanel(){
             <th data-key="holdings" onclick="onCacheSort('holdings')">Holdings<span class="sortarr" data-arr="holdings"></span></th>
             <th data-key="score" onclick="onCacheSort('score')"
                 title="Best-in-class score, 0–100. Left: rank against every saved fund. Right: rank within this fund's peer group (same asset class and focus) — the number the optimiser uses. '—' means the peer group is too small to rank within. Weights come from the model chosen below.">score<span class="sortarr" data-arr="score"></span></th>
+            <th class="nosort"
+                title="The funds this one is ranked against — same asset class and focus. Includes itself. Each row shows the peer score; click one to bring it into view. '—' means the group is too small to rank within.">Peers</th>
             <th class="nosort">Portfolios</th>
             <th data-key="incl" onclick="onCacheSort('incl')"
                 title="Include in optimiser. Unticked, the optimiser will neither buy nor sell this fund. A holding you already have still counts toward your targets — it is simply left alone, which may put some targets out of reach.">incl<span class="sortarr" data-arr="incl"></span></th>
@@ -3149,6 +3165,7 @@ function renderCachePanel(){
             </select></th>
             <th><select id="cfScorePreset" onchange="onCacheScorePresetChange()"
                         title="Which weight model the scores are computed with"></select></th>
+            <th></th>
             <th><select id="cfPortfolio" onchange="onCacheFilterChange()">
               <option value="">All</option>
               <option value="__none__"${cacheFilterState.portfolio==='__none__' ? ' selected' : ''}>(not in any)</option>
@@ -3169,7 +3186,7 @@ function renderCachePanel(){
   if (!sorted.length){
     list.innerHTML = header;
     document.getElementById('cacheBody').innerHTML =
-      `<tr><td colspan="9" style="padding:18px;text-align:center;color:var(--muted);
+      `<tr><td colspan="10" style="padding:18px;text-align:center;color:var(--muted);
               font-family:var(--mono);font-size:.72rem">
         No funds match the current filters.</td></tr>`;
     updateCacheHeaderIndicators();
@@ -3178,8 +3195,14 @@ function renderCachePanel(){
     return;
   }
 
+  // Which tickers are actually on screen, so a peer that the current
+  // filters exclude can be shown as unreachable rather than as a link
+  // that silently does nothing.
+  const visibleTickers = new Set(sorted.map(x => x.ticker));
+
   const rows = sorted.map((c, idx) => {
     const portfoliosTrigger = renderPortfoliosTrigger(idx, c.portfolios || []);
+    const peersTrigger      = renderPeersTrigger(idx, c.ticker, visibleTickers);
 
     const clickable = c.has_isin;
     const isinAttr  = escapeAttr(c.isin || '');
@@ -3229,13 +3252,14 @@ function renderCachePanel(){
       holdingsCell = `<span style="font-family:var(--mono);font-size:.6rem;color:var(--muted)">—</span>`;
     }
 
-    return `<tr ${rowAttrs}>
+    return `<tr ${rowAttrs} data-tk="${escapeAttr(c.ticker)}">
       <td class="tk wrap" title="${escapeAttr(c.ticker)}">${escapeHtml(c.ticker)}</td>
       <td class="tk wrap" title="${escapeAttr(c.isin||'')}">${isinCell}</td>
       <td class="tk" style="text-align:center">${curCell}</td>
       <td class="wrap" style="color:var(--text)" title="${escapeAttr(c.name||'')}">${escapeHtml(c.name || '—')}</td>
       <td>${holdingsCell}</td>
       <td title="${scoreTitleFor(c)}">${scoreCellHtml(c)}</td>
+      <td onclick="event.stopPropagation()">${peersTrigger}</td>
       <td onclick="event.stopPropagation()">${portfoliosTrigger}</td>
       <td style="text-align:center" onclick="event.stopPropagation()">
         <input type="checkbox" class="inclbox" ${c.include_in_optimizer === false ? '' : 'checked'}
@@ -3554,6 +3578,75 @@ function rerenderCacheList(){
 // shows the portfolio name and the share count this portfolio holds for
 // the fund (formatted with thousands separators; "—" when shares are
 // unset because the user hasn't assigned a quantity yet).
+// The fund's peer group, itself included — the group is "funds this one
+// is ranked against", and a fund belongs to its own. Sorted by peer score
+// descending so the ranking the optimiser acts on reads top to bottom;
+// unranked funds (group below MIN_PEER_GROUP) fall to the end by ticker.
+function peerMembers(ticker){
+  const me = cacheScores[ticker];
+  if (!me || !me.peers) return [];
+  return me.peers.map(tk => {
+    const b = cacheScores[tk] || {};
+    return { ticker: tk, name: b.name || tk,
+             score_peer: b.score_peer, score_all: b.score_all,
+             self: tk === ticker };
+  }).sort((a, b) =>
+    (b.score_peer == null ? -1 : b.score_peer) - (a.score_peer == null ? -1 : a.score_peer)
+    || a.ticker.localeCompare(b.ticker));
+}
+
+// One peer row. `onClick` differs by surface — the pre-loaded list brings
+// the peer into view without leaving the list, the fund page loads it —
+// so the caller supplies it. A peer filtered out of the list cannot be
+// scrolled to, so it is rendered inert and says why.
+function _peerItemHtml(m, onClick, reason){
+  const score = m.score_peer == null ? '—' : Number(m.score_peer).toFixed(0);
+  const mark  = m.self ? ' style="color:var(--accent)"' : '';
+  const inner = `<span class="crpop-k"${mark}>${escapeHtml(m.ticker)}`
+              + `${m.self ? ' ·' : ''}</span>`
+              + `<span class="crpop-v" title="${escapeAttr(m.name)}">`
+              + `${escapeHtml(m.name)} · ${score}</span>`;
+  if (!onClick){
+    return `<div class="crpop-item" style="opacity:.55" title="${escapeAttr(reason||'')}">${inner}</div>`;
+  }
+  return `<div class="crpop-item clk" onclick="${escapeAttr(onClick)}">${inner}</div>`;
+}
+
+// Peers trigger for a pre-loaded-list row. `visible` is the set of
+// tickers actually rendered under the current filters.
+function renderPeersTrigger(rowIdx, ticker, visible){
+  const members = peerMembers(ticker);
+  if (!members.length) return '';
+  const items = members.map(m => _peerItemHtml(
+    m,
+    visible.has(m.ticker)
+      ? `event.stopPropagation(); revealCacheRow('${escapeAttr(m.ticker)}')`
+      : '',
+    visible.has(m.ticker) ? '' : 'Hidden by the current filters')).join('');
+  const popoverId = `peerpop-${rowIdx}`;
+  const label = `${members.length} ${members.length === 1 ? 'peer' : 'peers'}`;
+  return `<div class="crpop" id="${popoverId}">
+    <button class="crpop-trigger" onclick="event.stopPropagation(); togglePrePop('${popoverId}')">
+      <span>${label}</span>
+      <span class="arr">▼</span>
+    </button>
+    <div class="crpop-menu">${items}</div>
+  </div>`;
+}
+
+// Bring a peer's row into view without leaving the list. A brief flash
+// rather than a persistent selection: the row is the answer to a
+// question just asked, not a new state to keep track of.
+function revealCacheRow(ticker){
+  closeAllPrePops();
+  const row = document.querySelector(`#cacheBody tr[data-tk="${CSS.escape(ticker)}"]`);
+  if (!row) return;
+  row.scrollIntoView({block:'center', behavior:'smooth'});
+  row.classList.remove('rowflash');
+  void row.offsetWidth;          // restart the animation if it is replayed
+  row.classList.add('rowflash');
+}
+
 function renderPortfoliosTrigger(rowIdx, portfolios){
   if (!portfolios || !portfolios.length){
     // No tile at all when the fund isn't in any portfolio — keeps row
@@ -6172,6 +6265,88 @@ function fundIsInActivePortfolio(d){
   });
 }
 
+// Which portfolios hold THIS listing, by ticker, in the shape the
+// pre-loaded list's popover uses.
+function fundPortfolioMemberships(d){
+  const tk = (curTicker || d?.ticker || '').toUpperCase();
+  if (!tk) return [];
+  return (portfolios || []).flatMap(p =>
+    (p.funds || [])
+      .filter(f => (f.ticker || '').toUpperCase() === tk)
+      .map(f => ({ id: p.id, name: p.name, shares: f.shares })));
+}
+
+// The add button, plus a readout of where the fund already is. Purely
+// informational — the memberships do not navigate anywhere, because the
+// question they answer is "is this already somewhere", and jumping the
+// user out of the fund they are reading would answer a question they did
+// not ask.
+function fundPortfolioControlHtml(d){
+  const mine    = fundPortfolioMemberships(d);
+  const canAdd  = !fundIsInActivePortfolio(d);
+  const addBtn  = canAdd
+    ? `<button class="btn btn-p btn-sm" onclick="openAddToPortfolio()">+ Add to portfolio</button>`
+    : '';
+  if (!mine.length) return addBtn;
+
+  const items = mine.map(m => {
+    const n = m.shares;
+    const sharesStr = (n == null || n === '' || isNaN(Number(n)))
+      ? '— shares'
+      : `${Number(n).toLocaleString(undefined,{maximumFractionDigits:6})} sh`;
+    return `<div class="crpop-item">
+      <span class="crpop-k">${escapeHtml(m.name || '(unnamed)')}</span>
+      <span class="crpop-v">${escapeHtml(sharesStr)}</span>
+    </div>`;
+  }).join('');
+  const label = `in ${mine.length} ${mine.length === 1 ? 'portfolio' : 'portfolios'}`;
+  const pop = `<div class="crpop" id="fundpfpop" style="display:inline-block">
+    <button class="crpop-trigger" onclick="event.stopPropagation(); togglePrePop('fundpfpop')"
+            title="The portfolios holding this listing. Informational — matched by ticker, so another listing of the same fund counts separately.">
+      <span>${label}</span>
+      <span class="arr">▼</span>
+    </button>
+    <div class="crpop-menu">${items}</div>
+  </div>`;
+  return addBtn + pop;
+}
+
+// The peer group on the fund page. Clicking a peer LOADS it — unlike the
+// pre-loaded list, where the surrounding list is the thing being read and
+// leaving it would lose the reader's place. Here the fund is the subject,
+// so switching subject is the point.
+function fundPeersControlHtml(data){
+  const tk = (curTicker || data?.ticker || '').toUpperCase();
+  const members = peerMembers(tk);
+  if (!members.length) return '';
+  const items = members.map(m => _peerItemHtml(
+    m,
+    m.self ? '' : `event.stopPropagation(); loadPeerFund('${escapeAttr(m.ticker)}')`,
+    m.self ? 'This fund' : '')).join('');
+  const ranked = members.some(m => m.score_peer != null);
+  const note = ranked ? '' :
+    `<div class="crpop-item" style="opacity:.7">
+       <span class="crpop-v">Too few peers to rank within — no peer score.</span>
+     </div>`;
+  return `<div class="crpop" id="fundpeerpop" style="display:inline-block">
+    <button class="crpop-trigger" onclick="event.stopPropagation(); togglePrePop('fundpeerpop')"
+            title="The funds this one is ranked against — same asset class and focus. Includes itself. Click a peer to load it.">
+      <span>${members.length} ${members.length === 1 ? 'peer' : 'peers'}</span>
+      <span class="arr">▼</span>
+    </button>
+    <div class="crpop-menu">${note}${items}</div>
+  </div>`;
+}
+
+// Load a peer by ticker. Identity comes from the pre-loaded list when we
+// have it, so the fetch takes the same path a click in that list does
+// rather than re-resolving from the ticker alone.
+function loadPeerFund(ticker){
+  closeAllPrePops();
+  const row = (cacheListData || []).find(c => c.ticker === ticker);
+  loadCachedFund(ticker, row?.isin || '', row?.exchange || '', row?.currency || '');
+}
+
 function renderPostFundActions(d){
   const box = document.getElementById('postActions');
   const btns = [];
@@ -6199,12 +6374,18 @@ function renderPostFundActions(d){
             + `${inOpt ? '⚙ In optimizer' : '⃠ Excluded'}</button>`);
   }
 
-  // "+ Add to portfolio" — only if not already in the active portfolio.
-  // If no portfolios exist yet, prompt to create one.
+  // "+ Add to portfolio", with the fund's existing memberships hanging
+  // off it. One control rather than two: "where is this fund already"
+  // and "put it somewhere" are the same question asked a moment apart.
+  //
+  // Membership is by TICKER, matching the pre-loaded list. This page is
+  // per-listing — its own exchange, trading currency and ticker — and
+  // portfolios store {ticker, shares}, so a second listing of the same
+  // ISIN is a different holding and says so.
   if (!portfolios.length){
     btns.push(`<button class="btn btn-s btn-sm" onclick="openNewPortfolioModal()">Create a portfolio first</button>`);
-  } else if (!fundIsInActivePortfolio(d)){
-    btns.push(`<button class="btn btn-p btn-sm" onclick="openAddToPortfolio()">+ Add to portfolio</button>`);
+  } else {
+    btns.push(fundPortfolioControlHtml(d));
   }
   // "↻ Reload Fund Data" — re-fetches profile, sectors, price history,
   // asset class, and Yahoo-sourced holdings (raw or enriched top-10).
@@ -6646,12 +6827,16 @@ function renderFundGroups(data){
     const cells = g.fields.map(f => {
       const v = fundFieldValue(data, f.key);
       const note = fundFieldSourceNote(data, f, v != null);
+      // The score is a rank, and a rank means nothing without the field
+      // it was taken over. The peer list sits in the source slot on that
+      // row — there is no source to name for a calculated field anyway.
+      const extra = f.key === 'score' ? fundPeersControlHtml(data) : '';
       return `
         <div class="fgrow${f.calculated ? ' calc' : ''}">
           <span class="fgl">${escapeHtml(f.label)}</span>
           <span class="fgv">${v == null
             ? '<span style="color:var(--muted)">—</span>' : escapeHtml(String(v))}</span>
-          ${note ? `<span class="fgs${f.pinned ? ' pinned' : ''}">${escapeHtml(note)}</span>` : ''}
+          ${extra || (note ? `<span class="fgs${f.pinned ? ' pinned' : ''}">${escapeHtml(note)}</span>` : '')}
         </div>`;
     }).join('');
     // Identification has nothing to edit, so it gets no button rather

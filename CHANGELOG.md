@@ -5,6 +5,85 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [0.52.1] — 2026-08-04
+
+### Fixed
+- **Peer groups were mostly one bucket.** A global technology equity fund
+  and a hedged investment-grade credit fund shared a peer group, and were
+  ranked against each other on cost and size.
+
+  `_score_universe_cached` read the focus straight out of the override
+  store. But the focus is normally *derived* — `_seed_fund_structure`
+  reads it off the fund's own name — and the override store holds only
+  what the user has hand-edited, which for most funds is nothing. So
+  nearly every fund reported `focus_type: "none"`, and funds with no
+  cached asset class reported `unknown` as well. The universe collapsed
+  into a handful of `<class>|none|` groups and one large `unknown|none|`.
+  The asset class had the same problem from the other side: the
+  `primary_asset_class` override targets `asset_class.class`, and the
+  view passed to `apply_overrides` contained only the profile block, so
+  that override was silently dropped.
+
+  Scoring now resolves both the way the fund page does — seed from the
+  profile, then layer the stored overrides.
+
+- **The optimiser's alternatives shortlist had no peer groups at all.**
+  Its candidate dicts never carried an asset class or a focus, so
+  `peer_key` answered `unknown|none|` for every one of them and the whole
+  universe was a single peer group — a bond fund could be priced as an
+  alternative to an equity tracker. The candidates now carry the peer
+  fields, read off the already-resolved `load_fund_data` result.
+
+### Changed
+- **`peer_key` reads `primary_asset_class`, not `asset_class`.** The old
+  name is now three different things: the breakdown facet (a distribution
+  over classes), the cache category holding it, and the per-holding row
+  field. The fund-level label was renamed in 0.47.0 and scoring was still
+  asking for it by the old name — so `fund.get("asset_class")` quietly
+  returned nothing rather than failing.
+
+---
+
+## [0.52.0] — 2026-08-04
+
+### Added
+- **Peer group, visible from both places a score is.** A rank means
+  nothing without the field it was taken over, and until now the peer
+  group was a number — `peer_n` — with no way to see who was in it.
+  - Fund detail page: a `N peers ▼` control in the score row of the
+    Operational group. Clicking a peer loads it: the fund is the subject
+    of the page, so changing subject is the point.
+  - Pre-loaded list: a Peers column using the same popover as Portfolios.
+    Clicking a peer brings its row into view instead of loading it —
+    there the list is what is being read, and navigating away would lose
+    the reader's place. A peer excluded by the current filters is shown
+    inert and says why rather than being a link that does nothing.
+
+  Each row shows the peer score, sorted descending, with unranked funds
+  last. The fund appears in its own list, marked: the group is "the funds
+  this one is ranked against", and a fund belongs to its own. When the
+  group is below `MIN_PEER_GROUP` the list still shows the members — two
+  peers is worth seeing — with a line saying why there is no peer score.
+
+- **Portfolio membership on the fund detail page**, combined with the add
+  button rather than beside it: "where is this fund already" and "put it
+  somewhere" are the same question asked a moment apart. Shows each
+  portfolio with its share count, in the pre-loaded list's format.
+  Informational only — jumping the reader out of the fund they are
+  reading would answer a question they did not ask.
+
+  Matched by **ticker**, as the pre-loaded list is. This page is
+  per-listing — its own exchange, trading currency and ticker — and
+  portfolios store `{ticker, shares}`, so a second listing of the same
+  ISIN is a different holding and says so.
+
+### Changed
+- `/api/scores` blocks carry `name`, `isin` and `peers`. A consumer
+  listing a peer group could previously derive the membership from
+  `peer_key` but had no way to name anyone in it.
+
+---
+
 ## [0.51.1] — 2026-08-04
 
 ### Fixed

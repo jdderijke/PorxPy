@@ -169,7 +169,11 @@ def peer_key(fund: dict) -> str:
     what exposure it supplies. Two World equity trackers compete; a World
     tracker and a European bond fund do not.
     """
-    ac = (fund.get("asset_class") or "unknown").strip().lower()
+    # "primary_asset_class" since 0.47.0, and the rename matters here:
+    # "asset_class" is also the name of a breakdown FACET (a distribution
+    # over classes) and of the cache category holding it. This wants the
+    # single fund-level label, which is the third thing.
+    ac = (fund.get("primary_asset_class") or "unknown").strip().lower()
     ft = (fund.get("focus_type") or "none").strip().lower()
     fd = (fund.get("focus_detail") or "").strip().lower()
     return f"{ac}|{ft}|{fd}" if ft != "none" else f"{ac}|none|"
@@ -214,7 +218,7 @@ def score_universe(funds: list[dict],
     """Score every fund in the universe.
 
     Args:
-        funds: ``[{"ticker", "asset_class", "focus_type", "focus_detail",
+        funds: ``[{"ticker", "primary_asset_class", "focus_type", "focus_detail",
             "ter", "size_base", "returns"}, ...]``. ``returns`` is the
             output of :func:`trailing_returns`; ``ter`` is a percent and
             ``size_base`` a base-currency amount, either of which may be
@@ -329,10 +333,20 @@ def score_universe(funds: list[dict],
             score_peer = None
 
         out[tk] = {
+            # Carried so a consumer listing a peer group can name its
+            # members without a second lookup: the group is derived from
+            # peer_key here, and a ticker alone does not say what a fund
+            # is.
+            "name":        f.get("name") or tk,
+            "isin":        f.get("isin") or "",
             "score_all":   score_all,
             "score_peer":  score_peer,
             "peer_key":    key,
             "peer_n":      len(members),
+            # The group itself, so "which funds am I ranked against" is
+            # answerable directly. Includes this fund: the list is the
+            # peer group, and a fund is a member of its own.
+            "peers":       sorted(members),
             "components":  parts,
             "covered":     have,
             "coverage":    round(have / n_comps, 4),

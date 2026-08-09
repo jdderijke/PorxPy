@@ -966,6 +966,16 @@ def create_app() -> Flask:
                 "locked":         bool(locked_by_ticker.get(tk, False)),
                 "exposures":      exposures,
                 "sources":        fund_src,   # {facet: holdings|fund|upload|none}
+                # Peer identity, for the alternatives shortlist. Without
+                # these three, scoring.peer_key read nothing off a
+                # candidate and answered "unknown|none|" for all of them,
+                # so every fund in the universe was every other fund's
+                # peer and a bond fund could be offered as an alternative
+                # to an equity tracker. load_fund_data has already
+                # resolved both, so they are read rather than recomputed.
+                "primary_asset_class": (data.get("asset_class") or {}).get("class") or "",
+                "focus_type":     (data.get("fund_structure") or {}).get("focus_type") or "none",
+                "focus_detail":   (data.get("fund_structure") or {}).get("focus_detail") or "",
             })
 
         # Cash: aggregate to base currency, and take its exposure from the
@@ -2560,7 +2570,13 @@ def create_app() -> Flask:
         turn opening a tab into 35 network round-trips.
         """
         from porxpy.scoring import score_universe, trailing_returns
-        from porxpy.config import SCORING_PRESETS, DEFAULT_SCORING_PRESET
+        from porxpy.config import (SCORING_PRESETS, DEFAULT_SCORING_PRESET,
+                                   DEFAULT_FUND_STRUCTURE)
+        # The same seed-then-override resolution the fund page uses. The
+        # peer group is asset class x focus, and both are usually DERIVED
+        # rather than stored — the focus from the fund's own name — so
+        # reading the override store alone saw neither.
+        from porxpy.extractors import _merge_fund_structure, _seed_fund_structure
 
         settings = load_settings()
         presets  = (settings.get("scoring") or {}).get("presets") or SCORING_PRESETS
@@ -2587,27 +2603,47 @@ def create_app() -> Flask:
 
             ph = ((blob.get("price_history") or {}).get("value")) or []
             ac = ""
-            fs = {}
+            fs = dict(DEFAULT_FUND_STRUCTURE)
             if isin:
-                ac = (((cache_read(isin, "asset_class").get("asset_class") or {})
-                       .get("value") or {}).get("class") or "")
-                fs = {f: e.get("value") for f, e in overrides_for(isin).items()}
                 # Overrides are a view over the cached data, applied at
                 # response-assembly time — so reading the cache blob
                 # directly sees Yahoo's value, not the user's. Scoring a
                 # fund on a TER the user has explicitly corrected would
                 # make the score disagree with every screen that shows it.
-                _view = {"profile": dict(prof)}
+                #
+                # The asset-class block goes into the view too: the
+                # primary_asset_class override targets asset_class.class,
+                # and a view without that block silently dropped it.
+                _ac_blob = ((cache_read(isin, "asset_class").get("asset_class")
+                             or {}).get("value") or {})
+                _view = {"profile": dict(prof), "asset_class": dict(_ac_blob)}
                 apply_overrides(isin, _view)
                 prof = _view["profile"]
+                ac   = _view["asset_class"].get("class") or ""
+
+                # Resolve the structure the way the fund page does: seed
+                # from the profile, then layer the stored overrides.
+                # Reading the override store on its own reported
+                # focus_type "none" for every fund the user had not
+                # hand-edited — which is nearly all of them, since the
+                # focus is normally read off the fund's name. Every such
+                # fund then shared the peer key "<class>|none|", and
+                # those with no cached asset class shared
+                # "unknown|none|": one bucket holding a global technology
+                # equity fund and a hedged credit bond fund, ranked
+                # against each other on cost and size.
+                _fs_seed, _fs_origins = _seed_fund_structure(prof, ac or None)
+                _fs_override = {f: e for f, e in overrides_for(isin).items()
+                                if f in DEFAULT_FUND_STRUCTURE}
+                fs, _ = _merge_fund_structure(_fs_seed, _fs_override, _fs_origins)
 
             funds.append({
                 "ticker":       ticker,
                 "isin":         isin,
                 "name":         prof.get("longName") or prof.get("shortName") or ticker,
-                "asset_class":  ac or "unknown",
-                "focus_type":   fs.get("focus_type") or "none",
-                "focus_detail": fs.get("focus_detail") or "",
+                "primary_asset_class": ac or "unknown",
+                "focus_type":          fs.get("focus_type") or "none",
+                "focus_detail":        fs.get("focus_detail") or "",
                 "ter":          prof.get("expenseRatioPct"),
                 # No FX: sizes are in the fund's own currency. Mixing
                 # currencies matters only at the floor boundary, and the
