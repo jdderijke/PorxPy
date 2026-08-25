@@ -70,26 +70,27 @@ FUNDS_DIR             = CACHE_DIR / "funds"
 # holding dropdowns and the upload column normalisation). Read-only;
 # not user data, not cache.
 RESOURCES_DIR         = BASE_DIR / "resources"
-COUNTRY_CODES_FP      = RESOURCES_DIR / "country_codes.csv"
-COUNTRY_CURRENCY_FP   = RESOURCES_DIR / "country_currency.csv"
-# Holdings classification — pairs of asset_class + sub_class with
-# descriptions and a `matches` column of pipe-separated alternative
-# spellings. Drives the edit-holding modal's two paired dropdowns and
-# normalises uploaded values like "Common stock" → "shares".
-HOLDINGS_CLASS_FP     = RESOURCES_DIR / "Holdings_class_definitions.csv"
-# Fund-level asset-class vocabulary (the wider ASSET_CLASSES set:
-# equity / fixed_income / cash / mixed / commodity / other) plus a
-# `matches` column of alternative spellings. This is the authority the
-# portfolio Targets editor reads from, and the source of the alias maps
-# that normalise issuer/holdings spellings ("bond"/"bonds"/"bondPosition"
-# → "fixed_income") up to the fund-level vocabulary. Distinct from
-# Holdings_class_definitions.csv, which is the finer per-holding
-# asset_class+sub_class taxonomy (and uses "bond", not "fixed_income").
-FUND_CLASS_FP         = RESOURCES_DIR / "Fund_class_definitions.csv"
+GEOGRAPHY_FP          = RESOURCES_DIR / "Geography_definitions.csv"
+# Fund-level CLASSIFICATION vocabulary (equity / fixed_income / cash /
+# mixed / commodity / other) — what kind of fund this IS, as captured
+# from Yahoo, a factsheet, justETF or the user. Not resolved from, and
+# not a rollup of, the fund's holdings: a 60/40 fund is "mixed" while
+# its asset_class FACET is roughly 60% equity / 40% fixed income.
+#
+# Two alias columns, the same split the sector file draws:
+#   matches      spellings of the value itself ("fixed income" → fixed_income)
+#   style_match  phrases that, found in a fund's NAME or category, imply
+#                the classification ("gilt", "ultrashort", "nasdaq")
+PRIMARY_CLASS_FP      = RESOURCES_DIR / "Primary_asset_class_definitions.csv"
+# The asset taxonomy as ONE tree: super_class -> asset_class -> sub_class.
+# Replaces Holdings_class_definitions.csv and Fund_class_definitions.csv,
+# which described the same taxonomy at two grains and disagreed on
+# spelling ("bond" vs "fixed_income") for the same concept.
+ASSET_FP              = RESOURCES_DIR / "Asset_definitions.csv"
 # Morningstar 11-sector taxonomy with super-sector grouping and a
 # `matches` column. Drives the Sector dropdown and the upload-side
 # coercion of issuer spellings ("Information Technology" → "technology").
-SECTORS_FP            = RESOURCES_DIR / "sectors.csv"
+SECTORS_FP            = RESOURCES_DIR / "Sector_definitions.csv"
 
 # v0.28.0: region + super-region vocabulary. Region-keyed, unlike the
 # country-keyed country_codes.csv that MSTAR_TO_REGION is built from —
@@ -97,12 +98,11 @@ SECTORS_FP            = RESOURCES_DIR / "sectors.csv"
 # country row of a region, with no single place to read the vocabulary.
 # Used ONLY to seed focus_type / focus_detail from a fund name; the
 # country/region breakdown facet does not consult it.
-REGIONS_FP            = RESOURCES_DIR / "regions.csv"
 # ISO 4217 currency master list with display names and a `matches`
 # column for alternative spellings ("yen" → "JPY"). Drives the Currency
 # dropdown — separate from country_currency.csv which is a per-country
 # primary-currency mapping; this file is the full per-code list.
-CURRENCIES_FP         = RESOURCES_DIR / "currencies.csv"
+CURRENCIES_FP         = RESOURCES_DIR / "Currency_definitions.csv"
 
 # Server-side scratch space for the holdings upload flow. The user picks
 # a file → we parse it once and stash the parsed-but-unmapped form under
@@ -239,16 +239,23 @@ LISTING_CATEGORIES: list[str] = [
 ]
 FUND_CATEGORIES: list[str] = [
     "holdings", "sectors", "asset_class", "asset_allocation",
-    # User-uploaded per-facet breakdown item lists. Sourced ONLY from
-    # user CSV uploads (the third value of BREAKDOWN_SOURCES); never
-    # fetched from anyone. Shape on disk:
+    # Per-facet breakdown item lists that a source HANDED US rather than
+    # us deriving them — a user CSV upload and an AI factsheet reading,
+    # i.e. SUPPLIED_BREAKDOWN_SOURCES. Never fetched from anyone. The
+    # category kept its original name when the factsheet source joined it
+    # in 0.44.0; renaming it would have orphaned every stored upload for
+    # a cosmetic gain. Shape on disk:
     #   { "uploaded_breakdowns": {
     #       "fetched_at": "...",
-    #       "value": { "asset_class": [{"key","weight"}, ...],
-    #                  "sector":      [...], "country": [...],
-    #                  "currency":    [...] } } }
-    # Only facets present (non-empty) are uploaded; absent / empty
-    # facets cannot be flipped to source "upload" on the fund page.
+    #       "value": { "asset_class": {"upload":    [{"raw","weight"}, ...],
+    #                                  "factsheet": [...]},
+    #                  "sector":      {...}, "country": {...},
+    #                  "currency":    {...} } } }
+    # Each item carries "raw" — what that source actually said, resolved
+    # afresh on every read since 0.76.0 — plus an optional "key" where the
+    # user pinned it to a node. Sources are independent: writing one
+    # leaves the other alone, and only facets that source covered
+    # (non-empty) can be flipped to it on the fund page.
     "uploaded_breakdowns",
 ]
 # Union, preserved for code that iterates "every category" (cache list,
@@ -278,12 +285,13 @@ DEFAULT_CACHE_CONFIG: dict[str, dict[str, Any]] = {
     # "asset_class" category above. Issuer data, changes slowly; same
     # 7-day cadence as the sector breakdown.
     "asset_allocation": {"enabled": True, "ttl_days": 7},
-    # uploaded_breakdowns = user-uploaded per-facet breakdown item lists
-    # (from the per-card "Upload" source on the fund page). Entirely
-    # user-supplied, never fetched — so there is no meaningful TTL.
-    # ``manual_refresh_only`` makes a present entry always fresh; only
-    # an explicit re-upload (which writes a new entry anyway) replaces
-    # it. ``ttl_days`` is retained purely for schema uniformity.
+    # uploaded_breakdowns = per-facet breakdown item lists supplied by a
+    # user CSV upload or a factsheet extraction (the two per-card sources
+    # on the fund page that hand us numbers). Never fetched — so there is
+    # no meaningful TTL. ``manual_refresh_only`` makes a present entry
+    # always fresh; only an explicit re-upload or re-extraction (each of
+    # which writes a new entry anyway) replaces it. ``ttl_days`` is
+    # retained purely for schema uniformity.
     "uploaded_breakdowns": {"enabled": True, "ttl_days": 0, "manual_refresh_only": True},
     "price_history": {"enabled": True, "ttl_days": 1},
     # upload_prefs = the user's last upload-dialog choices for a fund
@@ -295,13 +303,46 @@ DEFAULT_CACHE_CONFIG: dict[str, dict[str, Any]] = {
     "upload_prefs":  {"enabled": True, "ttl_days": 3650},
 }
 
-# Canonical fund-level asset-class keys (the schema authority — what
-# values are valid). The spellings/aliases and human descriptions for
-# these keys live in Fund_class_definitions.csv (FUND_CLASS_FP), loaded
-# by resources.py. Kept as a hardcoded list here because config must not
-# import resources (resources imports config), and these keys are a
-# stable schema contract used for validation across the app.
-ASSET_CLASSES = ["equity", "fixed_income", "cash", "mixed", "commodity", "other"]
+# Canonical fund-level classification keys. The authority is
+# Primary_asset_class_definitions.csv, read through
+# resources.primary_asset_classes() — there is no second copy here.
+#
+# A hardcoded list lived here until v0.69.0, on the reasoning that
+# config must not import resources. That reasoning holds at import time
+# and only at import time: the lazy import below runs on call, long
+# after both modules exist. What the constant actually bought was a
+# vocabulary that could disagree with the file defining it, which is the
+# divergence this codebase removes on sight.
+def asset_classes() -> tuple[str, ...]:
+    """Canonical primary-asset-class keys, in file order.
+
+    Returns:
+        Tuple of lowercase keys from Primary_asset_class_definitions.csv.
+    """
+    from porxpy.resources import primary_asset_classes   # local: import cycle
+    return primary_asset_classes()
+
+
+def field_vocab(spec: dict, context: dict | None = None) -> tuple[str, ...]:
+    """Allowed values for an OVERRIDABLE_FIELDS entry.
+
+    One resolver for both ways a vocabulary can be declared, so no
+    caller has to know which kind a given field uses: ``vocab`` for a
+    fixed tuple, ``vocab_fn`` for one that lives in a resource file.
+
+    Args:
+        spec: An OVERRIDABLE_FIELDS entry.
+        context: Passed to ``vocab_fn`` resolvers that depend on another
+            field's value (focus_detail depends on focus_type).
+
+    Returns:
+        Tuple of allowed values, empty when the field has no vocabulary.
+    """
+    fn = spec.get("vocab_fn")
+    if fn:
+        import porxpy.resources as _res                  # local: import cycle
+        return tuple(getattr(_res, fn)(context or {}) or ())
+    return tuple(spec.get("vocab") or ())
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +359,33 @@ FX_HIST_TTL_HOURS = 24
 # exchange essentially never changes). Cache on disk for a long time to
 # avoid hammering OpenFIGI, which rate-limits aggressively.
 ISIN_MAP_TTL_DAYS = 30
+
+# How long a NEGATIVE symbol-alias entry ("tried this spelling, nothing
+# worked") stays believed. Positive entries never expire: "AIR FP is
+# AIR.PA" is a durable fact about the world. A negative is not — it is a
+# statement about one moment, and the things that produce one are often
+# temporary: a rate limit, a TLS failure, an outage, or Yahoo simply not
+# covering the security yet.
+#
+# Without an expiry a transient failure becomes permanent. Every symbol
+# probed during an outage is written off, and because the alias short-
+# circuits before any lookup, the next attempt never even asks — the
+# outage outlives itself, silently, one symbol at a time. That is
+# exactly what happened on 2026-08-18, when a curl_cffi impersonation
+# bug took every lookup down and the misses it caused survived the fix.
+#
+# Seven days: long enough that re-uploading the same holdings file does
+# not re-probe hundreds of junk tickers, short enough that a bad day
+# does not cost a month.
+NEGATIVE_ALIAS_TTL_DAYS = 7
+
+# ...but doubling on each consecutive miss, capped here. A spelling that
+# has failed five times running is junk — a futures code, a swap leg, a
+# cash line — and re-probing it weekly forever is pure waste. A spelling
+# that failed once may just have been unlucky. Escalating separates the
+# two without needing to tell them apart: the first miss is forgiven in
+# a week, the fifth is not asked about again for three months.
+NEGATIVE_ALIAS_TTL_CAP_DAYS = 90
 
 # When the price_history cache is older than this many days, do a full
 # ``period="max"`` refresh instead of an incremental top-up. This is the
@@ -396,8 +464,15 @@ HISTORY_PERIOD_FALLBACKS: tuple[str, ...] = ("max", "1y", "5d", "1d")
 #
 # Default = all six ticked, which reproduces the previous behaviour
 # ("auto-enrich top-10 with everything we can").
+# ONE entry per facet. "sub_class" was listed separately until v0.72.1 —
+# the same taxonomy at two grains, which is the shape removed from
+# storage in v0.70.0, from the Resolve dialog in v0.70.2 and from the
+# upload column mapping in v0.72.0. The asset enrichment takes the
+# FINEST answer Yahoo gives (its sub_class where present, else its
+# asset_class) and the definitions file derives the coarser levels: a
+# finer value yields the coarser ones, never the reverse.
 ENRICHABLE_FIELDS: tuple[str, ...] = (
-    "name", "country", "currency", "asset_class", "sub_class", "sector",
+    "name", "country", "currency", "asset_class", "sector",
 )
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -431,6 +506,159 @@ BREAKDOWN_FACETS: tuple[str, ...] = (
     "asset_class", "sector", "country", "currency",
 )
 
+# ---------------------------------------------------------------------------
+# Facet levels (v0.60.0)
+# ---------------------------------------------------------------------------
+# A facet with levels is ONE facet whose value is a tree, not several
+# sibling facets that happen to be related.
+#
+# Sibling facets were half-built once and backed out. They are wrong
+# because this table drives the targets UI: three sector entries would
+# mean three unrelated sector target groups, and the rule that a parent
+# is held to at least the sum of its targeted children cannot be
+# expressed between facets that do not know they are related.
+#
+# Finest level FIRST. Non-tree facets declare a single level of the same
+# shape, so no consumer ever branches on whether a facet has levels.
+FACET_LEVELS: dict[str, tuple[str, ...]] = {
+    "sector":      ("sub_sector", "sector", "super_sector"),
+    "country":     ("country", "region", "super_region"),
+    "currency":    ("currency",),
+    "asset_class": ("sub_class", "asset_class", "super_class"),
+}
+
+# What a facet means when nobody names a level.
+#
+# Fixed per facet, NEVER computed from the data. "Deepest available"
+# sounds more generous but makes the meaning of a word depend on what
+# happened to arrive: uploading a more detailed factsheet for one fund
+# would silently change the grain its targets are measured at and the
+# grain the optimiser fits, with nothing on screen saying so.
+#
+# The level SELECTOR is a view over the finished levels and lives
+# entirely in the browser. This constant is for everything that computes
+# a number.
+FACET_DEFAULT_LEVEL: dict[str, str] = {
+    "sector":      "sector",
+    "country":     "country",
+    "currency":    "currency",
+    # super_class, not the facet's own name. Until v0.70.0 the asset
+    # vocabulary WAS equity / fixed_income / cash / other — which in the
+    # tree is the super level, not the middle one. Defaulting to
+    # "asset_class" would silently move every target, deviation and
+    # optimiser fit to a much finer grain than the one they were set at.
+    "asset_class": "super_class",
+}
+
+# ---------------------------------------------------------------------------
+# Per-facet row columns (v0.76.0)
+# ---------------------------------------------------------------------------
+# A holdings row stores a facet as a small pack of columns, and three of
+# them are named for the CONCEPT rather than for the facet: the asset
+# tree's columns are ``asset_node`` / ``asset_level`` / ``asset_raw``,
+# not ``asset_class_node``, because the tree is *asset* and
+# ``asset_class`` is only its middle level. Every other facet's concept
+# name happens to equal its facet name, which is why the difference was
+# survivable as an inline ``"asset" if facet == "asset_class" else facet``
+# in two places in app.py. It is a registry here so that the raw and
+# pinned columns cannot be derived one way in one module and another way
+# in the next.
+FACET_COLUMN_STEM: dict[str, str] = {
+    "sector":      "sector",
+    "country":     "country",
+    "currency":    "currency",
+    "asset_class": "asset",
+}
+
+
+def facet_raw_field(facet: str) -> str:
+    """Row column holding what the SOURCE said, before resolution.
+
+    Written once at ingest and never re-derived — it is the only field
+    on the row that is evidence rather than a conclusion. See
+    :func:`porxpy.utils.normalise_facets` for why the resolution reads
+    from it on every pass.
+    """
+    return f"{FACET_COLUMN_STEM.get(facet, facet)}_raw"
+
+
+def facet_node_field(facet: str) -> str:
+    """Row column holding the resolved node.
+
+    Currency answers with its own single column rather than a
+    ``currency_node``: its tree is one level deep, so the node and the
+    level column are the same thing and inventing a second name for one
+    value would be the arity branch FACET_LEVELS exists to avoid.
+    """
+    stem = FACET_COLUMN_STEM.get(facet, facet)
+    return stem if facet == "currency" else f"{stem}_node"
+
+
+def facet_level_field(facet: str) -> str:
+    """Row column holding the grain the node sits at, or ``""``.
+
+    Empty for currency, which has one level and therefore nothing to
+    stamp.
+    """
+    stem = FACET_COLUMN_STEM.get(facet, facet)
+    return "" if facet == "currency" else f"{stem}_level"
+
+
+def facet_pinned_field(facet: str) -> str:
+    """Row column marking the node as a USER decision, not a resolution.
+
+    Set when someone edits the facet on selected rows. It stops
+    :func:`porxpy.utils.normalise_facets` re-deriving the node from the
+    raw text on the next read — which would otherwise silently undo the
+    edit, since re-resolving the untouched source text is exactly what
+    the row is being read for.
+    """
+    return f"{FACET_COLUMN_STEM.get(facet, facet)}_pinned"
+
+
+# The extra level the holdings TABLES offer in their column-header level
+# selector: the text the source actually said, before any resolution.
+#
+# Deliberately NOT a member of FACET_LEVELS. That registry drives the
+# rollups, level coverage, FACET_DEFAULT_LEVEL, the targets editor and
+# the optimiser's rows, and "raw" is not a level of the facet tree — it
+# has no parent, no children, and no partition property. Rolling holdings
+# up by raw text would produce one bucket per spelling, so a card would
+# show a slice per typo and a target measured at that grain would mean
+# nothing. It is a VIEW of a row's own evidence, which is why it lives
+# in a display registry read only by the two holdings tables.
+#
+# The extra entry is the raw COLUMN's name rather than a bare "raw",
+# because every consumer of a level reads it as a row field —
+# ``row[level]`` in the cell renderer, in the column filter and in the
+# sort key alike. Naming the level after the column it displays keeps
+# that true for the raw view, so it needs no special case in any of
+# them; a level called "raw" would have had to be translated in three
+# separate readers, which is three places to forget.
+FACET_DISPLAY_LEVELS: dict[str, tuple[str, ...]] = {
+    facet: (*levels, facet_raw_field(facet))
+    for facet, levels in FACET_LEVELS.items()
+}
+
+# ``development`` is the third country level, added in v0.62.0, and it
+# keeps country a strict chain: country -> region -> development, with
+# every region mapping to exactly one status.
+#
+# What is NOT here is a geographic super level. regions.csv's
+# ``super_regions`` column flattens two orthogonal groupings plus a
+# universal into one list, and the geographic half is not a partition:
+# northAmerica, latinAmerica and africaMiddleEast have no geographic
+# parent, while japan and asiaDeveloped claim both asia and pacific.
+# Rolling up to it would count Japan twice and lose North America.
+#
+# The two are also not orderable. Neither derives from the other —
+# americas, europe and asia each span both development statuses, and
+# every status spans several geographies — so they are siblings above
+# region, not links in a chain. Adding geography later means `levels`
+# forks, and the stage-3 rule that a parent is held to at least the sum
+# of its targeted children stops being able to read parenthood off list
+# adjacency. Deferred deliberately, not overlooked.
+
 # Valid values for a per-card breakdown-source override.
 #   "yahoo"    — issuer-published Fund/ETF-level data (the default; no
 #                override entry is stored for this value).
@@ -457,6 +685,109 @@ BREAKDOWN_SOURCES: tuple[str, ...] = ("yahoo", "factsheet", "holdings", "upload"
 # Which sources supply their own item lists rather than deriving them.
 # Both are stored per facet per source in the uploaded_breakdowns cache.
 SUPPLIED_BREAKDOWN_SOURCES: tuple[str, ...] = ("upload", "factsheet")
+
+
+# ---------------------------------------------------------------------------
+# Holdings sources (v0.77.0)
+# ---------------------------------------------------------------------------
+# Where a fund's per-position holdings list comes from. Deliberately the
+# same three names the breakdown cards use for the sources that HAND US
+# numbers, minus "holdings" — a holdings list cannot be looked through to
+# itself — so the fund page's two source selectors read alike:
+#
+#   yahoo     the top-10 Yahoo publishes, optionally enriched per symbol
+#   factsheet the position table read off an uploaded factsheet
+#   upload    a CSV/XLSX the user supplied
+#
+# All three are stored SIDE BY SIDE, one blob per source, in the single
+# ISIN-keyed ``holdings`` cache slot (see utils.holdings_store_get). Until
+# 0.77.0 the slot held one blob and the newest write won, so uploading a
+# CSV destroyed the Yahoo rows and there was no way back without a
+# refetch. Independent slots are what makes the selector a selector
+# rather than a re-import.
+HOLDINGS_SOURCES: tuple[str, ...] = ("yahoo", "factsheet", "upload")
+
+# Which source gets used when the user has pinned none, richest first.
+# An upload is a full position list, a factsheet table is usually the top
+# holdings with real facet columns, and Yahoo's top-10 is the thinnest of
+# the three. This is the rule that keeps a fresh upload visible without
+# the user having to also select it — the behaviour that existed when the
+# slot held only one blob, preserved rather than reinvented.
+HOLDINGS_SOURCE_PRECEDENCE: tuple[str, ...] = ("upload", "factsheet", "yahoo")
+
+# A blob's ``source`` field records its VARIANT — how complete and how
+# enriched the rows are — and predates the source concept by a dozen
+# releases. Variant and source answer different questions ("how good are
+# these rows?" vs "who said them?"), so both are kept, and this map is
+# the one place that relates them. Every reader of a variant name goes
+# through it rather than testing the string itself.
+#
+#   manual_upload   full per-position list from a user file
+#   yahoo_enriched  Yahoo top-10 plus per-symbol Yahoo lookups
+#   yahoo_top10     raw Yahoo top-10, sparse rows
+#   factsheet       positions read off a factsheet by the AI helper
+HOLDINGS_VARIANT_SOURCE: dict[str, str] = {
+    "manual_upload":  "upload",
+    "yahoo_enriched": "yahoo",
+    "yahoo_top10":    "yahoo",
+    "factsheet":      "factsheet",
+}
+
+# The variant a source writes when it has nothing more specific to say.
+# Used when a source slot is created (an empty Yahoo fetch, a factsheet
+# with no position table) so a slot always names its own variant.
+HOLDINGS_SOURCE_VARIANT: dict[str, str] = {
+    "yahoo":     "yahoo_top10",
+    "factsheet": "factsheet",
+    "upload":    "manual_upload",
+}
+
+
+def holdings_source_of(variant: str) -> str:
+    """The holdings SOURCE a blob variant belongs to.
+
+    Args:
+        variant: A blob's ``source`` field — ``manual_upload``,
+            ``yahoo_top10``, ``yahoo_enriched`` or ``factsheet``.
+
+    Returns:
+        One of :data:`HOLDINGS_SOURCES`, or ``""`` for an unknown or
+        empty variant (a slot that has never been written).
+    """
+    return HOLDINGS_VARIANT_SOURCE.get((variant or "").strip(), "")
+
+
+# What KIND of rows fed a look-through roll-up, per blob variant. The
+# breakdown cards label themselves from this ("LOOK-THROUGH" vs
+# "ENRICHED") and the fund page uses it to decide whether a sparse
+# per-position sector column is expected. Three copies of this mapping
+# existed as if/elif chains — the fund load, the row editor and the
+# enrichment button — which is three places for a new variant to be
+# forgotten; a factsheet's positions were exactly the variant that would
+# have been.
+HOLDINGS_VARIANT_ROLLUP: dict[str, str] = {
+    "manual_upload":  "full",
+    "yahoo_enriched": "top10_enriched",
+    "yahoo_top10":    "top10_raw",
+    # A factsheet position table is the issuer's own list and usually
+    # names the top holdings with real facet columns beside them. It is
+    # neither a full list nor a Yahoo top-10, so it says which it is
+    # rather than borrowing a label that would misdescribe its coverage.
+    "factsheet":      "factsheet",
+}
+
+
+def rollup_label_of(variant: str) -> str:
+    """The ``breakdowns_source`` label for a holdings blob variant.
+
+    Args:
+        variant: A blob's ``source`` field.
+
+    Returns:
+        ``full`` / ``top10_enriched`` / ``top10_raw`` / ``factsheet``, or
+        ``none`` when there is no recognisable variant.
+    """
+    return HOLDINGS_VARIANT_ROLLUP.get((variant or "").strip(), "none")
 
 
 # ---------------------------------------------------------------------------
@@ -571,8 +902,15 @@ NA_KEY:      str = "n/a"
 # A facet absent from this table is never n/a: every position is
 # denominated in some currency and belongs to some asset class.
 FACET_NOT_APPLICABLE: dict[str, frozenset[str]] = {
-    "sector":  frozenset({"cash"}),
-    "country": frozenset({"cash"}),
+    "sector":     frozenset({"cash"}),
+    "sub_sector": frozenset({"cash"}),
+    "country":    frozenset({"cash"}),
+    # A cash balance sits in no country, and therefore in no region.
+    # Without this the region view would report a cash sleeve as a gap
+    # while the country view reported it inapplicable — the same
+    # position answered two ways.
+    "region":       frozenset({"cash"}),
+    "super_region": frozenset({"cash"}),
 }
 
 # Which values of each meta facet may carry a target. "unknown" is a
@@ -589,7 +927,17 @@ META_FACET_TARGETABLE: dict[str, tuple[str, ...]] = {
 # against a different vocabulary depending on this: regions for
 # "region", the sectors CSV for "sector", and free text for "thematic"
 # (nothing can infer "Artificial Intelligence" from Yahoo).
-FOCUS_TYPES: tuple[str, ...] = ("none", "region", "sector", "thematic")
+# v0.68.0: "region" renamed to "geography", because the vocabulary
+# behind it is no longer regions alone — a fund's focus can now be a
+# country, a region or a super region, and calling that set "region"
+# named one of its three levels after the whole.
+#
+# LEGACY_FOCUS_TYPES maps the old value forward. Stored focus_type
+# values are migrated on read rather than by a rewrite: focus_type feeds
+# peer_key, so a fund left on "region" while its neighbours moved to
+# "geography" would silently drop out of its own peer group.
+FOCUS_TYPES: tuple[str, ...] = ("none", "geography", "sector", "thematic")
+LEGACY_FOCUS_TYPES: dict[str, str] = {"region": "geography"}
 
 # Default Structure block for a fund with no stored override. The
 # values here are placeholders; load_fund_data overlays Yahoo-seeded
@@ -658,8 +1006,12 @@ TARGET_FACETS: tuple[str, ...] = BREAKDOWN_FACETS + META_FACETS
 #   type      "enum" | "number" | "bool" | "str"
 #   vocab     allowed values, for type "enum"
 #   vocab_fn  name of a resolver in porxpy.resources, for vocabularies
-#             that depend on another field's value (focus_detail). Looked
-#             up lazily so config stays free of resource-CSV imports.
+#             that live in a resource file (primary_asset_class) or
+#             depend on another field's value (focus_detail). Looked up
+#             lazily so config stays free of resource-CSV imports.
+#             Read ``vocab`` and ``vocab_fn`` through field_vocab(), not
+#             directly — a caller that reads only one silently sees an
+#             empty vocabulary for fields declaring the other.
 #   min/max   inclusive bounds, for type "number"
 #   unit      "%" | "currency" — display only
 #   label     what the UI calls it
@@ -682,7 +1034,7 @@ OVERRIDABLE_FIELDS: dict[str, dict] = {
     #
     # The facet keeps its name; only the metadata field moves.
     "primary_asset_class": {
-        "type": "enum", "vocab": tuple(ASSET_CLASSES), "neutral": None,
+        "type": "enum", "vocab_fn": "primary_asset_classes", "neutral": None,
         "label": "Primary asset class",
         # Targeted so it reaches the payload like every other field — and,
         # more to the point, so it appears in the extraction prompt, which
@@ -792,7 +1144,30 @@ for _facet in BREAKDOWN_FACETS:
         "type": "enum", "vocab": BREAKDOWN_SOURCES, "neutral": "yahoo",
         "label": f"{_facet} card source",
     }
+    # "Read this card's source as covering the whole fund." Stored beside
+    # the source pin because it is the same kind of thing: a fund-level
+    # decision about what the card MEANS, not a way of looking at it. It
+    # has to be stored rather than held in the browser precisely because
+    # the consumers that matter are elsewhere — the portfolio X-ray, the
+    # target deviations and the optimiser all read the fund's card, and
+    # an `unknown` slice is not something a solver can allocate against.
+    OVERRIDABLE_FIELDS[f"breakdown_complete.{_facet}"] = {
+        "type": "bool", "neutral": False,
+        "label": f"{_facet} coverage asserted complete",
+    }
 del _facet
+
+# The holdings tile has the same kind of selector as those four cards —
+# which source's numbers this fund shows — so its pin is stored the same
+# way: a fund-level override keyed by ISIN, applied on read, cleared to
+# fall back to HOLDINGS_SOURCE_PRECEDENCE. There is no "neutral" value:
+# unlike a breakdown card, whose unpinned state is always Yahoo, an
+# unpinned holdings tile follows the precedence list, so the absence of
+# an entry is itself the meaningful state.
+OVERRIDABLE_FIELDS["holdings_source"] = {
+    "type": "enum", "vocab": HOLDINGS_SOURCES,
+    "label": "Holdings source",
+}
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,7 @@ import csv
 import io
 import json
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,11 +52,27 @@ from porxpy.resources import (
     country_to_mstar,
     resolve_currency,
     resolve_sector,
-    resolve_sub_class,
+    resolve_sector_tree,
 )
+from porxpy.config import facet_raw_field
+
+# Which facet each mappable holdings column feeds. Not an identity map:
+# the asset tree is stated by either the ``asset_class`` or the
+# ``sub_class`` column, at whatever grain the file happens to use, and
+# both land in the single ``asset_raw`` column that the tree resolves
+# from.
+FACET_SOURCE_FIELDS: dict[str, str] = {
+    "currency":    "currency",
+    "country":     "country",
+    "sector":      "sector",
+    "asset_class": "asset_class",
+    "sub_class":   "asset_class",
+}
+
 from porxpy.utils import (
     age_days, cache_put, cache_read, cache_write, coerce_holdings_row,
-    default_holding_asset_class, normalize_holding_asset_class, now_iso,
+    default_holding_asset_class, now_iso,
+    holdings_delete_source, holdings_put, holdings_store_get,
 )
 
 
@@ -933,8 +950,13 @@ def _upload_commit_impl(token: str, *,
     invalid_isins     = 0
     unmapped_countries: list[str] = []
 
+    # ONE column per facet. `sub_class` was a second mappable asset
+    # column until v0.72.0, which asked the user to answer the same
+    # question at two grains and let the two disagree. A single asset
+    # column is read at whatever grain the file wrote it, and
+    # normalise_facets derives the rest from the definitions file.
     OPT_FIELDS = ("ticker", "isin", "cusip", "sector", "country", "currency",
-                  "asset_class", "sub_class",
+                  "asset_class",
                   # Bond metadata (v0.12.7) — read verbatim from the
                   # mapped column. coerce_holdings_row at the bottom of
                   # this function turns the numerics into floats and
@@ -995,40 +1017,33 @@ def _upload_commit_impl(token: str, *,
                 # chokepoint in get_symbol_info_cached decides the
                 # actual Yahoo form against Yahoo's response.
                 row_out["ticker"] = clean_holding_ticker_input(v)
-            elif field == "currency":
-                # Try alias resolution first ("yen" → "JPY", "us dollar"
-                # → "USD"); falls back to uppercased raw on no-match.
-                resolved = resolve_currency(v)
-                row_out["currency"] = resolved if resolved else v.upper().strip()
-            elif field == "country":
-                # Resolve to canonical mstar form; fall back to raw
-                mstar = country_to_mstar(v)
-                if mstar:
-                    row_out["country"] = mstar
-                else:
-                    row_out["country"] = v       # keep raw so user can see
-                    unmapped_countries.append(v)
-            elif field == "sector":
-                # Try alias resolution against the Morningstar 11-sector
-                # taxonomy ("Information Technology" → "technology");
-                # falls back to the raw value lower-cased on no-match
-                # so issuer-specific spellings still display rather than
-                # silently disappearing.
-                resolved = resolve_sector(v)
-                row_out["sector"] = resolved if resolved else v.strip().lower()
-            elif field == "asset_class":
-                # Normalise to the lowercase holding enum (equity / bond
-                # / cash / other). normalize_holding_asset_class maps any
-                # spelling; an unrecognised non-blank value becomes
-                # "other" rather than being dropped.
-                ac = normalize_holding_asset_class(v)
-                if ac:
-                    row_out["asset_class"] = ac
-            elif field == "sub_class":
-                # Try alias resolution against the canonical sub-class
-                # taxonomy; falls back to lower-cased raw on no-match.
-                resolved = resolve_sub_class(v)
-                row_out["sub_class"] = resolved if resolved else v.strip().lower()
+            elif field in FACET_SOURCE_FIELDS:
+                # Every facet column is stored as the text the FILE said
+                # and resolved later, by normalise_facets, from that text.
+                #
+                # Until v0.76.0 each of these four branches resolved its
+                # own column here — currency through resolve_currency,
+                # country through country_to_mstar, sector through the
+                # whole tree, asset through nothing at all — and wrote
+                # the canonical it got. That made this a second
+                # resolution authority alongside normalise_facets, with
+                # its own per-facet fallbacks, and it destroyed the
+                # file's own wording on the way past: a column saying
+                # "Aandelen" was stored as "equity", so re-pointing that
+                # alias afterwards could never reach the row.
+                #
+                # FACET_SOURCE_FIELDS maps the column the mapping dialog
+                # offers to the facet it feeds, because the two are not
+                # always the same word — a file's "sub_class" column
+                # states the asset tree at a finer grain, and the asset
+                # tree has one raw column, not one per level.
+                facet = FACET_SOURCE_FIELDS[field]
+                raw_field = facet_raw_field(facet)
+                # First mapped column for a facet wins. A file mapping
+                # both asset_class and sub_class states one thing twice;
+                # taking the first keeps the choice explainable rather
+                # than depending on OPT_FIELDS order.
+                row_out.setdefault(raw_field, v.strip())
             else:
                 row_out[field] = v
 
@@ -1038,10 +1053,17 @@ def _upload_commit_impl(token: str, *,
         # default-fill pass when neither file nor derivation supplied
         # a value, but this handles the common "country mapped, currency
         # not mapped" case for free.
-        if "currency" not in row_out and "country" in row_out:
-            derived = country_to_currency(row_out["country"])
+        # Derivation feeds the RAW column, because for this row that
+        # derivation IS the source: no currency column was mapped, so
+        # there is no file wording to preserve, and writing the resolved
+        # code straight to row_out["currency"] would be overwritten by
+        # the next normalise pass reading an empty currency_raw.
+        if not row_out.get("currency_raw") and row_out.get("country_raw"):
+            derived = country_to_currency(
+                country_to_mstar(row_out["country_raw"])
+                or row_out["country_raw"])
             if derived:
-                row_out["currency"] = derived
+                row_out["currency_raw"]    = derived
                 row_out["currency_derived"] = True
 
         out_rows.append(row_out)
@@ -1058,10 +1080,14 @@ def _upload_commit_impl(token: str, *,
     # enrichment uses, so repeat uploads of the same file are fast.
     # ──────────────────────────────────────────────────────────────────
     enrich_fields = list(enrich_fields or [])
-    enrich_fields = [
-        f for f in enrich_fields
-        if f in _ENRICHABLE_FIELDS and mapping.get(f) is None
-    ]
+    # v0.72.0: a mapped column no longer disqualifies a field. An issuer
+    # file that carries a sector column with holes in it is the ordinary
+    # case, and refusing to enrich it meant the only way to fill those
+    # holes was to leave the column unmapped and throw away the rows
+    # that DID have a value. Writes below are blank-only, so the file
+    # still wins wherever it actually said something — the documented
+    # precedence (file > enrichment > default) is unchanged.
+    enrich_fields = [f for f in enrich_fields if f in _ENRICHABLE_FIELDS]
     enriched_counts: dict[str, int] = {f: 0 for f in enrich_fields}
     enrich_skipped_no_ticker = 0
     enrich_skipped_over_cap  = 0
@@ -1084,7 +1110,25 @@ def _upload_commit_impl(token: str, *,
         if is_cancelled(token):
             raise UploadCancelled(token)
 
+        # Progress to the terminal. A per-holding Yahoo lookup costs
+        # ~0.01s cached and ~1s when it misses and runs the full
+        # fallback chain (variant probe, ISIN search, name search), so a
+        # few hundred unrecognised rows is legitimately minutes of work.
+        # With nothing printed, that is indistinguishable from a hang —
+        # which is exactly how it was reported. Cheap to emit, and the
+        # only signal the user has while the dialog waits.
+        _n_total = min(len(out_rows), _ENRICH_ROW_CAP)
+        _t_start = time.time()
+        _step = 25 if _n_total > 100 else 10
+        print(f"[Upload] enrichment starting: {_n_total} row(s), "
+              f"fields={', '.join(enrich_fields)}")
         for i, row in enumerate(out_rows):
+            if i and i % _step == 0 and i < _n_total:
+                _el = time.time() - _t_start
+                _rate = i / _el if _el > 0 else 0
+                _eta = (_n_total - i) / _rate if _rate > 0 else 0
+                print(f"[Upload]   {i}/{_n_total} rows "
+                      f"({_el:.0f}s elapsed, ~{_eta:.0f}s left)")
             # Cancel checkpoint #2: top of every iteration. The per-row
             # work (a Yahoo network call on cold cache) dominates the
             # commit's total time, so this is where the cancel needs
@@ -1099,7 +1143,11 @@ def _upload_commit_impl(token: str, *,
             row_isin  = row.get("isin")  or None
             row_cusip = row.get("cusip") or None
             row_name  = row.get("name")  or None
-            if not sym and not row_isin and not row_cusip:
+            # Name-only rows are tried too, as on the fund tile's
+            # "Enrich through Yahoo" button (v0.77.0) — the two are the
+            # same operation on the same rows and must not disagree about
+            # which of them are worth a lookup.
+            if not sym and not row_isin and not row_cusip and not row_name:
                 enrich_skipped_no_ticker += 1
                 continue
             try:
@@ -1152,19 +1200,28 @@ def _upload_commit_impl(token: str, *,
                     if derived_cusip:
                         row["cusip"] = derived_cusip
             for f in enrich_fields:
-                v = info.get(f)
+                # Asset is one facet: take the FINEST answer Yahoo gives,
+                # since the resolver derives the coarser levels from it
+                # but can never derive a finer one.
+                v = (info.get("sub_class") or info.get("asset_class"))                     if f == "asset_class" else info.get(f)
                 if not v:
                     continue
+                cur = row.get(f)
+                if not (cur is None or (isinstance(cur, str) and not cur.strip())):
+                    continue        # the file said something; it wins
                 if f == "country":
-                    mstar = country_to_mstar(v) or v
-                    row["country"] = mstar
-                    enriched_counts["country"] += 1
+                    row["country"] = country_to_mstar(v) or v
                 elif f == "currency":
                     row["currency"] = str(v).upper().strip()
-                    enriched_counts["currency"] += 1
                 else:
                     row[f] = v
-                    enriched_counts[f] += 1
+                enriched_counts[f] = enriched_counts.get(f, 0) + 1
+
+    if enrich_fields:
+        print(f"[Upload] enrichment done in {time.time() - _t_start:.0f}s: "
+              f"filled={dict(enriched_counts)} "
+              f"unrecognised={len(enrich_unrecognised)} "
+              f"no_ticker={enrich_skipped_no_ticker}")
 
     # ──────────────────────────────────────────────────────────────────
     # Pass 4 — default-fill for unmapped fields the user supplied a
@@ -1172,7 +1229,7 @@ def _upload_commit_impl(token: str, *,
     # enriched data — only fills truly empty cells.
     # ──────────────────────────────────────────────────────────────────
     defaults = defaults or {}
-    DEFAULTABLE = ("sector", "country", "currency", "asset_class", "sub_class",
+    DEFAULTABLE = ("sector", "country", "currency", "asset_class",
                    # Bond metadata (v0.12.7) — defaultable in the
                    # "user typed a value in the upload-dialog default
                    # input" sense. No Yahoo enrichment exists for any
@@ -1183,8 +1240,11 @@ def _upload_commit_impl(token: str, *,
                    "duration", "maturity", "coupon", "effective_date")
     default_apply: dict[str, str] = {}
     for f in DEFAULTABLE:
-        if mapping.get(f) is not None:
-            continue                                   # column was mapped
+        # v0.72.0: a mapped column no longer disqualifies a default.
+        # "Fill in when no value is present" is the whole point, and a
+        # column with blank cells is the commonest way for a value to be
+        # absent. The apply loop below is already blank-only, so a
+        # mapped cell that HAS a value is still never touched.
         raw = (defaults.get(f) or "").strip()
         if not raw:
             continue
@@ -1202,12 +1262,10 @@ def _upload_commit_impl(token: str, *,
             # (the upload dialog restricts the dropdown to them), but
             # normalise defensively in case a non-JSON caller sends
             # something else.
-            ac = normalize_holding_asset_class(raw)
-            if ac:
-                default_apply[f] = ac
-        elif f == "sub_class":
-            resolved = resolve_sub_class(raw)
-            default_apply[f] = resolved if resolved else raw.lower()
+            # Passed through for normalise_facets, as the mapped column
+            # above is — pre-normalising coarsened it to the default
+            # level before the tree ever saw the stated grain.
+            default_apply[f] = raw.strip().lower()
         else:
             # Includes the four bond fields — store the raw user value;
             # coerce_holdings_row normalises numerics and dates later.
@@ -1320,7 +1378,11 @@ def _upload_commit_impl(token: str, *,
     if not isin:
         raise ValueError("upload commit requires an ISIN (mode-2 funds "
                          "need their key supplied before holdings upload)")
-    cache_put(isin, "holdings", holdings_blob)
+    # v0.77.0 — written into the "upload" slot of the source-keyed
+    # holdings store, so Yahoo's rows and any factsheet's survive the
+    # upload and stay selectable on the tile. Before this, a commit
+    # overwrote whatever the slot held.
+    holdings_put(isin, holdings_blob, "upload")
 
     # ──────────────────────────────────────────────────────────────────
     # Persist the user's upload-dialog choices into the fund's
@@ -1433,26 +1495,20 @@ def upload_clear(isin: str) -> bool:
     an ISIN — the caller (typically a route handler) resolves a ticker
     via :func:`listing_identity_lookup_isin` before calling.
 
-    Only a ``manual_upload``-sourced blob is removed — if the slot
-    currently holds Yahoo-sourced rows there's nothing for this action
-    to do, and we leave them in place.
+    Only the "upload" source is removed. Yahoo's rows and any factsheet
+    extraction are separate assertions about the same fund, live in their
+    own slots since v0.77.0, and survive — which is what makes removing
+    an upload a step back to the other sources rather than a step into an
+    empty tile. A pin left dangling on the removed source is cleared by
+    :func:`~porxpy.utils.holdings_delete_source`.
 
     Returns:
-        ``True`` if a manual-upload holdings blob existed and was
-        removed, ``False`` otherwise.
+        ``True`` if an uploaded holdings blob existed and was removed,
+        ``False`` otherwise.
     """
     if not isin:
         return False
-    blob = cache_read(isin, "holdings")
-    entry = blob.get("holdings")
-    if not entry:
-        return False
-    val = entry.get("value") or {}
-    if not isinstance(val, dict) or val.get("source") != "manual_upload":
-        return False
-    del blob["holdings"]
-    cache_write(isin, "holdings", blob)
-    return True
+    return holdings_delete_source(isin, "upload")
 
 
 # ---------------------------------------------------------------------------
@@ -1467,9 +1523,11 @@ def has_manual_holdings(isin: str) -> bool:
     """
     if not isin:
         return False
-    blob = cache_read(isin, "holdings")
-    val = (blob.get("holdings") or {}).get("value") or {}
-    return isinstance(val, dict) and val.get("source") == "manual_upload"
+    # The question is "does this fund have an upload?", not "is the
+    # upload what the tile is showing" — the badge counts what the user
+    # has supplied, and a fund whose tile is pinned to Yahoo has not
+    # stopped having the file they imported.
+    return "upload" in holdings_store_get(isin)
 
 
 # ---------------------------------------------------------------------------
@@ -1606,7 +1664,8 @@ def _resolve_breakdown_key(facet: str, raw: str) -> str | None:
         alias for ``facet``; ``None`` when it doesn't (caller routes to
         the resolution modal).
 
-        * asset_class — :func:`porxpy.resources.resolve_asset_class`.
+        * asset_class — :func:`porxpy.resources.resolve_asset_tree`,
+          answering at whatever level the value names.
         * sector      — :func:`porxpy.resources.resolve_sector`.
         * country     — :func:`porxpy.resources.country_to_mstar`.
         * currency    — :func:`porxpy.resources.resolve_currency`.
@@ -1616,21 +1675,26 @@ def _resolve_breakdown_key(facet: str, raw: str) -> str | None:
     raw = raw.strip()
     if not raw:
         return None
-    # Local imports so this module stays import-time-light and we can
-    # be tolerant of resources reloads.
-    from porxpy.resources import (
-        country_to_mstar, resolve_asset_class, resolve_currency,
-        resolve_sector,
-    )
-    if facet == "asset_class":
-        return resolve_asset_class(raw)
-    if facet == "sector":
-        return resolve_sector(raw)
-    if facet == "country":
-        return country_to_mstar(raw)
-    if facet == "currency":
-        return resolve_currency(raw)
-    return None
+    # v0.60.2: one resolver for every facet, and it keeps the LEVEL the
+    # CSV named.
+    #
+    # This used to call resolve_sector, which folds a sub sector up to
+    # its sector and answers None for a super sector — so a CSV row
+    # reading "Cyclical" was reported as unresolvable and the modal
+    # offered only the twelve sectors to map it to. Every honest answer
+    # was unavailable and the only available answers were wrong. Same
+    # defect as the factsheet prompt and the factsheet apply; this was
+    # the third instance.
+    #
+    # asset_class also changes authority. It resolved against the
+    # HOLDINGS vocabulary (equity / bond / cash / other) while the
+    # breakdown facet it feeds uses the FUND vocabulary (equity /
+    # fixed_income / cash / mixed / commodity / other), so a CSV saying
+    # "fixed income" or "commodity" could not resolve, and one saying
+    # "bond" resolved to a key the card has never heard of.
+    from porxpy.breakdowns import resolve_facet_node
+    node, _unresolved = resolve_facet_node(facet, raw)
+    return node or None
 
 
 def parse_breakdown_csv_preview(
@@ -2019,11 +2083,16 @@ def commit_breakdown_upload(
         # unresolved keys per facet. Anything still without a canonical
         # form after user mapping is rejected.
         from porxpy.resources import (
-            country_to_mstar, resolve_asset_class, resolve_currency,
-            resolve_sector,
+            country_to_mstar, resolve_currency, resolve_sector,
         )
+
+        def _resolve_asset(raw):
+            """The asset tree, answering at whatever level the value names."""
+            from porxpy.resources import resolve_asset_tree
+            return (resolve_asset_tree(raw) or {}).get("matched") or None
+
         _per_facet_resolver = {
-            "asset_class": resolve_asset_class,
+            "asset_class": _resolve_asset,
             "sector":      resolve_sector,
             "country":     country_to_mstar,
             "currency":    resolve_currency,
@@ -2061,7 +2130,15 @@ def commit_breakdown_upload(
                         if canon not in _allowed_canonical_set(facet):
                             bad_key_targets.append((facet, k, canon))
                             continue
-                per_facet[facet].append((canon, float(w)))
+                # (raw, pinned_node, weight). The raw is what the file
+                # said; the pinned node is filled only where the USER
+                # supplied the mapping, because that is a decision about
+                # this document rather than something the vocabulary now
+                # knows. A value the resolver placed on its own carries
+                # no pin, so a later alias edit re-points it exactly as
+                # it re-points a holdings row.
+                per_facet[facet].append(
+                    (k, "" if resolver(k) else canon, float(w)))
 
             # 3b. The originally-unresolved keys for this facet.
             unresolved_for_facet = unresolved_keys_payload.get(facet) or {}
@@ -2075,7 +2152,10 @@ def commit_breakdown_upload(
                         bad_key_targets.append((facet, raw, canon))
                         continue
                 for w in weights:
-                    per_facet[facet].append((canon, float(w)))
+                    # Always pinned: these are the keys the user mapped
+                    # by hand in the Resolve dialog, and nothing was
+                    # written to the resource files on their behalf.
+                    per_facet[facet].append((raw, canon, float(w)))
 
         if missing_keys:
             sample = missing_keys[:5]
@@ -2101,9 +2181,15 @@ def commit_breakdown_upload(
     summary: dict[str, dict] = {}
 
     for facet in _BD_FACETS:
-        merged: dict[str, float] = {}
-        for k, w in per_facet[facet]:
-            merged[k] = merged.get(k, 0.0) + w
+        # Keyed by (raw, pin) rather than by the resolved node: two
+        # spellings of one thing stay two stored items and are summed
+        # into one bucket at READ time, by the same resolution every
+        # other consumer runs. Collapsing them here would have thrown
+        # away the wording again, which is the whole defect this
+        # release exists to fix.
+        merged: dict[tuple[str, str], float] = {}
+        for k, pin, w in per_facet[facet]:
+            merged[(k, pin)] = merged.get((k, pin), 0.0) + w
         # Drop zero-weight items.
         merged = {k: v for k, v in merged.items() if v > 0}
         if not merged:
@@ -2114,8 +2200,11 @@ def commit_breakdown_upload(
         weights_meta[facet] = unit
         divisor = 100.0 if unit == "percent" else 1.0
         items = [
-            {"key": k, "weight": round(v / divisor, 6)}
-            for k, v in sorted(merged.items(), key=lambda kv: -kv[1])
+            # ``key`` is present only when the user pinned this item to a
+            # node; its absence means "resolve the raw on read".
+            ({"raw": k, "key": pin, "weight": round(v / divisor, 6)}
+             if pin else {"raw": k, "weight": round(v / divisor, 6)})
+            for (k, pin), v in sorted(merged.items(), key=lambda kv: -kv[1])
         ]
         facets_out[facet] = items
         summary[facet] = {
@@ -2141,23 +2230,16 @@ def _allowed_canonical_set(facet: str) -> set[str]:
     resolver oddly (some resolvers don't accept their own output as
     input — e.g. asset-class resolve uses the HOLDINGS_CLASS aliases).
     """
-    from porxpy.resources import (
-        CURRENCY_ROWS, HOLDINGS_CLASS_ROWS, SECTORS_ROWS,
-        COUNTRY_ROWS,
-    )
-    if facet == "asset_class":
-        out = set()
-        for r in HOLDINGS_CLASS_ROWS:
-            ac = (r.get("asset_class") or "").strip().lower()
-            if ac:
-                out.add(ac)
-        return out
-    if facet == "sector":
-        return {(r.get("sector") or "").strip().lower()
-                for r in SECTORS_ROWS if r.get("sector")}
-    if facet == "country":
-        return {(r.get("mstar_country") or "").strip().lower()
-                for r in COUNTRY_ROWS if r.get("mstar_country")}
+    from porxpy.resources import CURRENCY_ROWS, facet_alias_targets
+
+    # v0.60.2: the same authority the dropdown is built from, so the
+    # commit cannot reject a value the modal just offered. It used to
+    # enumerate SECTORS_ROWS (the twelve sectors only) and the HOLDINGS
+    # asset-class vocabulary, so mapping a row to the super sector
+    # "cyclical" — which the dropdown now offers — failed validation at
+    # commit with "not a canonical value".
+    if facet in ("sector", "country", "asset_class"):
+        return {t["key"] for t in facet_alias_targets(facet)}
     if facet == "currency":
         return {(r.get("code") or "").strip()
                 for r in CURRENCY_ROWS if r.get("code")}
@@ -2180,42 +2262,26 @@ def list_canonical_values(facet: str) -> list[dict]:
         formatters (``fmtCountry`` / ``fmtSector`` / ``fmtAssetClass``)
         can be applied at render time if a richer label is wanted.
     """
-    from porxpy.resources import (
-        CURRENCY_ROWS, HOLDINGS_CLASS_ROWS, SECTORS_ROWS,
-        COUNTRY_ROWS,
-    )
+    from porxpy.resources import CURRENCY_ROWS, facet_alias_targets
+
+    # v0.60.2: levelled facets enumerate every level, from
+    # facet_alias_targets — the one authority for "what may this value
+    # legally be", shared with the Resolve dialog and the factsheet
+    # extraction prompt. A dropdown that offered only the middle level
+    # forced the user to claim the document said more than it did.
+    if facet in ("sector", "country"):
+        multi = len({t["level"] for t in facet_alias_targets(facet)}) > 1
+        return [{
+            "key":   t["key"],
+            "label": (f'{t["level"].replace("_", " ")} — {t["label"]}'
+                      if multi else t["label"]),
+        } for t in facet_alias_targets(facet)]
+
     if facet == "asset_class":
-        seen: set[str] = set()
-        out: list[dict] = []
-        for r in HOLDINGS_CLASS_ROWS:
-            ac = (r.get("asset_class") or "").strip().lower()
-            if ac and ac not in seen:
-                seen.add(ac)
-                out.append({"key": ac, "label": ac.replace("_", " ").title()})
-        out.sort(key=lambda x: x["label"])
-        return out
-    if facet == "sector":
-        out = []
-        for r in SECTORS_ROWS:
-            sec = (r.get("sector") or "").strip().lower()
-            if sec:
-                # SECTORS_ROWS carries no display_name — title-case the
-                # canonical key for a human-friendly label.
-                out.append({"key": sec, "label": sec.replace("_", " ").title()})
-        out.sort(key=lambda x: x["label"])
-        return out
-    if facet == "country":
-        out = []
-        for r in COUNTRY_ROWS:
-            ms = (r.get("mstar_country") or "").strip().lower()
-            if ms:
-                # mstar_country values are already a reasonable label
-                # ("unitedstates" → "United States"). The frontend can
-                # apply fmtCountry for nicer rendering; here we expose
-                # a fallback title-cased form.
-                out.append({"key": ms, "label": ms.title()})
-        out.sort(key=lambda x: x["label"])
-        return out
+        # The FUND vocabulary, matching the breakdown facet this feeds.
+        return [{"key": t["key"], "label": t["label"].replace("_", " ").title()}
+                for t in facet_alias_targets("asset_class")]
+    # country is handled by the levelled branch above.
     if facet == "currency":
         out = []
         for r in CURRENCY_ROWS:

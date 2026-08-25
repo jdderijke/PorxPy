@@ -18,6 +18,7 @@ Routes are grouped (in order):
 from __future__ import annotations
 
 import json
+from datetime import datetime
 import math
 import re
 import uuid
@@ -31,7 +32,12 @@ from flask_cors import CORS
 
 from porxpy import NAME, VERSION, BUILD_DATE
 from porxpy.config import (
-    ASSET_CLASSES,
+    FACET_LEVELS,
+    FACET_DISPLAY_LEVELS,
+    facet_level_field,
+    facet_node_field,
+    facet_pinned_field,
+    facet_raw_field,
     BASE_DIR,
     BREAKDOWN_FACETS,
     UPLOAD_DIR,
@@ -41,8 +47,11 @@ from porxpy.config import (
     DEFAULT_INCLUDE_IN_OPTIMIZER,
     DEFAULT_SIZE_FLOOR_BASE,
     OVERRIDABLE_FIELDS,
+    field_vocab,
     FIELD_SOURCES,
     BREAKDOWN_SOURCES,
+    HOLDINGS_SOURCES,
+    rollup_label_of,
     CACHE_CATEGORIES,
     CACHE_DIR,
     LISTINGS_DIR,
@@ -54,6 +63,7 @@ from porxpy.config import (
     SYMBOL_INFO_CACHE_NAME,
 )
 from porxpy.extractors import (
+    build_holdings_meta,
     enrich_existing_holdings,
     extract_price_history,
     load_fund_data,
@@ -76,9 +86,12 @@ from porxpy.upload import (
     upload_preview_from_source,
 )
 from porxpy.breakdowns import (
+    _key_at_level,
+    candidate_exposures,
+    facet_items,
+    resolve_facet_node,
     aggregate_portfolio_holdings,
     build_fund_breakdowns,
-    canonicalise_facet_key,
     rollup_holdings,
     rollup_portfolio_fundlevel,
 )
@@ -92,7 +105,13 @@ from porxpy.utils import (
     find_portfolio,
     fx_rate,
     fx_history,
+    holdings_blobs_in,
+    holdings_delete_source,
+    holdings_get,
+    holdings_put,
+    holdings_sources_available,
     holdings_status_from_cache,
+    holdings_store_get,
     factsheet_delete,
     factsheet_file,
     factsheet_get,
@@ -117,6 +136,7 @@ from porxpy.utils import (
     load_settings,
     normalise_cache_config,
     normalise_currency,
+    normalise_facets,
     normalise_fund_structure,
     now_iso,
     portfolio_targets_get,
@@ -144,6 +164,28 @@ def create_app() -> Flask:
     """
     app = Flask(__name__, static_folder=str(BASE_DIR))
     CORS(app)
+
+    @app.before_request
+    def _resources_fresh():
+        """Re-read the resource CSVs when any has changed on disk.
+
+        Once per request, not per classification: a file saved halfway
+        through an upload must not have some rows classified under the
+        old ruleset and some under the new. When nothing has changed
+        this is a stat() per file and nothing else.
+
+        A resource file used to take effect only on restart, and there
+        was no way to tell which ruleset a given row had been classified
+        under.
+        """
+        from porxpy.resources import ensure_resources_fresh
+        try:
+            changed = ensure_resources_fresh()
+            if changed:
+                print(f"[Resources] reloaded after on-disk change: "
+                      f"{', '.join(changed)}")
+        except Exception as exc:      # never fail a request over this
+            print(f"[Resources] freshness check failed: {exc}")
 
     # ---- JSON that the browser will actually parse -----------------------
     # Python's encoder emits bare `NaN`, `Infinity` and `-Infinity` for
@@ -210,6 +252,16 @@ def create_app() -> Flask:
                 out[f] = v
         return out
 
+    # Which facets the user has asserted are fully covered by their
+    # chosen source. Read alongside the source pin at every site that
+    # builds cards, because the two together are what the card means —
+    # separating them would let a rebuild drop the assertion silently.
+    def _bd_completed(isin: str) -> dict:
+        return {
+            f: True for f in BREAKDOWN_FACETS
+            if bool(override_get(isin, f"breakdown_complete.{f}"))
+        }
+
     # Which breakdown sources this fund HAS — not which have data for a
     # given facet. A factsheet that never mentions currencies is still a
     # factsheet, and "the factsheet does not say" is a real answer the
@@ -219,8 +271,11 @@ def create_app() -> Flask:
     # nothing, and a factsheet leaves no trace in them at all.
     def _bd_presence(isin: str, rows: list | None = None) -> dict:
         if rows is None:
-            blob = cache_read(isin, "holdings")
-            rows = ((blob.get("holdings") or {}).get("value") or {}).get("rows") or []
+            # The active source's rows: "holdings" as a breakdown source
+            # means "look through what this fund's holdings tile is
+            # showing", so the two selectors cannot disagree about which
+            # list that is.
+            rows = (holdings_get(isin)[0].get("rows") or [])
         meta = factsheet_get(isin) or {}
         return {
             "holdings":  bool(rows),
@@ -228,6 +283,43 @@ def create_app() -> Flask:
             # read off it yet, so the card cannot be pinned to it.
             "factsheet": bool(meta.get("extraction")),
         }
+
+    # Both supplied sources are cleared the same way — remove the items,
+    # then drop any card override left pinned to a source that no longer
+    # has anything behind it — so they share one implementation rather
+    # than the CSV path having a loop of its own and the factsheet path
+    # having none, which is how the factsheet's items came to outlive the
+    # document they were read from.
+    def _clear_supplied_source(isin: str, source: str,
+                               facet: str | None = None) -> bool:
+        """Remove one supplied source's breakdown items and stale pins.
+
+        Args:
+            isin: Fund ISIN.
+            source: One of
+                :data:`~porxpy.config.SUPPLIED_BREAKDOWN_SOURCES`.
+            facet: Clear only this facet; None clears every facet.
+
+        Returns:
+            True if anything was removed from the item store.
+        """
+        removed = uploaded_breakdowns_delete(isin, facet, source=source)
+        # A factsheet supplies TWO things — the facet tables and the
+        # position list — and both are readings of the same document. A
+        # whole-source clear takes both, so replacing or deleting a
+        # factsheet cannot leave last year's positions behind under this
+        # year's document. A per-facet clear is a narrower request and
+        # leaves the holdings alone.
+        if source == "factsheet" and facet is None:
+            removed = holdings_delete_source(isin, "factsheet") or removed
+        supplied_now = uploaded_breakdowns_get(isin)
+        for f, src in list(_bd_sources(isin).items()):
+            # The store is source-keyed, so a facet's entry is a dict of
+            # every supplied source and stays truthy while the OTHER
+            # source survives this clear. Ask the source being cleared.
+            if src == source and not (supplied_now.get(f) or {}).get(source):
+                override_delete(isin, f"breakdown_source.{f}")
+        return removed
 
     @app.route("/api/regions")
     def api_regions() -> Response:
@@ -294,10 +386,10 @@ def create_app() -> Flask:
               "by_asset_class": {<asset_class>: [<sub_class>, ...]}
             }
         """
-        from porxpy.resources import HOLDINGS_CLASS_ROWS, HOLDINGS_CLASS_INDEX
+        from porxpy.resources import list_asset_nodes, ASSET_LEVELS
         return jsonify({
-            "rows":           HOLDINGS_CLASS_ROWS,
-            "by_asset_class": HOLDINGS_CLASS_INDEX,
+            "levels": list(ASSET_LEVELS),
+            "nodes":  list_asset_nodes(),
         })
 
     @app.route("/api/resources/sectors")
@@ -306,9 +398,24 @@ def create_app() -> Flask:
 
         Drives the Sector dropdown in the edit-holding modal and the
         upload normaliser (``"Information Technology"`` → ``"technology"``).
+
+        ``hierarchy`` carries the level of every canonical name and each
+        sub sector's parent, so the breakdown cards can ask "does this
+        source's data reach sub-sector level" of any source's items
+        rather than assuming which sources can. A factsheet naming
+        "Semiconductors" reaches it; the same factsheet naming only
+        "Technology" does not, and neither is knowable from the source
+        alone.
         """
-        from porxpy.resources import SECTORS_ROWS
-        return jsonify({"rows": SECTORS_ROWS})
+        from porxpy.resources import (SECTORS_ROWS, SECTOR_LEVEL_OF,
+                                      SUB_SECTOR_PARENT)
+        return jsonify({
+            "rows": SECTORS_ROWS,
+            "hierarchy": {
+                "level_of":   dict(SECTOR_LEVEL_OF),
+                "sub_parent": dict(SUB_SECTOR_PARENT),
+            },
+        })
 
     @app.route("/api/resources/currencies")
     def api_resources_currencies() -> Response:
@@ -682,11 +789,12 @@ def create_app() -> Flask:
         Returns the cache category list and asset-class enum so the
         frontend modals can populate their options without hardcoding.
         """
+        from porxpy.resources import primary_asset_classes
         return jsonify({
             "portfolios":        load_portfolios(),
             "cache_categories":  CACHE_CATEGORIES,
             "default_cache_cfg": DEFAULT_CACHE_CONFIG,
-            "asset_classes":     ASSET_CLASSES,
+            "asset_classes":     list(primary_asset_classes()),
         })
 
     @app.route("/api/portfolios", methods=["POST"])
@@ -746,6 +854,22 @@ def create_app() -> Flask:
         if not delete_portfolio(pid):
             return jsonify({"error": "portfolio not found"}), 404
         return jsonify({"deleted": pid})
+
+    def _score_preset_label(preset_name) -> str:
+        """The display name of a weight model, or "" when scoring is off.
+
+        Echoed back with an optimisation so the result can say which
+        model produced its scores. The picker on the page is not a safe
+        substitute: it can be changed after a run, and the figures would
+        then be captioned with a model that never produced them.
+        """
+        from porxpy.config import SCORING_PRESETS
+        name = (preset_name or "").strip()
+        if not name or name.lower() == "none":
+            return ""
+        presets = ((load_settings().get("scoring") or {}).get("presets")
+                   or SCORING_PRESETS)
+        return ((presets.get(name) or {}).get("label")) or name
 
     def _optimizer_scores(preset_name):
         """Peer scores for the optimiser, or None to skip score refinement.
@@ -819,12 +943,17 @@ def create_app() -> Flask:
         # Targets are stored as percents (what the user typed); the solver
         # works in fractions. Convert here so each layer speaks its natural
         # unit.
-        targets = {
-            facet: {k: float(v) / 100.0 for k, v in (blk or {}).items()
-                    if float(v or 0) > 0}
-            for facet, blk in targets_pct.items()
-        }
-        targets = {f: b for f, b in targets.items() if b}
+        # v0.65.0: two levels of nesting — {facet: {level: {key: pct}}}.
+        targets = {}
+        for facet, per_level in targets_pct.items():
+            lvls = {}
+            for level, blk in (per_level or {}).items():
+                kept = {k: float(v) / 100.0 for k, v in (blk or {}).items()
+                        if float(v or 0) > 0}
+                if kept:
+                    lvls[level] = kept
+            if lvls:
+                targets[facet] = lvls
         if not targets:
             return jsonify({"ok": False,
                             "reason": "no targets set — set some on the "
@@ -913,42 +1042,12 @@ def create_app() -> Flask:
             # overstate (issuer sector weights may be normalised within the
             # equity sleeve, which would flatter a mixed fund into claiming
             # sector exposure it doesn't have).
-            #
-            # The country facet also needs a level shift: fund breakdowns are
-            # keyed by mstar_country ("germany"), but the Targets tab stores
-            # country targets by mstar_region ("europeDeveloped") — see
-            # porxpy.targets, which does the same aggregation for the
-            # deviation report. Without it the target key is compared against
-            # exposure keys that never contain it, so the facet contributes
-            # no matching exposure and can never be fitted.
-            bks   = data.get("fund_breakdowns") or {}
-            lookt = data.get("holdings_breakdowns") or {}
-            exposures = {}
-            fund_src  = {}
-            for facet in targets:
-                items = [it for it in (lookt.get(facet) or [])
-                         if isinstance(it, dict) and it.get("key")]
-                src = "holdings"
-                if not items:
-                    items = (bks.get(facet) or {}).get("items") or []
-                    src = (bks.get(facet) or {}).get("source") or "yahoo"
-                if not items:
-                    src = "none"
-                fund_src[facet] = src
-
-                blk: dict[str, float] = {}
-                for it in items:
-                    key = (it.get("key") or "").strip()
-                    if not key:
-                        continue
-                    if facet == "country":
-                        key = MSTAR_TO_REGION.get(key, key)
-                    try:
-                        w = float(it.get("weight") or 0.0)
-                    except (TypeError, ValueError):
-                        continue
-                    blk[key] = blk.get(key, 0.0) + w
-                exposures[facet] = blk
+            # Look-through exposure per (facet, level, key), computed by
+            # breakdowns.candidate_exposures. Lifted out of here in
+            # v0.66.3: as an inline block it could not be tested against
+            # a real fund block without a live fetch.
+            exposures, fund_src = candidate_exposures(
+                data.get("fund_breakdowns") or {}, targets)
 
             candidates.append({
                 "ticker":         tk,
@@ -982,7 +1081,7 @@ def create_app() -> Flask:
         # positions themselves (a EUR savings account is not the same
         # exposure as a USD one).
         cash_total = 0.0
-        cash_exp: dict[str, dict[str, float]] = {}
+        cash_exp: dict[str, dict[str, dict[str, float]]] = {}
         for c in cash_positions_get(pid):
             amt = float(c.get("amount") or 0.0)
             if amt <= 0:
@@ -996,30 +1095,40 @@ def create_app() -> Flask:
                 fx = rate
             v = amt * fx
             cash_total += v
+            # v0.65.0: per (facet, level), the same shape a candidate's
+            # exposures now have. The cash position states one value per
+            # facet; each level it can reach is derived from it, exactly
+            # as a fund's is. The country -> region remap that used to
+            # live here is gone: region is a level, so a cash position in
+            # Germany contributes to germany at country level AND to
+            # europeDeveloped at region level, rather than being
+            # rewritten as one or the other.
             for facet, field in (("asset_class", "asset_class"),
                                  ("sector", "sector"),
                                  ("country", "country"),
                                  ("currency", "currency")):
-                key = (c.get(field) or "").strip()
-                if facet == "currency":
-                    key = cur
-                elif facet == "country":
-                    # Same country -> region shift as the funds above; a cash
-                    # position's country is a country, but the target is a
-                    # region.
-                    key = MSTAR_TO_REGION.get(key, key)
-                if not key:
+                raw = cur if facet == "currency" else (c.get(field) or "").strip()
+                if not raw:
                     continue
-                cash_exp.setdefault(facet, {})
-                cash_exp[facet][key] = cash_exp[facet].get(key, 0.0) + v
+                node, _miss = resolve_facet_node(facet, raw)
+                if not node:
+                    continue
+                for level in FACET_LEVELS.get(facet, (facet,)):
+                    key = _key_at_level(facet, node, level)
+                    if not key or key in ("unknown", "n/a"):
+                        continue
+                    cash_exp.setdefault(facet, {}).setdefault(level, {})
+                    cash_exp[facet][level][key] = \
+                        cash_exp[facet][level].get(key, 0.0) + v
 
-        for facet, blk in cash_exp.items():
-            tot = sum(blk.values())
-            if tot > 0:
-                for k in blk:
-                    blk[k] /= tot
+        for facet, per_level in cash_exp.items():
+            for blk in per_level.values():
+                tot = sum(blk.values())
+                if tot > 0:
+                    for k in blk:
+                        blk[k] /= tot
         if not cash_exp:
-            cash_exp = {"asset_class": {"cash": 1.0}}
+            cash_exp = {"asset_class": {"asset_class": {"cash": 1.0}}}
 
         # A targeted facet for which NO candidate has any exposure data is a
         # different failure from "targets unreachable", and needs a different
@@ -1034,6 +1143,40 @@ def create_app() -> Flask:
         # Surfaced because a mixed run is worth knowing about: issuer and
         # look-through data are not always on the same basis, so a fund can
         # win or lose on how it's described rather than what it holds.
+        # Per (facet, level): how many candidates actually answer it, and
+        # with how much non-residual weight. Added in v0.66.4 because a
+        # target reading 0% achieved has several possible causes — no
+        # data, data at a level the target is not set at, or a genuine
+        # miss — and the response said nothing that told them apart.
+        # A permanent diagnostic, not a debug aid: "measured on 3 of 40
+        # candidates" is the difference between a target the optimiser
+        # failed to hit and one it could never see.
+        from porxpy.breakdowns import NA_KEY as _NA, UNKNOWN_KEY as _UNK
+        level_report: dict[str, dict[str, dict]] = {}
+        for facet, per_level in (targets or {}).items():
+            level_report[facet] = {}
+            for level in per_level:
+                answering, weight, keys_seen = 0, 0.0, set()
+                for c in candidates:
+                    blk = (((c.get("exposures") or {}).get(facet) or {})
+                           .get(level) or {})
+                    real = {k: w for k, w in blk.items() if k not in (_UNK, _NA)}
+                    if real:
+                        answering += 1
+                        weight += sum(real.values())
+                        keys_seen |= set(real)
+                targeted = set(per_level.get(level) or {})
+                level_report[facet][level] = {
+                    "candidates_answering": answering,
+                    "candidates_total":     len(candidates),
+                    "exposure_weight":      round(weight, 4),
+                    # The targeted buckets NO candidate carries. This one
+                    # names the problem outright: a target on a bucket
+                    # nothing in the universe holds cannot be met by any
+                    # selection, however the solver is tuned.
+                    "targeted_keys_absent": sorted(targeted - keys_seen),
+                }
+
         source_mix: dict[str, dict[str, int]] = {}
         for facet in targets:
             mix: dict[str, int] = {}
@@ -1042,13 +1185,28 @@ def create_app() -> Flask:
                 mix[s] = mix.get(s, 0) + 1
             source_mix[facet] = mix
 
-            total = sum(sum((c["exposures"].get(facet) or {}).values())
-                        for c in candidates)
+            # v0.66.3: RESIDUAL weight does not count as exposure.
+            #
+            # This summed every value including `unknown`, so a universe
+            # in which no fund has any country data at all still totalled
+            # 1.0 per fund and the guard stayed quiet. The user then saw
+            # every country/region target sitting at 0% achieved with
+            # nothing anywhere saying why — the optimiser had correctly
+            # fitted the data it had, which was none.
+            from porxpy.breakdowns import NA_KEY, UNKNOWN_KEY
+            total = sum(
+                sum(w for blk in ((c.get("exposures") or {}).get(facet)
+                                  or {}).values()
+                    for k, w in (blk or {}).items()
+                    if k not in (UNKNOWN_KEY, NA_KEY))
+                for c in candidates)
             if total <= 1e-9:
                 facet_warnings.append(
-                    f"No {facet} exposure data on any candidate fund — the "
-                    f"{facet} targets cannot be fitted. Upload holdings for "
-                    f"these funds so a look-through is available.")
+                    f"No {facet} exposure data on any candidate fund — every "
+                    f"{facet} target will read 0% achieved. The funds answer "
+                    f"this facet only as 'unknown'. Set each fund's {facet} "
+                    f"card to Holdings or Factsheet on its page, or upload "
+                    f"holdings so a look-through is available.")
             elif mix.get("none"):
                 # These funds aren't excluded — they're treated as 100%
                 # "other" for this facet, so they can still serve the
@@ -1082,10 +1240,17 @@ def create_app() -> Flask:
         )
         result["base_currency"]   = base_cur
         result["candidate_count"] = len(candidates)
+        # Which weight model these scores came from. Every surface that
+        # shows a score names its model, and for a run that model is the
+        # one asked for here — not whatever the page's picker reads now.
+        result["score_preset"]       = (body.get("score_preset") or "").strip()
+        result["score_preset_label"] = _score_preset_label(
+            body.get("score_preset"))
         result["skipped"]         = skipped
         result["cash_before"]     = round(cash_total, 2)
         result["facet_warnings"]  = facet_warnings
         result["source_mix"]      = source_mix
+        result["level_report"]    = level_report
         return jsonify(result)
 
     @app.route("/api/portfolios/<pid>/trades", methods=["POST"])
@@ -1380,6 +1545,21 @@ def create_app() -> Flask:
             return jsonify({"error": f"no portfolio with id {pid!r}"}), 404
         body = request.get_json(force=True, silent=True) or {}
         raw  = body.get("targets")
+
+        # v0.65.0: parent/child consistency is checked HERE, on save,
+        # rather than per field. A target set is only coherent once it
+        # is complete — typing semiconductors 15% before technology 35%
+        # would fail a per-field check on a set that ends up perfectly
+        # valid — so the whole set is judged at once and rejected as a
+        # whole, leaving the user's edits intact to correct.
+        from porxpy.targets import validate_target_levels
+        from porxpy.utils import _coerce_targets
+        problems = validate_target_levels(
+            _coerce_targets(raw if isinstance(raw, dict) else {}))
+        if problems:
+            return jsonify({"error": "inconsistent targets",
+                            "problems": problems}), 409
+
         try:
             persisted = portfolio_targets_put(pid, raw if isinstance(raw, dict) else {})
         except ValueError as exc:
@@ -1432,7 +1612,7 @@ def create_app() -> Flask:
         seen: set[str] = set()
         out: list[dict] = []
         for r in COUNTRY_ROWS:
-            reg = (r.get("mstar_region") or "").strip()
+            reg = (r.get("parent") or "").strip()
             if reg and reg not in seen:
                 seen.add(reg)
                 # mstar_region values are camelCase ("northAmerica");
@@ -1450,7 +1630,7 @@ def create_app() -> Flask:
         """Return the fund-level asset-class list for the Targets editor.
 
         Sourced from Fund_class_definitions.csv via
-        :func:`porxpy.resources.list_fund_asset_classes`. These keys
+        :func:`porxpy.resources.facet_alias_targets`. These keys
         (equity / fixed_income / cash / mixed / commodity / other) are
         exactly what the portfolio rollup emits, so a target set here
         compares correctly against the actual exposure. (The holdings
@@ -1460,8 +1640,8 @@ def create_app() -> Flask:
         Returns:
             ``{values: [{"key", "label"}, ...]}`` in CSV/display order.
         """
-        from porxpy.resources import list_fund_asset_classes
-        return jsonify({"values": list_fund_asset_classes()})
+        from porxpy.resources import facet_alias_targets
+        return jsonify({"values": facet_alias_targets("asset_class")})
 
     # -----------------------------------------------------------------------
     # Shared portfolio enrichment
@@ -1686,22 +1866,15 @@ def create_app() -> Flask:
         fundlevel_breakdowns = fl["fundlevel_breakdowns"]
         fundlevel_coverage   = fl["fundlevel_coverage"]
 
-        # Back-compat aliases — the original response keys, now derived
-        # from the unified rollup. asset_class_breakdown uses ``class``
-        # and sector_breakdown uses ``sector`` as their key field, as
-        # before; currency_breakdown uses ``currency``.
-        asset_class_breakdown = [
-            {"class": it["key"], "weight": it["weight"], "value": it["value"]}
-            for it in fundlevel_breakdowns.get("asset_class", [])
-        ]
-        sector_breakdown = [
-            {"sector": it["key"], "weight": it["weight"]}
-            for it in fundlevel_breakdowns.get("sector", [])
-        ]
-        currency_breakdown = [
-            {"currency": it["key"], "weight": it["weight"], "value": it["value"]}
-            for it in fundlevel_breakdowns.get("currency", [])
-        ]
+        # asset_class_breakdown / sector_breakdown / currency_breakdown
+        # were removed in v0.61.0. They were the original response keys,
+        # kept as aliases derived from fundlevel_breakdowns — the same
+        # fact stored twice under two names, which is exactly the
+        # duplicated state the levelled block exists to remove. With
+        # fundlevel_breakdowns now carrying every level, an alias could
+        # only ever expose one of them, and a consumer reading the alias
+        # would silently be looking at the default level while believing
+        # it had the facet.
 
         # Trading-currency exposure — each fund's base value grouped by
         # the currency its *shares* are quoted in (adjusted, so GBp rolls
@@ -1753,15 +1926,12 @@ def create_app() -> Flask:
             "base_currency":         base_cur,
             "total_value_base":      round(total_base, 2),
             "funds":                 enriched,
-            # Back-compat aliases (derived from fundlevel_breakdowns).
-            "asset_class_breakdown": asset_class_breakdown,
-            "sector_breakdown":      sector_breakdown,
-            "currency_breakdown":    currency_breakdown,
             "unvalued_funds":        unvalued_funds,
-            # Fund/ETF-level breakdown cards — the four facets aggregated
+            # Fund/ETF-level breakdown cards — the six facets aggregated
             # from each fund's data.fund_breakdowns (issuer data + any
-            # per-card holdings override). coverage[facet] = covered /
-            # total so the frontend can show "X% covered" per card.
+            # per-card holdings override), as levelled BLOCKS of the same
+            # shape the fund cards read. coverage is per level:
+            # fundlevel_coverage[facet][level].
             "fundlevel_breakdowns":  fundlevel_breakdowns,
             "fundlevel_coverage":    fundlevel_coverage,
             # Trading-currency exposure of the fund wrappers themselves
@@ -1808,9 +1978,28 @@ def create_app() -> Flask:
                   "unmatched":  ["sector", "currency"],
                   "name":       "...", "ticker": "...", "isin": "...",
                   "weight_pct": 4.2,
-                  "asset_class": "equity", "sub_class": "shares",
-                  "sector": "ai hype",  "country": "us", "currency": "...",
                   "duration": 0, "coupon": 0, "maturity": "",
+                  # Every level of every facet tree, finest first,
+                  # blank where the tree does not reach.
+                  "sub_sector": "beverages", "sector": "consumer defensive",
+                  "super_sector": "defensive",
+                  "country": "us", "region": "...", "super_region": "...",
+                  "currency": "USD",
+                  "sub_class": "shares", "asset_class": "...",
+                  "super_class": "equity",
+                  # The stated value and the grain it was stated at,
+                  # for each facet whose tree has more than one level.
+                  "sector_node": "beverages", "sector_level": "sub_sector",
+                  "country_node": "...", "country_level": "...",
+                  "asset_node": "...",  "asset_level": "...",
+                  # What the source actually said, and whether the node
+                  # above is the user's decision rather than a
+                  # resolution of that text.
+                  "sector_raw": "Beverages - Non-Alcoholic",
+                  "sector_pinned": False,
+                  "country_raw": "...", "country_pinned": False,
+                  "asset_raw": "...",   "asset_pinned": False,
+                  "currency_raw": "...", "currency_pinned": False,
                 },
                 ...
               ],
@@ -1825,10 +2014,14 @@ def create_app() -> Flask:
                 isin = fp.stem.upper()
                 blob = cache_read(isin, "holdings")
                 holdings = (blob.get("holdings") or {}).get("value") or {}
-                if not isinstance(holdings, dict):
-                    continue
-                rows = holdings.get("rows") or []
-                if not isinstance(rows, list):
+                # Every source's rows, not just the one on screen: an
+                # unresolved value in the factsheet's list is just as
+                # unresolved when the tile happens to be showing Yahoo,
+                # and a dialog that only listed the visible source would
+                # hide work the user still has to do.
+                rows = [r for hb in holdings_blobs_in(holdings)
+                        for r in (hb.get("rows") or [])]
+                if not rows:
                     continue
                 for r in rows:
                     if not isinstance(r, dict):
@@ -1843,7 +2036,7 @@ def create_app() -> Flask:
                     rid = r.get("_row_id") or ""
                     if not rid:
                         continue
-                    out_rows.append({
+                    out = {
                         "fund_isin":      isin,
                         "row_id":         rid,
                         "unmatched":      list(unmatched),
@@ -1851,85 +2044,670 @@ def create_app() -> Flask:
                         "ticker":         r.get("ticker") or "",
                         "isin":           r.get("isin") or "",
                         "weight_pct":     float(r.get("weight_pct") or 0),
-                        "asset_class":    r.get("asset_class") or "",
-                        "sub_class":      r.get("sub_class") or "",
-                        "sector":         r.get("sector") or "",
-                        "country":        r.get("country") or "",
-                        "currency":       r.get("currency") or "",
                         "duration":       float(r.get("duration") or 0),
                         "coupon":         float(r.get("coupon") or 0),
                         "maturity":       r.get("maturity") or "",
-                    })
+                    }
+                    # Every level of every facet tree, plus the stated
+                    # node and the grain it was stated at.
+                    #
+                    # Until v0.75.2 this sent one column per facet —
+                    # whichever the dialog's table happened to display.
+                    # The resolve popover now shows the whole chain a
+                    # value locked into (beverages -> consumer defensive
+                    # -> defensive, with the matched node marked), and it
+                    # builds that from the row's level columns. Sending a
+                    # subset would have left this dialog inferring what
+                    # the fund page reads directly, which is exactly how
+                    # the two surfaces come to disagree about what a
+                    # value means.
+                    for facet, levels in FACET_LEVELS.items():
+                        for lv in levels:
+                            out[lv] = r.get(lv) or ""
+                        # The row's own evidence and whether its node is
+                        # a user decision, sent for every facet (v0.76.1).
+                        #
+                        # Both were missing until now, and the by-row tab
+                        # reads both: it offers "add as alias" on the
+                        # SOURCE's wording, and it offers to unpin a node
+                        # the user set. Without the raw column the alias
+                        # box was permanently disabled here while the
+                        # fund page's identical popover offered it, and
+                        # without the pinned column every selection
+                        # reported itself unpinned, so an edit made in
+                        # this dialog could not be undone from it.
+                        out[facet_raw_field(facet)]    = r.get(facet_raw_field(facet)) or ""
+                        out[facet_pinned_field(facet)] = bool(r.get(facet_pinned_field(facet)))
+                        if len(levels) < 2:
+                            # A single-level facet has no node/level
+                            # pair to carry: its one column IS the
+                            # stated value, and there is no coarser
+                            # grain it could have been stated at.
+                            continue
+                        out[facet_node_field(facet)]  = r.get(facet_node_field(facet)) or ""
+                        out[facet_level_field(facet)] = r.get(facet_level_field(facet)) or ""
+                    out_rows.append(out)
 
         # Sort by weight descending — biggest holdings matter most;
         # frontend can re-sort but this is the right default.
         out_rows.sort(key=lambda x: x["weight_pct"], reverse=True)
         return jsonify({"rows": out_rows, "total": len(out_rows)})
 
-    def _rewrite_holdings_class_pair(raw_asset_class: str,
-                                     raw_sub_class: str,
-                                     canonical_sub_class: str) -> int:
-        """Rewrite cached rows matching the (raw_ac, raw_sub) pair to the chosen pair.
+    @app.route("/api/unmatched_values")
+    def api_unmatched_values() -> Response:
+        """Distinct unresolved facet VALUES across every fund and source.
 
-        Scoped by the raw (asset_class, sub_class) pair the user is
-        resolving, NOT just the raw sub_class. The per-pair scope
-        matters because the same raw sub_class can legitimately
-        appear under different asset_classes — e.g. ``shares`` showing
-        up on both cash rows and other rows — and each batch may need
-        a different target pair.
+        **v0.59.0.** The companion of :func:`api_unmatched_facets`,
+        which lists holdings *rows*. This lists *values*, because the
+        two need different fixes:
+
+        * A row's blank or plainly-wrong value is a fact about that row.
+          Edit the row. That is the other endpoint.
+        * A spelling the vocabulary has never heard of is a fact about
+          the vocabulary. Add the alias once and every occurrence
+          everywhere resolves on next read.
+
+        And crucially: a value supplied by Yahoo, by a factsheet
+        extraction, or by a breakdown CSV could not be resolved at all
+        before this endpoint existed. Those sources have no rows to
+        edit — you cannot rewrite what a factsheet said — so the alias
+        is the only repair available, and nothing surfaced them.
+
+        Values are grouped by ``(facet, raw)`` with the raw compared
+        case-insensitively, since two funds spelling the same junk with
+        different capitalisation are one problem, not two.
+
+        Weight is the sum of each occurrence's weight *within its own
+        fund*, which makes it a comparable "how much is this costing
+        me" number rather than a portfolio-scaled one — the same value
+        may sit in funds this portfolio does not hold.
+
+        Response shape::
+
+            {
+              "values": [
+                {
+                  "facet":       "sector",
+                  "raw":         "Diversified Holdings",
+                  "weight":      1.84,          # summed fund fractions
+                  "occurrences": 3,
+                  "sources":     ["factsheet", "holdings"],
+                  "funds":       [{"isin": "IE00B...", "source": "..."}],
+                },
+                ...
+              ],
+              "total": <number of distinct values>,
+            }
+        """
+        from porxpy.utils import cache_read, uploaded_breakdowns_get
+        from porxpy.breakdowns import resolve_facet_node, rollup_holdings
+        from porxpy.config import BREAKDOWN_FACETS, FACET_LEVELS
+
+        # Levels are not facets. The rollup reports a miss under every
+        # level of the tree it belongs to, but a value is one problem
+        # and must be listed once, under the FACET, because that is the
+        # only name the by-value dropdown knows: the alias-target
+        # endpoint 400s on anything outside resources.FACET_ALIAS_LEVELS,
+        # and the row then renders "no vocabulary loaded" with no way to
+        # resolve it.
+        #
+        # This was a per-facet special case for country ("region",
+        # "super_region") until v0.70.1. Sector and asset gained their
+        # full level sets in v0.70.0 and the skip was never widened, so
+        # sub_sector, super_sector, sub_class and super_class all leaked
+        # through as pseudo-facets.
+        _LEVEL_ONLY = {lv for f, lvs in FACET_LEVELS.items()
+                       for lv in lvs if lv != f}
+
+        # {(facet, raw_lower): {"raw","weight","occurrences","sources","funds"}}
+        agg: dict[tuple[str, str], dict] = {}
+
+        def _note(facet: str, raw: str, weight: float,
+                  isin: str, source: str) -> None:
+            raw = (raw or "").strip()
+            if not raw:
+                return
+            k = (facet, raw.lower())
+            entry = agg.get(k)
+            if entry is None:
+                # First spelling seen wins as the display form — the
+                # user reads what a source actually wrote, not a
+                # lowercased version of it.
+                entry = agg[k] = {"facet": facet, "raw": raw, "weight": 0.0,
+                                  "occurrences": 0, "sources": set(),
+                                  "funds": []}
+            entry["weight"] += max(0.0, float(weight or 0.0))
+            entry["occurrences"] += 1
+            entry["sources"].add(source)
+            entry["funds"].append({"isin": isin, "source": source})
+
+        if FUNDS_DIR.exists():
+            for fp in FUNDS_DIR.glob("*.json"):
+                isin = fp.stem.upper()
+
+                # Holdings rows, via the rollup — it already resolves
+                # every facet and reports what it could not place, with
+                # weights normalised against the whole fund.
+                try:
+                    blob = cache_read(isin, "holdings")
+                    holdings = (blob.get("holdings") or {}).get("value") or {}
+                    # Pooled across sources, as in the listing above.
+                    rows = [r for hbl in holdings_blobs_in(holdings)
+                            for r in (hbl.get("rows") or [])]
+                    if rows:
+                        hb = rollup_holdings(rows)
+                        for facet, misses in (hb.get("unresolved") or {}).items():
+                            # "region" is a LEVEL of the country facet,
+                            # not a facet of its own: it is derived from
+                            # the same column, so an unresolved country
+                            # value always produces an identical
+                            # unresolved region. Listing both would ask
+                            # the user to fix one value twice. The
+                            # country entry's dropdown offers region
+                            # targets, so nothing is lost.
+                            if facet in _LEVEL_ONLY:
+                                continue
+                            for m in misses or []:
+                                _note(facet, m.get("raw"), m.get("weight"),
+                                      isin, "holdings")
+                        # Row-stamped asset misses. Until v0.70.0 the
+                        # holdings-row asset column was a DIFFERENT
+                        # vocabulary from the breakdown facet of the same
+                        # name, so these were reported under the pseudo-
+                        # facets "holding_asset_class" and "sub_class".
+                        # v0.70.0 merged both into the one asset tree and
+                        # retired those names from FACET_ALIAS_LEVELS,
+                        # which left every asset value in this dialog
+                        # with no dropdown to resolve it against. They
+                        # are one facet now, and are reported as one.
+                        for r in rows:
+                            if not isinstance(r, dict):
+                                continue
+                            for f in (r.get("_unmatched_facets") or []):
+                                if f in ("asset_class", "sub_class",
+                                         "super_class"):
+                                    _note("asset_class", r.get(f),
+                                          float(r.get("weight_pct") or 0) / 100.0,
+                                          isin, "holdings")
+                except Exception:
+                    pass
+
+                # Yahoo's own sector weightings.
+                try:
+                    sblob = cache_read(isin, "sectors")
+                    sval = (sblob.get("sectors") or {}).get("value") or []
+                    if isinstance(sval, list):
+                        for it in sval:
+                            if not isinstance(it, dict):
+                                continue
+                            _k, miss = resolve_facet_node(
+                                "sector", it.get("sector"))
+                            if miss:
+                                _note("sector", miss, it.get("weight"),
+                                      isin, "yahoo")
+                except Exception:
+                    pass
+
+                # Yahoo's asset allocation.
+                try:
+                    ablob = cache_read(isin, "asset_allocation")
+                    aval = (ablob.get("asset_allocation") or {}).get("value") or []
+                    if isinstance(aval, list):
+                        for it in aval:
+                            if not isinstance(it, dict):
+                                continue
+                            _k, miss = resolve_facet_node(
+                                "asset_class", it.get("key") or it.get("class"))
+                            if miss:
+                                _note("asset_class", miss, it.get("weight"),
+                                      isin, "yahoo")
+                except Exception:
+                    pass
+
+                # Factsheet extraction and user CSV, per facet per source.
+                try:
+                    ub = uploaded_breakdowns_get(isin)
+                    for facet in BREAKDOWN_FACETS:
+                        per_source = ub.get(facet) or {}
+                        if not isinstance(per_source, dict):
+                            continue
+                        for source, items in per_source.items():
+                            for it in items or []:
+                                if not isinstance(it, dict):
+                                    continue
+                                # Same pair breakdowns._resolve_items
+                                # reads: ``key`` is a pin the user has
+                                # already decided and is not an unmatched
+                                # value; ``raw`` is what the source said
+                                # and is the only thing worth resolving.
+                                # Resolving ``key`` here (the pre-0.76.0
+                                # shape) meant no factsheet or upload
+                                # value ever reached this dialog.
+                                if (it.get("key") or "").strip():
+                                    continue
+                                _k, miss = resolve_facet_node(
+                                    facet, it.get("raw"))
+                                if miss:
+                                    _note(facet, miss, it.get("weight"),
+                                          isin, source)
+                except Exception:
+                    pass
+
+        out = []
+        for entry in agg.values():
+            out.append({
+                "facet":       entry["facet"],
+                "raw":         entry["raw"],
+                "weight":      round(entry["weight"], 6),
+                "occurrences": entry["occurrences"],
+                "sources":     sorted(entry["sources"]),
+                "funds":       entry["funds"][:20],
+            })
+        # Heaviest first: the money decides what is worth resolving, and
+        # junk that will never be aliased sinks to the bottom on its own
+        # rather than needing a flag to hide it.
+        out.sort(key=lambda x: (-x["weight"], x["facet"], x["raw"].lower()))
+        return jsonify({"values": out, "total": len(out)})
+
+    def _pin_facet(row: dict, facet: str, canonical: str,
+                   clearing: bool = False, unpin: bool = False) -> None:
+        """Set a facet on one row as a USER decision, then re-derive it.
+
+        The counterpart of adding an alias, and deliberately a different
+        claim: an alias says the vocabulary was incomplete, while this
+        says the source was wrong about these particular rows.
+
+        Two things make it a pin rather than a plain write. The row's
+        raw text is left exactly as the source gave it — it is evidence,
+        and the user overruling it does not make it untrue — and the
+        pin column is set so the next normalisation takes the node as
+        given instead of resolving the untouched raw text back over the
+        top of the edit.
+
+        Clearing is a decision too, and pinned for the same reason: "this
+        row has no sector" must survive a re-read, which it would not if
+        an empty node simply fell back to resolving the raw again.
+
+        ``unpin`` is the reverse: it drops the pin and lets the raw text
+        resolve again. It exists because a pin with no way out is a
+        one-way door — a user who corrects a row and later fixes the
+        vocabulary properly should be able to hand the row back to its
+        source, and only the row itself knows it was ever overruled.
+
+        The level columns are not written here. normalise_facets derives
+        every one of them from the node, which is what stops them
+        drifting out of agreement with it — the bug the four hand-written
+        per-facet branches that used to sit here produced twice.
+        """
+        from porxpy.utils import normalise_facets
+        if unpin:
+            # Hand the row back to its source. The node is not cleared —
+            # normalise_facets is about to rewrite it from the raw text —
+            # and the raw was never touched by the pin, so this restores
+            # exactly what the source said with no round-trip to it.
+            row.pop(facet_pinned_field(facet), None)
+        else:
+            row[facet_node_field(facet)]   = "" if clearing else canonical
+            row[facet_pinned_field(facet)] = True
+        normalise_facets(row)
+
+    @app.route("/api/unmatched_values/apply_rows", methods=["POST"])
+    def api_unmatched_values_apply_rows() -> Response:
+        """Rewrite every holdings ROW carrying one raw value (v0.70.2).
+
+        The second of the two operations the by-value tab offers, and
+        the counterpart of :func:`api_facet_alias`. The choice matters
+        because the two make different claims:
+
+        * **Add alias** says the vocabulary was incomplete. The raw text
+          was a legitimate name for a canonical node all along, so it is
+          written to the resource file and every occurrence everywhere
+          resolves on next read, including occurrences in sources that
+          have no rows at all.
+        * **Change the rows** says the source was wrong. The text is not
+          a name for anything; these particular rows should simply hold
+          a different value. Nothing is written to the resource file, so
+          the next import of the same spelling is unresolved again —
+          which is correct, because nothing has been learned about the
+          vocabulary.
+
+        Body::
+
+            {"facet": "asset_class", "canonical": "regular stock",
+             "raw": "Mystery Tranche"}
+
+        Only rows in the holdings cache are touched. A value that also
+        came from Yahoo, a factsheet or an uploaded breakdown CSV is
+        left alone there: those have no row to edit, which is exactly
+        why the alias exists, and the response reports the shortfall
+        rather than implying a complete fix.
+        """
+        from porxpy.utils import cache_read, cache_write
+        from porxpy.resources import FACET_ALIAS_LEVELS
+        from porxpy.config import (
+            FACET_LEVELS, facet_node_field, facet_raw_field,
+        )
+
+        body      = request.get_json(force=True, silent=True) or {}
+        facet     = (body.get("facet") or "").strip().lower()
+        canonical = (body.get("canonical") or "").strip()
+        raw       = (body.get("raw") or "").strip()
+
+        # ``clear`` asks for the facet to be emptied on the matching
+        # rows rather than set to something. It is a separate flag rather
+        # than an empty ``canonical`` so that an accidentally-blank
+        # canonical still fails loudly instead of silently wiping every
+        # row carrying the raw value.
+        clearing = bool(body.get("clear"))
+        # "Give these rows back to their source": no canonical needed,
+        # because the answer is whatever the raw text resolves to.
+        unpin = bool(body.get("unpin"))
+
+        if facet not in FACET_ALIAS_LEVELS:
+            return jsonify({"error": f"unknown facet {facet!r}"}), 400
+        if not raw:
+            return jsonify({"error": "raw is required"}), 400
+        if not canonical and not clearing and not unpin:
+            return jsonify({
+                "error": "canonical is required unless clearing or unpinning"
+            }), 400
+        if clearing:
+            canonical = ""
+
+        # Where a raw value for this facet can be sitting. Every level
+        # column, plus the stated-node pair, because which one holds the
+        # text depends on the grain the source wrote it at. Asset's node
+        # pair is `asset_node` / `asset_level`, not `asset_class_node` —
+        # the tree is named for the facet, the columns for the concept.
+        # Where a raw value for this facet can be sitting. Every level
+        # column, the stated node, and — since v0.76.0 — the raw column,
+        # which is where an unresolved value now lives exclusively: the
+        # level columns are blanked when nothing resolves, so a search
+        # that skipped the raw would match none of the rows the by-value
+        # tab is offering to fix.
+        fields = list(FACET_LEVELS.get(facet) or (facet,))
+        fields += [facet, facet_node_field(facet), facet_raw_field(facet)]
+
+        rows_written = files_written = 0
+        errors: list[dict] = []
+        target = raw.lower()
+
+        if FUNDS_DIR.exists():
+            for fp in sorted(FUNDS_DIR.glob("*.json")):
+                isin = fp.stem.upper()
+                try:
+                    blob = cache_read(isin, "holdings")
+                except Exception:
+                    continue
+                holdings = (blob.get("holdings") or {}).get("value") or {}
+                # Every source's rows. holdings_blobs_in hands back the
+                # stored dicts themselves, so the in-place edits below
+                # land in the blob this function writes back.
+                rows = [r for hb in holdings_blobs_in(holdings)
+                        for r in (hb.get("rows") or [])]
+                if not rows:
+                    continue
+
+                touched = False
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    if not any((row.get(f) or "").strip().lower() == target
+                               for f in fields):
+                        continue
+                    _pin_facet(row, facet, canonical, clearing, unpin)
+                    rows_written += 1
+                    touched = True
+
+                if touched:
+                    blob.pop("_normalisation", None)
+                    try:
+                        cache_write(isin, "holdings", blob)
+                        files_written += 1
+                    except Exception as exc:
+                        errors.append({"fund_isin": isin,
+                                       "error": f"cache_write: {exc}"})
+
+        return jsonify({
+            "ok":            not errors,
+            "facet":         facet,
+            "raw":           raw,
+            "canonical":     canonical,
+            "rows_written":  rows_written,
+            "files_written": files_written,
+            "errors":        errors,
+        })
+
+    # -- Bundles: pre-loaded fund sets and portfolio backups ----------
+
+    @app.route("/api/bundles/funds/export", methods=["POST"])
+    def api_bundle_export_funds() -> Response:
+        """Download a pre-loaded fund bundle.
+
+        Body: ``{isins?: [...], include_price_history?: bool,
+        include_factsheets?: bool}``. Omitting ``isins`` exports every
+        cached fund.
+        """
+        from porxpy.bundles import export_funds
+        body = request.get_json(force=True, silent=True) or {}
+        data = export_funds(
+            isins=body.get("isins"),
+            include_price_history=bool(body.get("include_price_history")),
+            include_factsheets=body.get("include_factsheets", True))
+        stamp = datetime.now().strftime("%Y%m%d")
+        return Response(
+            data, mimetype="application/zip",
+            headers={"Content-Disposition":
+                     f'attachment; filename="porxpy_funds_{stamp}.zip"'})
+
+    @app.route("/api/bundles/portfolios/export", methods=["POST"])
+    def api_bundle_export_portfolios() -> Response:
+        """Download a portfolio backup (portfolios, targets, cash, settings)."""
+        from porxpy.bundles import export_portfolios
+        stamp = datetime.now().strftime("%Y%m%d")
+        return Response(
+            export_portfolios(), mimetype="application/zip",
+            headers={"Content-Disposition":
+                     f'attachment; filename="porxpy_portfolios_{stamp}.zip"'})
+
+    @app.route("/api/bundles/inspect", methods=["POST"])
+    def api_bundle_inspect() -> Response:
+        """Report what a bundle holds and what it would collide with.
+
+        Writes nothing. The two-phase import exists because the conflict
+        decisions can only be made against a list of what actually
+        collides, and that list needs the bundle read against this
+        install.
+        """
+        from porxpy.bundles import inspect_bundle
+        f = request.files.get("file")
+        data = f.read() if f else request.get_data()
+        if not data:
+            return jsonify({"error": "no bundle uploaded"}), 400
+        return jsonify(inspect_bundle(data))
+
+    @app.route("/api/bundles/apply", methods=["POST"])
+    def api_bundle_apply() -> Response:
+        """Write a bundle in, honouring the caller's conflict decisions.
+
+        Multipart: ``file`` plus a ``decisions`` JSON field of
+        ``{fund_actions: {ISIN: "skip"|"overwrite"}, default_fund_action,
+        resource_action}``.
+        """
+        from porxpy.bundles import apply_bundle
+        f = request.files.get("file")
+        if not f:
+            return jsonify({"error": "no bundle uploaded"}), 400
+        try:
+            decisions = json.loads(request.form.get("decisions") or "{}")
+        except Exception:
+            decisions = {}
+        report = apply_bundle(
+            f.read(),
+            fund_actions=decisions.get("fund_actions") or {},
+            default_fund_action=decisions.get("default_fund_action") or "skip",
+            resource_action=decisions.get("resource_action") or "merge_aliases")
+        return jsonify(report)
+
+    @app.route("/api/resources/facet_alias_targets/<facet>")
+    def api_facet_alias_targets(facet: str) -> Response:
+        """Level-tagged canonical vocabulary a raw value may be aliased to.
+
+        The dropdown behind the by-value tab. Entries carry their level
+        because "AI Hype" mapped to technology is a different claim from
+        "AI Hype" mapped to semiconductors: the first says the source
+        told us the sector, the second says it told us the sub sector,
+        and only the second can ever answer a sub-sector question.
+        """
+        from porxpy.resources import facet_alias_targets, FACET_ALIAS_LEVELS
+        f = (facet or "").strip().lower()
+        if f not in FACET_ALIAS_LEVELS:
+            return jsonify({"error": f"unknown facet {facet!r}"}), 400
+        return jsonify({
+            "facet":   f,
+            "levels":  list(FACET_ALIAS_LEVELS[f]),
+            "targets": facet_alias_targets(f),
+        })
+
+    @app.route("/api/resources/facet_alias", methods=["POST"])
+    def api_facet_alias() -> Response:
+        """Write one alias to a resource file. The by-value tab's apply.
+
+        Body::
+
+            {"facet": "sector", "level": "sub_sector",
+             "canonical": "semiconductors", "raw": "AI Hype"}
+
+        Nothing else happens — no cache is rewritten, no row is touched.
+        The resource file's version bump is what repairs history: every
+        cache stamped with the old version re-normalises on next read,
+        and every breakdown re-resolves on every read regardless. That
+        is the whole mechanism, and it is why this endpoint can be
+        honest about failure where the row-rewrite path could not: an
+        alias that did not get written here fixed nothing at all, so a
+        silent failure would be a lie.
+        """
+        from porxpy.resources import (
+            add_facet_alias, facet_alias_claims, facet_alias_conflict,
+            FACET_ALIAS_LEVELS,
+        )
+
+        body      = request.get_json(force=True, silent=True) or {}
+        facet     = (body.get("facet") or "").strip().lower()
+        level     = (body.get("level") or "").strip().lower()
+        canonical = (body.get("canonical") or "").strip()
+        raw       = (body.get("raw") or "").strip()
+
+        if facet not in FACET_ALIAS_LEVELS:
+            return jsonify({"error": f"unknown facet {facet!r}"}), 400
+        if level not in FACET_ALIAS_LEVELS[facet]:
+            return jsonify({
+                "error": f"level {level!r} is not one of "
+                         f"{list(FACET_ALIAS_LEVELS[facet])} for {facet!r}"
+            }), 400
+        if not canonical or not raw:
+            return jsonify({"error": "canonical and raw are both required"}), 400
+
+        # Refuse before writing, with the reason, rather than after
+        # with a shrug. The most common refusal — the text is itself a
+        # canonical — is one a user can act on only if the message says
+        # so, because the write would otherwise "succeed" and change
+        # nothing: a canonical always outranks an alias at load.
+        why = facet_alias_conflict(facet, level, canonical, raw)
+        if why:
+            return jsonify({"error": why}), 409
+
+        # What this write will take away from somebody else, read before
+        # it happens. A token means one node, so re-pointing it is a
+        # move; the response says which node lost it so the change is
+        # visible rather than inferred from a console warning at load.
+        claims = [c for c in facet_alias_claims(facet, raw)
+                  if not c["wildcard"]
+                  and c["canonical"].strip().lower() != canonical.strip().lower()]
+        wild = [c for c in facet_alias_claims(facet, raw) if c["wildcard"]]
+
+        try:
+            ok = add_facet_alias(facet, level, canonical, raw)
+        except Exception as exc:
+            return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+        if not ok:
+            return jsonify({
+                "error": f"could not add {raw!r} to {canonical!r} — either "
+                         f"the canonical does not exist at {level} level, or "
+                         f"the alias is already present."
+            }), 409
+        return jsonify({"ok": True, "facet": facet, "level": level,
+                        "canonical": canonical, "raw": raw,
+                        "moved_from": [{"canonical": c["canonical"],
+                                        "level": c["level"]} for c in claims],
+                        # Reported, never moved: re-pointing a pattern
+                        # would re-classify every value it covers.
+                        "wildcards_left": [{"canonical": c["canonical"],
+                                            "token": c["token"]} for c in wild]})
+
+    def _rewrite_asset_node(raw_asset_class: str, raw_value: str,
+                            canonical: str) -> int:
+        """Repoint stored rows whose asset value the user has just mapped.
+
+        The alias makes the raw spelling resolvable, but rows already in
+        the cache still carry it as their stated node with no level, so
+        nothing would change until each was re-read. This rewrites the
+        node to the canonical the user chose and clears the derived
+        levels, leaving the next normalisation to fill them.
+
+        Until v0.70.0 this rewrote a PAIR — asset_class and sub_class
+        together — and had to look up which asset class a sub class
+        belonged to in order to keep the two consistent. One tree, one
+        stated value: there is no pair to keep consistent.
 
         Args:
-            raw_asset_class: The raw asset_class side of the pair the
-                user is resolving. Empty string means "match rows
-                regardless of asset_class" (used by older callers
-                without pair context — kept for safety).
-            raw_sub_class: The raw sub_class side of the pair.
-            canonical_sub_class: The chosen canonical sub_class. The
-                target asset_class is derived from this via
-                HOLDINGS_CLASS_ROWS.
+            raw_asset_class: Optional scope — only rows whose asset
+                column also matched this raw value are touched.
+            raw_value: The raw spelling the user mapped.
+            canonical: The node they mapped it to.
 
         Returns:
             Number of rows rewritten across all fund-cache files.
         """
-        from porxpy.resources import HOLDINGS_CLASS_ROWS
+        from porxpy.resources import ASSET_LEVEL_OF
         from porxpy.utils import cache_read, cache_write
 
-        target_ac  = None
-        target_sub = canonical_sub_class.strip().lower()
-        for r in HOLDINGS_CLASS_ROWS:
-            if r.get("sub_class", "").lower() == target_sub:
-                target_ac = r.get("asset_class", "").lower()
-                break
-        if not target_ac:
+        target = (canonical or "").strip().lower()
+        if target not in ASSET_LEVEL_OF:
             return 0
 
-        needle_sub = raw_sub_class.strip().lower()
-        needle_ac  = (raw_asset_class or "").strip().lower()
+        needle    = (raw_value or "").strip().lower()
+        needle_ac = (raw_asset_class or "").strip().lower()
         n_rewrites = 0
         if FUNDS_DIR.exists():
             for fp in FUNDS_DIR.glob("*.json"):
                 isin = fp.stem.upper()
                 blob = cache_read(isin, "holdings")
                 holdings = (blob.get("holdings") or {}).get("value") or {}
-                rows = holdings.get("rows") or []
-                if not isinstance(rows, list):
+                rows = [r for hb in holdings_blobs_in(holdings)
+                        for r in (hb.get("rows") or [])]
+                if not rows:
                     continue
                 touched = False
                 for row in rows:
                     if not isinstance(row, dict):
                         continue
-                    row_sub = (row.get("sub_class") or "").strip().lower()
-                    row_ac  = (row.get("asset_class") or "").strip().lower()
-                    if row_sub != needle_sub:
+                    node = (row.get("asset_node") or "").strip().lower()
+                    if node != needle:
                         continue
-                    # Empty needle_ac = match any asset_class (legacy
-                    # safety hatch); otherwise scope strictly.
-                    if needle_ac and row_ac != needle_ac:
+                    # Empty needle_ac = match any row carrying the raw
+                    # value (legacy safety hatch); otherwise scope it.
+                    if needle_ac and (row.get("asset_class")
+                                      or "").strip().lower() != needle_ac:
                         continue
-                    if row_ac == target_ac and row_sub == target_sub:
-                        continue   # both already correct
-                    row["asset_class"] = target_ac
-                    row["sub_class"]   = target_sub
+                    if node == target:
+                        continue
+                    row["asset_node"]  = target
+                    row["asset_level"] = ""
+                    row["asset_class"] = ""
+                    row["sub_class"]   = ""
+                    row["super_class"] = ""
                     row.pop("_unmatched_facets", None)
                     touched = True
                     n_rewrites += 1
@@ -1961,8 +2739,8 @@ def create_app() -> Flask:
         Returns the new versions and a per-row outcome list.
         """
         from porxpy.resources import (
-            add_holdings_class_alias, add_sector_alias, add_currency_alias,
-            add_country_alias, country_to_mstar, RESOURCE_VERSIONS,
+            add_facet_alias, add_sector_alias, add_currency_alias,
+            add_country_alias, country_to_mstar,
         )
         body = request.get_json(force=True, silent=True) or {}
         resolutions = body.get("resolutions") or []
@@ -1989,8 +2767,16 @@ def create_app() -> Flask:
             try:
                 if facet == "sector":
                     ok = add_sector_alias(canon, raw)
-                elif facet == "sub_class":
-                    ok = add_holdings_class_alias(canon, raw)
+                elif facet in ("sub_class", "asset_class",
+                               "holding_asset_class"):
+                    # One tree: the LEVEL comes from the node the user
+                    # chose, not from which of three pseudo-facets the
+                    # dialog happened to label the row with.
+                    from porxpy.resources import (ASSET_LEVEL_OF,
+                                                  add_facet_alias)
+                    lv = ASSET_LEVEL_OF.get(canon.strip().lower(), "")
+                    ok = bool(lv) and add_facet_alias("asset_class", lv,
+                                                      canon, raw)
                     # Even when the alias is added successfully, rows
                     # whose asset_class doesn't match the chosen
                     # canonical's group will still fail the pair-check
@@ -2002,7 +2788,7 @@ def create_app() -> Flask:
                     # alias add still means the user told us where
                     # this raw value belongs, and any cached rows that
                     # are out-of-group should be fixed too.
-                    n_rewrites = _rewrite_holdings_class_pair(raw_ac, raw, canon)
+                    n_rewrites = _rewrite_asset_node(raw_ac, raw, canon)
                     results.append({
                         **entry,
                         "status":   "applied" if ok else "duplicate_or_missing",
@@ -2028,9 +2814,37 @@ def create_app() -> Flask:
             except Exception as exc:
                 results.append({**entry, "status": "error", "reason": str(exc)})
 
+        return jsonify({"results": results})
+
+
+    @app.route("/api/resources/reload", methods=["POST"])
+    def api_resources_reload() -> Response:
+        """Force a re-read of every resource CSV.
+
+        Editing a resource file normally takes effect on the next
+        request by itself. This exists for the case the automatic check
+        cannot cover: a file restored from backup with an older
+        timestamp, or a mount whose mtime is not to be trusted.
+
+        Cached funds carry a fingerprint of the resource files they were
+        normalised against, so the re-evaluation of already-imported
+        data happens lazily on next read rather than being forced here —
+        rewriting every cached fund up front would be a long blocking
+        operation to no end.
+
+        Returns:
+            ``{reloaded, versions, fingerprints, changed}``.
+        """
+        from porxpy.resources import (
+            reload_all_resources, resources_changed_on_disk,
+            RESOURCE_FINGERPRINTS,
+        )
+        changed = resources_changed_on_disk()
+        reload_all_resources()
         return jsonify({
-            "results":  results,
-            "versions": dict(RESOURCE_VERSIONS),
+            "reloaded":     True,
+            "changed":      changed,
+            "fingerprints": dict(RESOURCE_FINGERPRINTS),
         })
 
 
@@ -2069,7 +2883,7 @@ def create_app() -> Flask:
 
         Behaviour per update:
           - sub_class set → also derives asset_class from
-            HOLDINGS_CLASS_ROWS and writes both, so the resulting pair
+            the asset tree and writes the stated node, so the row
             is in-group.
           - asset_class set without sub_class → write asset_class
             directly. (Rare — the dialog usually edits sub_class.)
@@ -2084,20 +2898,20 @@ def create_app() -> Flask:
         """
         from porxpy.utils import cache_read, cache_write
         from porxpy.resources import (
-            HOLDINGS_CLASS_ROWS, add_sector_alias, add_currency_alias,
-            add_country_alias, add_holdings_class_alias,
+            add_sector_alias, add_currency_alias,
+            add_country_alias, add_facet_alias,
         )
 
         body = request.get_json(force=True, silent=True) or {}
+        # "Give these rows back to their source" — drop the pin and let
+        # the raw text resolve again. A flag rather than a magic value in
+        # `sets`, so an accidentally-blank value still reads as a clear
+        # (a decision) and never as an un-decision.
+        unpin = bool(body.get("unpin"))
         updates = body.get("updates") or []
         add_aliases = bool(body.get("add_aliases", True))
         if not isinstance(updates, list) or not updates:
             return jsonify({"error": "updates list is required"}), 400
-
-        # Index canonical sub_class → asset_class for quick lookup.
-        sub_to_ac: dict[str, str] = {}
-        for r in HOLDINGS_CLASS_ROWS:
-            sub_to_ac[(r.get("sub_class") or "").lower()] = (r.get("asset_class") or "").lower()
 
         # Group updates by fund_isin so each cache opens once.
         by_isin: dict[str, list[dict]] = {}
@@ -2128,9 +2942,13 @@ def create_app() -> Flask:
             if not isinstance(holdings, dict):
                 errors.append({"fund_isin": isin, "error": "no holdings block"})
                 continue
-            rows = holdings.get("rows") or []
-            if not isinstance(rows, list):
-                errors.append({"fund_isin": isin, "error": "rows not a list"})
+            # Pooled across sources: a row_id addresses one row wherever
+            # it is stored, and the Resolve dialog offers rows from every
+            # source, so the lookup below has to be able to find them.
+            rows = [r for hb in holdings_blobs_in(holdings)
+                    for r in (hb.get("rows") or [])]
+            if not rows:
+                errors.append({"fund_isin": isin, "error": "no holdings rows"})
                 continue
             # Build a row_id → row index for fast targeting.
             idx_by_rid: dict[str, int] = {}
@@ -2157,19 +2975,40 @@ def create_app() -> Flask:
                                      "currency", "asset_class"):
                         continue
                     new_val = (new_val or "").strip()
-                    if not new_val:
-                        continue
-                    raw = (row.get(facet) or "").strip().lower()
-                    if raw and add_aliases:
-                        alias_candidates[(facet, raw)] = new_val
-                    if facet == "sub_class":
-                        # Paired write — also fix asset_class to match.
-                        row["sub_class"] = new_val.lower()
-                        target_ac = sub_to_ac.get(new_val.lower())
-                        if target_ac:
-                            row["asset_class"] = target_ac
-                    else:
-                        row[facet] = new_val.lower() if facet != "currency" else new_val.upper()
+                    # An empty value CLEARS the facet on these rows.
+                    #
+                    # It used to `continue`, so a caller asking to empty a
+                    # facet was silently ignored. The UI worked around that
+                    # by sending the literal "__undefined__", which no
+                    # branch here recognised — so "clear the value" wrote
+                    # the string `__undefined__` into the row and it came
+                    # back as an unmatched value of its own. Naming the
+                    # facet in `sets` IS the request to set it; setting it
+                    # to nothing is clearing it, and that is now what
+                    # happens.
+                    clearing = not new_val
+                    if not clearing:
+                        raw = (row.get(facet_raw_field(
+                            "asset_class" if facet in ("sub_class", "asset_class")
+                            else facet)) or "").strip().lower()
+                        if raw and add_aliases:
+                            alias_candidates[(facet, raw)] = new_val
+                    # One write for all four facets (v0.76.0). The
+                    # per-facet branches that stood here — an asset pair,
+                    # a currency upper(), a node/level pop for sector and
+                    # country only — were four spellings of "the user
+                    # decided this row means X", and each carried its own
+                    # way of stopping the next normalisation reverting the
+                    # edit. _pin_facet does it once: set the node, mark it
+                    # a decision, re-derive the levels from it.
+                    #
+                    # The alias candidate above still reads the row's raw
+                    # text, because teaching the vocabulary is a claim
+                    # about the SOURCE's wording, not about the node the
+                    # user picked.
+                    _pin_facet(row, "asset_class" if facet in
+                               ("sub_class", "asset_class") else facet,
+                               new_val, clearing, unpin)
                 # Drop the row's stale unmatched-stamp; the lazy
                 # migration on next read will re-stamp if any facets
                 # are still unmatched.
@@ -2194,6 +3033,7 @@ def create_app() -> Flask:
         # row rewrites already happened, the alias is a bonus.
         aliases_added: dict[str, int] = {
             "sector": 0, "sub_class": 0, "country": 0, "currency": 0,
+            "asset_class": 0,
         }
         if add_aliases:
             for (facet, raw), canon in alias_candidates.items():
@@ -2203,8 +3043,10 @@ def create_app() -> Flask:
                     if facet == "sector":
                         if add_sector_alias(canon, raw):
                             aliases_added["sector"] += 1
-                    elif facet == "sub_class":
-                        if add_holdings_class_alias(canon, raw):
+                    elif facet in ("sub_class", "holding_asset_class"):
+                        from porxpy.resources import ASSET_LEVEL_OF
+                        lv = ASSET_LEVEL_OF.get(canon.strip().lower(), "")
+                        if lv and add_facet_alias("asset_class", lv, canon, raw):
                             aliases_added["sub_class"] += 1
                     elif facet == "currency":
                         if add_currency_alias(canon, raw):
@@ -2212,6 +3054,11 @@ def create_app() -> Flask:
                     elif facet == "country":
                         if add_country_alias(canon, raw):
                             aliases_added["country"] += 1
+                    elif facet == "asset_class":
+                        from porxpy.resources import ASSET_LEVEL_OF
+                        lv = ASSET_LEVEL_OF.get(canon.strip().lower(), "")
+                        if lv and add_facet_alias("asset_class", lv, canon, raw):
+                            aliases_added["asset_class"] += 1
                 except Exception:
                     pass
 
@@ -2780,20 +3627,29 @@ def create_app() -> Flask:
                     "key":        f["key"],
                     "label":      f["label"],
                     "type":       spec.get("type") or "str",
-                    "vocab":      list(spec.get("vocab") or ()),
+                    "vocab":      list(field_vocab(spec)),
                     "unit":       spec.get("unit") or "",
                     "min":        spec.get("min"),
                     "max":        spec.get("max"),
                     "calculated": bool(f.get("calculated")),
                     "readonly":   bool(f.get("readonly")),
                     "sources":    list(_fsrc(f["key"])),
-                    # Absent means the default, which is what an untouched
-                    # fund should look like — no override per field just
-                    # to record "normal".
+                    # The PIN only: which source this field is set to
+                    # ask, or "" when nothing is pinned. It is NOT where
+                    # the current value came from — that is
+                    # data.field_sources, produced once by
+                    # _field_provenance and read by both the tiles and
+                    # this dialog.
+                    #
+                    # This used to fall back to the literal "yahoo" for
+                    # anything unpinned, which is how the dialog came to
+                    # caption a name-inferred focus and a defaulted style
+                    # box as Yahoo data. Yahoo is a source when Yahoo
+                    # supplied the value and at no other time.
                     "source":     env.get("source") or (
                         "" if f.get("calculated")
                         else ident_src.get(f["key"], "") if f.get("readonly")
-                        else "yahoo"),
+                        else ""),
                     "pinned":     bool(env),
                     "value":      env.get("value"),
                     "ts":         env.get("ts"),
@@ -2870,7 +3726,18 @@ def create_app() -> Flask:
         except (RuntimeError, ValueError) as exc:
             return jsonify({"error": str(exc)}), 502
 
-        env = field_source_set(isin, field, src, value) if persist else None
+        # Yahoo is the default, so choosing it WITHDRAWS the pin rather
+        # than recording one — the same rule the breakdown-source
+        # endpoint has always applied to its own default. A stored
+        # "yahoo" pin asserts nothing, freezes a snapshot of the value,
+        # and outranks the seed's recorded origin in the provenance map,
+        # which is how a class inferred from a fund's name came to be
+        # captioned as Yahoo data.
+        if persist and src == "yahoo":
+            override_delete(isin, field)
+            env = None
+        else:
+            env = field_source_set(isin, field, src, value) if persist else None
         return jsonify({"ticker": ticker, "field": field, "source": src,
                         "value": value, "note": note, "pinned": bool(env),
                         "persisted": persist,
@@ -3040,6 +3907,13 @@ def create_app() -> Flask:
                 for f in fields:
                     if f == "primary_asset_class":
                         values[f] = ac_block.get("class") or "unknown"
+                        # Every other field in this loop reports its
+                        # origin; this one reported none, so the caller
+                        # captioned it with the pin label ("Yahoo") no
+                        # matter what had actually decided it.
+                        _o = ac_block.get("origin") or ""
+                        if _o and _o != "none":
+                            notes[f] = _o
                     elif f in seed:
                         values[f] = seed.get(f)
                         notes[f] = origins.get(f) or "yahoo"
@@ -3169,6 +4043,12 @@ def create_app() -> Flask:
             return jsonify({"ticker": ticker, "isin": isin, "factsheet": meta})
 
         if request.method == "DELETE":
+            # The extraction's facet items live in the supplied-breakdown
+            # store, not in the sidecar, so deleting the document alone
+            # left them behind — the same "an extraction must never
+            # outlive its document" rule this route already applies to
+            # the sidecar, applied to the other place a reading is kept.
+            _clear_supplied_source(isin, "factsheet", None)
             return jsonify({"ticker": ticker, "isin": isin,
                             "deleted": factsheet_delete(isin)})
 
@@ -3214,6 +4094,13 @@ def create_app() -> Flask:
                                  as_of=as_of, note=note)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
+
+        # "Replaces the older wholesale, extraction included" has to reach
+        # the supplied-breakdown store as well as the sidecar: those items
+        # are the previous document's reading, and leaving them would show
+        # last year's split under this year's factsheet. Cleared after the
+        # write succeeds, so a rejected upload takes nothing with it.
+        _clear_supplied_source(isin, "factsheet", None)
 
         return jsonify({"ticker": ticker, "isin": isin, "factsheet": meta})
 
@@ -3284,34 +4171,103 @@ def create_app() -> Flask:
                         if not str(k).startswith("_")},
             }), 500
 
-        # Facet items go through the same canonicaliser an uploaded CSV's
-        # keys do. A key the model invented survives as itself rather than
-        # being dropped — the breakdown card will show it as an unmapped
-        # bucket, which is visible and fixable, where a silent drop is
-        # neither.
-        from porxpy.breakdowns import canonicalise_facet_key
+        # Facet items are stored as the DOCUMENT said them, canonicalised
+        # only where the vocabulary recognises the value. A key the model
+        # invented survives as itself rather than being dropped —
+        # resolution runs again on every read (see
+        # breakdowns.resolve_facet_value), so the card reports it inside
+        # its unknown slice and the Resolve dialog can fix it later by
+        # adding an alias, with no need to re-extract the factsheet.
+        # resolve_facet_NODE, not resolve_facet_value: the node keeps the
+        # level the document named. Resolving to the facet's default
+        # level here turned a factsheet's "Cyclical" into "unknown"
+        # before it was ever stored — the store would hold a residual
+        # where the document had a real answer, and no level of the
+        # card could recover it.
+        # Stored as the DOCUMENT's own wording, unresolved (v0.76.0).
+        # This used to resolve here and store the canonical, so a
+        # factsheet naming a label the vocabulary later learned could
+        # never benefit from having learned it — the stored key was
+        # already a conclusion, and re-resolving a conclusion returns
+        # itself. The item now carries `raw`, and _resolve_items answers
+        # the question on every read, exactly as a holdings row does.
         facet_items: dict[str, list] = {}
         for facet, blk in (result.get("facets") or {}).items():
             rows = []
             for it in blk.get("items") or []:
-                key = canonicalise_facet_key(facet, it.get("key")) or it.get("key")
+                # ``label_in_document`` is the exact printed text and is
+                # therefore the raw; ``key`` is the model's canonical
+                # GUESS and is only the fallback, for the ordinary rows
+                # where the prompt does not ask for the printed text.
+                # Storing the guess as the raw made the alias the Resolve
+                # dialog offers to write an alias for something the model
+                # invented rather than for anything the document says.
+                raw = (str(it.get("label_in_document") or "").strip()
+                       or str(it.get("key") or "").strip())
                 # The extractor reports percentages, because that is what
                 # a factsheet prints. The store holds FRACTIONS — the CSV
                 # commit divides by 100 before writing, and every consumer
                 # assumes 0–1. Storing percentages here put every card a
                 # factor of 100 out.
-                rows.append({"key": key,
+                rows.append({"raw": raw,
                              "weight": round(float(it.get("weight") or 0.0) / 100.0, 8)})
             if rows:
                 facet_items[facet] = rows
-        if facet_items:
-            try:
-                uploaded_breakdowns_put(isin, facet_items, source="factsheet")
-            except Exception as exc:
-                import traceback
-                traceback.print_exc()
-                result.setdefault("rejected", []).append(
-                    {"item": "facets", "reason": f"could not be stored: {exc}"})
+        # Written unconditionally, including when the document turned out
+        # to state no breakdown at all: this reading REPLACES the previous
+        # one, and skipping the write on an empty result left the earlier
+        # extraction's numbers on the card as though this reading had
+        # confirmed them. uploaded_breakdowns_put normalises the absent
+        # facets to empty lists, which is the honest answer — "this
+        # document does not say" — and touches no other source.
+        try:
+            uploaded_breakdowns_put(isin, facet_items, source="factsheet")
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            result.setdefault("rejected", []).append(
+                {"item": "facets", "reason": f"could not be stored: {exc}"})
+
+        # The position table becomes the fund's "factsheet" holdings
+        # source, beside Yahoo's top-10 and any uploaded CSV. Written
+        # unconditionally for the same reason the facets are: this
+        # reading REPLACES the previous one, and skipping the write when
+        # the document turned out to print no positions would leave the
+        # earlier extraction's rows on the tile as though this reading
+        # had confirmed them.
+        #
+        # Rows go through coerce_holdings_row, the same normaliser the
+        # upload and Yahoo paths use, so a factsheet position is the same
+        # kind of row as any other: facets resolved from the document's
+        # own wording, bond columns typed, a stable _row_id minted so the
+        # holdings editor can address it.
+        hold_block = result.get("holdings") or {}
+        try:
+            hold_rows = [coerce_holdings_row(r)
+                         for r in (hold_block.get("rows") or [])]
+            weight_sum = round(
+                sum(float(r.get("weight_pct") or 0.0) for r in hold_rows), 6)
+            holdings_put(isin, {
+                "rows":           hold_rows,
+                "source":         "factsheet",
+                "_provider":      "factsheet",
+                "row_count":      len(hold_rows),
+                "weight_sum_pct": weight_sum,
+                # What the document said about its own completeness,
+                # after the arithmetic check in ai._validate_holdings.
+                "complete":       bool(hold_block.get("complete")),
+                "page":           hold_block.get("page"),
+                "quote":          hold_block.get("quote") or "",
+                "as_of":          result.get("as_of") or "",
+                "extracted_at":   now_iso(),
+                "fetched_at":     now_iso(),
+                "last_updated":   now_iso(),
+            }, "factsheet")
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            result.setdefault("rejected", []).append(
+                {"item": "holdings", "reason": f"could not be stored: {exc}"})
 
         # Adopt the document's own date when we did not have one. This is
         # what makes staleness honest: a factsheet is usually months old
@@ -3675,6 +4631,64 @@ def create_app() -> Flask:
             group is too small to rank within.
         """
         return jsonify(_score_universe_cached(request.args.get("preset")))
+
+    @app.route("/api/funds/<ticker>/peers", methods=["GET"])
+    def api_fund_peers(ticker: str) -> Response:
+        """Price series for the funds in this fund's peer group.
+
+        The group is taken from the SCORED universe, which already
+        computes it — so this list is by construction the same one the
+        Score tile shows. v0.67.1 built it independently by calling
+        load_fund_data per listing, which produced a different fund
+        shape from the one scoring assembles and returned nothing.
+        Two ways of deciding what a peer is meant two answers, and the
+        one on the price chart was the wrong one.
+
+        Series come from the cache blob directly: no fetch, no
+        load_fund_data, so opening a fund page does not walk the network
+        once per candidate.
+
+        Returned unwindowed and unindexed — the caller already windows
+        and normalises the subject fund, and doing it twice in two
+        places is how the two stop agreeing.
+        """
+        tk = (ticker or "").strip().upper()
+        scored = (_score_universe_cached(request.args.get("preset")) or {})
+        blocks = scored.get("scores") or {}
+        mine = blocks.get(tk) or {}
+        group = [t for t in (mine.get("peers") or []) if t != tk]
+
+        peers = []
+        for other in group:
+            fp = LISTINGS_DIR / f"{other}.json"
+            if not fp.exists():
+                continue
+            try:
+                blob = json.loads(fp.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            hist = ((blob.get("price_history") or {}).get("value")) or []
+            if not hist:
+                continue
+            prof = ((blob.get("profile") or {}).get("value")) or {}
+            peers.append({
+                "ticker":   other,
+                "name":     prof.get("longName") or prof.get("shortName") or other,
+                "currency": (prof.get("currency") or "").upper(),
+                "history":  [{"date": p.get("date"), "close": p.get("close")}
+                             for p in hist if p.get("date")],
+            })
+        peers.sort(key=lambda p: p["ticker"])
+        return jsonify({
+            "ticker":   tk,
+            "peer_key": mine.get("peer_key") or "",
+            "peer_n":   mine.get("peer_n") or 0,
+            "peers":    peers,
+            "count":    len(peers),
+            # Named so the UI can say WHY the row is empty: a group of
+            # one, or peers that exist but have no cached price series.
+            "group_size": len(mine.get("peers") or []),
+        })
 
     @app.route("/api/scores/presets", methods=["GET"])
     def api_score_presets() -> Response:
@@ -4167,6 +5181,59 @@ def create_app() -> Flask:
 
         return jsonify(data)
 
+    @app.route("/api/upload/normalise_sample", methods=["POST"])
+    def api_upload_normalise_sample() -> Response:
+        """Resolve a handful of mapped rows exactly as a commit would.
+
+        The mapping dialog's preview showed the file's raw cell values,
+        so a holdings file saying "Aandelen" previewed as "Aandelen"
+        while the commit would store "equity" — the preview described
+        the file rather than what was about to be written, which is the
+        one thing it exists to show.
+
+        Resolution stays on the server. The weight sum in that same
+        dialog is a client-side mirror of the backend's arithmetic, and
+        it has already drifted once; re-implementing the whole facet
+        resolver in the browser would be that mistake with far more
+        surface. This runs the real :func:`normalise_facets`.
+
+        Body (JSON):
+            rows: A list of ``{facet: raw_value}`` dicts — the mapped
+                cells for the sample rows, unresolved.
+
+        Returns:
+            ``{rows: [{facet: {value, raw, unmatched}}]}`` — one entry
+            per input row, per facet, carrying both the resolved value
+            and what the file actually said so the dialog can show the
+            difference.
+        """
+        body = request.get_json(force=True, silent=True) or {}
+        rows = body.get("rows")
+        if not isinstance(rows, list):
+            return jsonify({"error": "rows must be a list"}), 400
+        if len(rows) > 50:
+            return jsonify({"error": "at most 50 rows"}), 400
+
+        FACETS = ("asset_class", "sub_class", "sector", "country", "currency")
+        out = []
+        for raw_row in rows[:50]:
+            if not isinstance(raw_row, dict):
+                out.append({})
+                continue
+            probe = {f: (raw_row.get(f) or "") for f in FACETS}
+            originals = dict(probe)
+            _, unmatched = normalise_facets(probe)
+            um = set(unmatched)
+            out.append({
+                f: {
+                    "value":     probe.get(f) or "",
+                    "raw":       str(originals.get(f) or ""),
+                    "unmatched": f in um,
+                }
+                for f in FACETS
+            })
+        return jsonify({"rows": out})
+
     @app.route("/api/upload/prefs", methods=["GET"])
     def api_upload_prefs() -> Response:
         """Return the saved upload-dialog prefs for a fund.
@@ -4342,10 +5409,10 @@ def create_app() -> Flask:
             return jsonify({"error": f"no identity recorded for {ticker!r}; "
                                      "refetch the fund first"}), 404
 
-        blob = cache_read(isin, "holdings")
-        entry = blob.get("holdings") or {}
-        hold  = entry.get("value") or {}
-        if not isinstance(hold, dict) or not hold.get("rows"):
+        # The source in effect is the one the user is looking at and
+        # therefore the one they just edited a row of.
+        hold, hold_source, hold_store = holdings_get(isin)
+        if not hold.get("rows"):
             return jsonify({"error": f"no holdings cached for {ticker!r}"}), 404
 
         rows = hold.get("rows") or []
@@ -4362,7 +5429,28 @@ def create_app() -> Flask:
         # may arrive blank from the editor, which we coerce to 0.0 — the
         # column then renders as "—" via the frontend's blank check.
         from porxpy.utils import HOLDINGS_NUMERIC_FIELDS
-        EDITABLE = set(HOLDINGS_ROW_FIELDS)
+        # The three levelled facets are edited by NAMING A NODE, not by
+        # setting one of the derived level columns. The editor sends one
+        # value per facet — whatever level the user picked — under
+        # ``<facet>_node``, and normalise_facets resolves it against the
+        # definitions file and rewrites every level from it.
+        #
+        # These are admitted alongside the schema rather than added to
+        # HOLDINGS_ROW_FIELDS: that tuple is the canonical COLUMN order,
+        # walked by anything that renders or exports a row, and the
+        # stated value is metadata that travels with the row rather than
+        # a column of it.
+        #
+        # Before this, the gate accepted only the derived columns and a
+        # special case downstream turned an incoming asset_class or
+        # sub_class into a node. Anything else the user could pick was
+        # accepted and then overwritten by re-derivation: a super-class
+        # asset pick, and EVERY sector and country edit, were discarded
+        # while the endpoint returned 200 and the freshly re-derived row.
+        # The screen redrew showing the old value and said nothing.
+        EDITABLE = set(HOLDINGS_ROW_FIELDS) | {
+            "asset_node", "sector_node", "country_node",
+        }
         patch: dict = {}
         for k, v in body.items():
             if k not in EDITABLE:
@@ -4398,37 +5486,43 @@ def create_app() -> Flask:
         # as carrying auto-filled values.
         merged.pop("_defaulted", None)
 
-        # Sub-class follows asset-class. The editor sends every field on
-        # every save, so the body always carries both — we can't tell
-        # "user touched sub_class" from the body alone. The rule: if the
-        # asset class changed but the sub class did NOT, the existing
-        # sub class is now stale (it was the default for the *old* asset
-        # class) — blank it so coerce_holdings_row re-defaults it from
-        # the new asset class. If the user did change sub_class, their
-        # value is respected as-is.
-        if "asset_class" in patch:
-            from porxpy.utils import normalize_holding_asset_class
-            old_ac = normalize_holding_asset_class(old_row.get("asset_class"))
-            new_ac = normalize_holding_asset_class(patch.get("asset_class"))
-            old_sc = (old_row.get("sub_class") or "").strip().lower()
-            new_sc = (patch.get("sub_class") or "").strip().lower()
-            if new_ac != old_ac and new_sc == old_sc:
-                merged["sub_class"] = ""   # re-default from the new AC
+        # A levelled facet is edited by naming a node. The node is the
+        # row's only assertion about that facet, so clearing the stored
+        # grain is all this needs to do — coerce_holdings_row resolves
+        # the node and rewrites every level from it.
+        #
+        # One rule, three facets. The asset-only special case this
+        # replaces had to guess which of two competing columns the user
+        # meant, and carried a corrective for the case where the guess
+        # coarsened the row while a finer value was still sitting in the
+        # form. With a single picker per facet there is no competition
+        # and nothing to correct: the node outranks any stale derived
+        # column that the editor happens to serialise alongside it.
+        for facet in ("asset", "sector", "country"):
+            if f"{facet}_node" in patch:
+                merged[f"{facet}_level"] = ""   # re-resolved from the node
 
         new_row = coerce_holdings_row(merged, row_id=row_id)
         rows[idx] = new_row
 
-        # Provenance promotion: a Yahoo-sourced blob becomes a manual
-        # upload the moment the user edits any row.
-        promoted = False
-        if hold.get("source") in ("yahoo_top10", "yahoo_enriched"):
-            hold["source"]    = "manual_upload"
-            hold["_provider"] = "manual"
-            hold["uploaded_at"] = now_iso()
-            # No file behind a promoted blob — make that explicit so the
-            # holdings-card notice strip doesn't show a stale filename.
-            hold.setdefault("filename", None)
-            promoted = True
+        # Provenance: an edited list is user-curated, and a refetch must
+        # not silently undo the user's work.
+        #
+        # Until v0.77.0 this was expressed by relabelling the blob
+        # ``manual_upload`` — which worked because the slot held exactly
+        # one blob, so relabelling it was the only way to say "do not
+        # refetch over this". With one slot per source that same move
+        # would file Yahoo's rows under Upload and overwrite a CSV the
+        # user really did upload. The rows now stay in the source they
+        # belong to and carry a flag instead; ``load_fund_data`` reads it
+        # and leaves an edited Yahoo slot alone, which is exactly the
+        # protection the relabelling used to buy.
+        # Reported to the UI only for the Yahoo list, because that is the
+        # only source a refresh would otherwise have overwritten — an
+        # upload and a factsheet are never refetched, so nothing about
+        # them changes on the first edit.
+        promoted = hold_source == "yahoo" and not hold.get("user_edited")
+        hold["user_edited"] = True
 
         # Recompute the weight sum across all rows (the editor shows it).
         weight_sum = round(
@@ -4439,7 +5533,7 @@ def create_app() -> Flask:
 
         # v0.22.0 — editing a row is an update to the list.
         hold["last_updated"] = now_iso()
-        cache_write(isin, "holdings", blob)
+        holdings_put(isin, hold, hold_source, store=hold_store)
 
         # Recompute the look-through breakdowns from the just-mutated
         # rows and return them in the response. The breakdown cards are a
@@ -4454,14 +5548,7 @@ def create_app() -> Flask:
         # Yahoo→manual promotion correctly flips the card label from
         # TOP·N(·ENRICHED) to FULL.
         final_source = hold.get("source")
-        if final_source == "manual_upload":
-            breakdowns_source = "full"
-        elif final_source == "yahoo_enriched":
-            breakdowns_source = "top10_enriched"
-        elif final_source == "yahoo_top10":
-            breakdowns_source = "top10_raw"
-        else:
-            breakdowns_source = "none"
+        breakdowns_source = rollup_label_of(final_source)
         holdings_breakdowns = rollup_holdings(rows)
 
         # Rebuild the unified Fund/ETF-level cards too, so a card flipped
@@ -4474,7 +5561,8 @@ def create_app() -> Flask:
         uploaded_facets  = uploaded_breakdowns_get(isin)
         fund_breakdowns  = build_fund_breakdowns(
             holdings_breakdowns, issuer_sectors, issuer_alloc,
-            bd_overrides, uploaded_facets, _bd_presence(isin, rows))
+            bd_overrides, uploaded_facets, _bd_presence(isin, rows),
+            _bd_completed(isin))
 
         return jsonify({
             "ticker":              ticker,
@@ -4531,10 +5619,12 @@ def create_app() -> Flask:
             return jsonify({"error": f"no identity recorded for {ticker!r}; "
                                      "refetch the fund first"}), 404
 
-        blob  = cache_read(isin, "holdings")
-        entry = blob.get("holdings") or {}
-        hold  = entry.get("value") or {}
-        if not isinstance(hold, dict) or not hold.get("rows"):
+        # Enrichment fills blanks in the list the user is LOOKING AT,
+        # and writes back into that same source. Enriching a factsheet's
+        # positions must not deposit them in Yahoo's slot — the rows are
+        # still the factsheet's assertion, with gaps filled in.
+        hold, hold_source, hold_store = holdings_get(isin)
+        if not hold.get("rows"):
             return jsonify({"error": f"no holdings cached for {ticker!r}"}), 404
 
         # Resolve the active enrichment field list. Settings is the
@@ -4563,20 +5653,13 @@ def create_app() -> Flask:
         # v0.22.0 — enrichment rewrites the rows, so it's an update
         # to the list too.
         hold["last_updated"] = now_iso()
-        cache_write(isin, "holdings", blob)
+        holdings_put(isin, hold, hold_source, store=hold_store)
 
         # Look-through breakdowns recomputed from the post-enrich rows.
         # The source label stays in sync with whatever the blob's source
         # is now (unchanged by enrichment).
         final_source = hold.get("source")
-        if final_source == "manual_upload":
-            breakdowns_source = "full"
-        elif final_source == "yahoo_enriched":
-            breakdowns_source = "top10_enriched"
-        elif final_source == "yahoo_top10":
-            breakdowns_source = "top10_raw"
-        else:
-            breakdowns_source = "none"
+        breakdowns_source = rollup_label_of(final_source)
         holdings_breakdowns = rollup_holdings(rows)
 
         # Rebuild the unified Fund/ETF-level cards too — same rationale
@@ -4589,7 +5672,8 @@ def create_app() -> Flask:
         uploaded_facets  = uploaded_breakdowns_get(isin)
         fund_breakdowns  = build_fund_breakdowns(
             holdings_breakdowns, issuer_sectors, issuer_alloc,
-            bd_overrides, uploaded_facets, _bd_presence(isin, rows))
+            bd_overrides, uploaded_facets, _bd_presence(isin, rows),
+            _bd_completed(isin))
 
         return jsonify({
             "ticker":              ticker,
@@ -4635,6 +5719,85 @@ def create_app() -> Flask:
             override_put(isin, "include_in_optimizer", want)
         return jsonify({"ticker": ticker.upper(), "isin": isin,
                         "include_in_optimizer": want})
+
+    # -----------------------------------------------------------------------
+    # Holdings source — which of the three lists the fund shows (v0.77.0)
+    # -----------------------------------------------------------------------
+    @app.route("/api/funds/<ticker>/holdings_source",
+               methods=["PUT", "DELETE"])
+    def api_holdings_source(ticker: str) -> Response:
+        """Pin (or unpin) which source supplies this fund's holdings.
+
+        The holdings tile's selector, and the exact counterpart of
+        ``/breakdown_source/<facet>`` for the four cards: the choice is a
+        fund-level override keyed by ISIN, so it applies wherever the
+        fund appears rather than being a view state of one browser tab.
+
+        ``PUT`` body ``{"source": "yahoo"|"factsheet"|"upload"}``.
+        ``DELETE`` withdraws the pin, returning the fund to
+        :data:`~porxpy.config.HOLDINGS_SOURCE_PRECEDENCE`.
+
+        A pin to a source the fund does not have is refused rather than
+        stored — the selector strikes those through, so the only way to
+        send one is out-of-band, and silently storing it would leave the
+        tile showing something other than what was asked for with no way
+        to tell why.
+
+        Returns:
+            ``{ticker, isin, source, pinned, available, holdings_rows,
+            holdings_meta, holdings_source, holdings_breakdowns,
+            breakdowns_source, fund_breakdowns, breakdown_overrides}`` —
+            everything the tile and the four cards need to redraw,
+            recomputed from the cache with no network call, exactly as
+            the breakdown-source switch does.
+        """
+        isin = listing_identity_lookup_isin(ticker)
+        if not isin:
+            return jsonify({"error": f"no identity recorded for {ticker!r}; "
+                                     "refetch the fund first"}), 404
+
+        if request.method == "DELETE":
+            override_delete(isin, "holdings_source")
+        else:
+            body   = request.get_json(force=True, silent=True) or {}
+            source = (body.get("source") or "").strip()
+            if source not in HOLDINGS_SOURCES:
+                return jsonify(
+                    {"error": f"source must be one of "
+                              f"{list(HOLDINGS_SOURCES)}"}), 400
+            if source not in holdings_store_get(isin):
+                return jsonify(
+                    {"error": f"this fund has no {source} holdings"}), 409
+            override_put(isin, "holdings_source", source)
+
+        # Rebuild from the cache: the rows now in effect, their roll-up,
+        # and the four cards (any of which may be reading "holdings").
+        hold, active, store = holdings_get(isin)
+        rows = hold.get("rows") or []
+        variant = hold.get("source") or "none"
+        sect_blob = cache_read(isin, "sectors")
+        fund_breakdowns = build_fund_breakdowns(
+            rollup_holdings(rows) if rows else {},
+            (sect_blob.get("sectors") or {}).get("value") or [],
+            (sect_blob.get("asset_allocation") or {}).get("value") or [],
+            _bd_sources(isin), uploaded_breakdowns_get(isin),
+            _bd_presence(isin, rows),
+            _bd_completed(isin))
+
+        return jsonify({
+            "ticker":              ticker,
+            "isin":                isin,
+            "source":              active,
+            "pinned":              override_get(isin, "holdings_source") or "",
+            "available":           holdings_sources_available(isin, store),
+            "holdings_rows":       rows,
+            "holdings_source":     variant,
+            "holdings_meta":       build_holdings_meta(isin, hold, active, store),
+            "holdings_breakdowns": rollup_holdings(rows) if rows else {},
+            "breakdowns_source":   rollup_label_of(variant),
+            "fund_breakdowns":     fund_breakdowns,
+            "breakdown_overrides": _bd_sources(isin),
+        })
 
     @app.route("/api/funds/<ticker>/override/<field>",
                methods=["PUT", "DELETE"])
@@ -4719,7 +5882,8 @@ def create_app() -> Flask:
         convenience; the handler resolves it through the listings
         cache's identity block.
 
-        ``PUT``  — body ``{"asset_class": <one of ASSET_CLASSES>}`` sets
+        ``PUT``  — body ``{"asset_class": <one of the classification
+                   keys in Primary_asset_class_definitions.csv>}`` sets
                    the override.
         ``DELETE`` — clears the override, reverting to auto-detection.
 
@@ -4743,10 +5907,102 @@ def create_app() -> Flask:
 
         body = request.get_json(force=True, silent=True) or {}
         ac   = body.get("asset_class")
-        if ac not in ASSET_CLASSES:
-            return jsonify({"error": f"asset_class must be one of {ASSET_CLASSES}"}), 400
+        # Resolved, not just compared: the classification arrives from a
+        # factsheet, justETF or a typed value as often as from the
+        # dropdown, and "Fixed Income" is the same assertion as
+        # "fixed_income". An unrecognised value is still rejected.
+        from porxpy.resources import (primary_asset_classes,
+                                      resolve_primary_asset_class)
+        resolved = resolve_primary_asset_class(ac)
+        if not resolved:
+            allowed = primary_asset_classes()
+            return jsonify({"error": f"asset_class must be one of {allowed}"}), 400
+        ac = resolved
         override_put(isin, "primary_asset_class", ac)
         return jsonify({"ticker": ticker, "asset_class": ac})
+
+    # -----------------------------------------------------------------------
+    # Per-fund, per-card completeness assertion (v0.77.0)
+    # -----------------------------------------------------------------------
+    @app.route("/api/funds/<ticker>/breakdown_complete/<facet>",
+               methods=["PUT", "DELETE"])
+    def api_fund_breakdown_complete(ticker: str, facet: str) -> Response:
+        """Assert (or withdraw) that one card's source covers the whole fund.
+
+        For a fund whose breakdown rests on an incomplete set of holdings
+        — an issuer top-10, a factsheet's largest positions — and for
+        which no source can supply more, the ``unknown`` slice is not a
+        gap anyone can close. Left in place it makes the fund useless to
+        the optimiser, which cannot allocate against "unknown"; asserted
+        away, the identified part is read as the whole fund and the
+        solver has something to work with.
+
+        Stored as a fund-level override keyed by ISIN, exactly like the
+        card's source pin, because it is the same kind of statement: it
+        changes what the card MEANS rather than how it is displayed. It
+        therefore reaches everything that reads the fund's facet data —
+        the portfolio X-ray, the target deviations, the optimiser — and
+        not merely the tab it was ticked in.
+
+        ``PUT``    — body ``{"complete": true|false}``; ``false`` is
+                     equivalent to a clear (the default is "not
+                     asserted", and there is no third state).
+        ``DELETE`` — withdraws the assertion.
+
+        Path params:
+            ticker: Yahoo ticker.
+            facet:  One of :data:`~porxpy.config.BREAKDOWN_FACETS`.
+
+        Returns:
+            ``{ticker, isin, facet, complete, completed, fund_breakdowns,
+            breakdown_overrides}`` — ``completed`` is the fund's full
+            ``{facet: True}`` map and ``fund_breakdowns`` the rebuilt
+            cards, so the caller redraws from this reply rather than
+            re-requesting the fund (which would re-resolve it upstream).
+        """
+        if facet not in BREAKDOWN_FACETS:
+            return jsonify(
+                {"error": f"facet must be one of {list(BREAKDOWN_FACETS)}"}), 400
+
+        isin = listing_identity_lookup_isin(ticker)
+        if not isin:
+            return jsonify({"error": f"no identity recorded for {ticker!r}; "
+                                     "refetch the fund first"}), 404
+
+        want = True
+        if request.method == "DELETE":
+            want = False
+        else:
+            body = request.get_json(force=True, silent=True) or {}
+            want = bool(body.get("complete", True))
+
+        # Sparse store: "not asserted" is the default, so withdrawing is
+        # a delete rather than a stored False — the same rule
+        # include_in_optimizer follows.
+        if want:
+            override_put(isin, f"breakdown_complete.{facet}", True)
+        else:
+            override_delete(isin, f"breakdown_complete.{facet}")
+
+        rows = holdings_get(isin)[0].get("rows") or []
+        sect_blob = cache_read(isin, "sectors")
+        fund_breakdowns = build_fund_breakdowns(
+            rollup_holdings(rows) if rows else {},
+            (sect_blob.get("sectors") or {}).get("value") or [],
+            (sect_blob.get("asset_allocation") or {}).get("value") or [],
+            _bd_sources(isin), uploaded_breakdowns_get(isin),
+            _bd_presence(isin, rows),
+            _bd_completed(isin))
+
+        return jsonify({
+            "ticker":              ticker,
+            "isin":                isin,
+            "facet":               facet,
+            "complete":            want,
+            "completed":           _bd_completed(isin),
+            "fund_breakdowns":     fund_breakdowns,
+            "breakdown_overrides": _bd_sources(isin),
+        })
 
     # -----------------------------------------------------------------------
     # Per-fund, per-card breakdown source — set / clear the override
@@ -4790,16 +6046,14 @@ def create_app() -> Flask:
 
         def _cards(isin_: str) -> dict:
             """Rebuild this fund's four cards from what is now stored."""
-            hold_blob = cache_read(isin_, "holdings")
-            rows      = ((hold_blob.get("holdings") or {}).get("value")
-                         or {}).get("rows") or []
+            rows      = holdings_get(isin_)[0].get("rows") or []
             sect_blob = cache_read(isin_, "sectors")
             return build_fund_breakdowns(
                 rollup_holdings(rows) if rows else {},
                 (sect_blob.get("sectors") or {}).get("value") or [],
                 (sect_blob.get("asset_allocation") or {}).get("value") or [],
                 _bd_sources(isin_), uploaded_breakdowns_get(isin_),
-                _bd_presence(isin_, rows))
+                _bd_presence(isin_, rows), _bd_completed(isin_))
         if facet not in BREAKDOWN_FACETS:
             return jsonify(
                 {"error": f"facet must be one of {list(BREAKDOWN_FACETS)}"}), 400
@@ -4982,9 +6236,7 @@ def create_app() -> Flask:
 
         # Rebuild fund_breakdowns so the frontend can update the cards
         # in place — same pattern as api_holdings_patch.
-        holdings_blob = cache_read(isin, "holdings")
-        hold_value    = (holdings_blob.get("holdings") or {}).get("value") or {}
-        rows          = hold_value.get("rows") or []
+        rows = holdings_get(isin)[0].get("rows") or []
         holdings_breakdowns = rollup_holdings(rows) if rows else {}
         sectors_blob  = cache_read(isin, "sectors")
         issuer_sectors = (sectors_blob.get("sectors") or {}).get("value") or []
@@ -4997,7 +6249,8 @@ def create_app() -> Flask:
         fund_breakdowns = build_fund_breakdowns(
             holdings_breakdowns, issuer_sectors, issuer_alloc,
             bd_overrides, uploaded_breakdowns_get(isin),
-            _bd_presence(isin, rows))
+            _bd_presence(isin, rows),
+            _bd_completed(isin))
 
         return jsonify({
             "ticker":              ticker,
@@ -5019,13 +6272,14 @@ def create_app() -> Flask:
             facet:  One of :data:`~porxpy.config.BREAKDOWN_FACETS`, or
                     the literal ``"all"`` to clear every facet at once.
 
-        Side effect: if this clear leaves any cards still set to source
-        ``"upload"`` for the now-empty facet, ``build_fund_breakdowns``'
-        graceful-fallback rule kicks in on the next read — the card
-        falls back to source ``"yahoo"``. We don't auto-clear the
-        breakdown_source override entry here; the user can flip it
-        explicitly if they want, but the fallback keeps the card
-        rendering sensibly in the meantime.
+        Clears the ``upload`` source only. A factsheet extraction is the
+        other supplied source for the same facet and is a separate
+        assertion about the fund; it is cleared by deleting the factsheet.
+
+        Side effect: any card still pinned to source ``"upload"`` for a
+        now-empty facet has its override entry cleared, so the stored
+        state matches what ``build_fund_breakdowns``' graceful-fallback
+        rule would render anyway (source ``"yahoo"``).
         """
         isin = listing_identity_lookup_isin(ticker)
         if not isin:
@@ -5033,28 +6287,18 @@ def create_app() -> Flask:
                                      "refetch the fund first"}), 404
 
         if facet == "all":
-            removed = uploaded_breakdowns_delete(isin, None)
+            removed = _clear_supplied_source(isin, "upload", None)
         elif facet in BREAKDOWN_FACETS:
-            removed = uploaded_breakdowns_delete(isin, facet)
+            removed = _clear_supplied_source(isin, "upload", facet)
         else:
             return jsonify(
                 {"error": f"facet must be one of "
                           f"{list(BREAKDOWN_FACETS) + ['all']}"}), 400
 
-        # Also clear any source=upload override entries that no longer
-        # have data to back them. The fallback in build_fund_breakdowns
-        # would render those as "yahoo" anyway, but explicitly clearing
-        # makes the stored state match what's actually in effect.
-        current_overrides = _bd_sources(isin)
-        upload_now        = uploaded_breakdowns_get(isin)
-        for f, src in list(current_overrides.items()):
-            if src == "upload" and not upload_now.get(f):
-                override_delete(isin, f"breakdown_source.{f}")
+        supplied_now = uploaded_breakdowns_get(isin)
 
         # Rebuild fund_breakdowns so the frontend can update in place.
-        holdings_blob = cache_read(isin, "holdings")
-        hold_value    = (holdings_blob.get("holdings") or {}).get("value") or {}
-        rows          = hold_value.get("rows") or []
+        rows = holdings_get(isin)[0].get("rows") or []
         holdings_breakdowns = rollup_holdings(rows) if rows else {}
         sectors_blob  = cache_read(isin, "sectors")
         issuer_sectors = (sectors_blob.get("sectors") or {}).get("value") or []
@@ -5062,7 +6306,8 @@ def create_app() -> Flask:
         bd_overrides   = _bd_sources(isin)
         fund_breakdowns = build_fund_breakdowns(
             holdings_breakdowns, issuer_sectors, issuer_alloc,
-            bd_overrides, upload_now, _bd_presence(isin, rows))
+            bd_overrides, supplied_now, _bd_presence(isin, rows),
+            _bd_completed(isin))
 
         return jsonify({
             "ticker":              ticker,

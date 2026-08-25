@@ -14,7 +14,7 @@ warrant their own module:
 * portfolio JSON store (``load_portfolios``, ``upsert_portfolio``, ...)
 
 The holdings/portfolio breakdown rollups (``rollup_holdings``,
-``canonicalise_facet_key``) now live in :mod:`porxpy.breakdowns` and are
+``resolve_facet_value``) now live in :mod:`porxpy.breakdowns` and are
 re-exported from here for backwards compatibility.
 
 The functions in this module never reach out to Yahoo or OpenFIGI directly
@@ -45,7 +45,6 @@ from porxpy.config import (
     FUNDS_DIR,
     LISTING_CATEGORIES,
     FUND_CATEGORIES,
-    ASSET_CLASSES,
     BREAKDOWN_FACETS,
     SUPPLIED_BREAKDOWN_SOURCES,
     BREAKDOWN_SOURCES,
@@ -55,6 +54,7 @@ from porxpy.config import (
     DISTRIBUTION_POLICIES,
     ENRICHABLE_FIELDS,
     FOCUS_TYPES,
+    LEGACY_FOCUS_TYPES,
     MARKET_CAPS,
     STYLE_BOXES,
     FUND_STRUCTURES,
@@ -62,6 +62,10 @@ from porxpy.config import (
     FX_HIST_TTL_HOURS,
     FX_TTL_HOURS,
     HOLDINGS_MATCH_KEYS,
+    HOLDINGS_SOURCES,
+    HOLDINGS_SOURCE_PRECEDENCE,
+    HOLDINGS_SOURCE_VARIANT,
+    holdings_source_of,
     ISIN_MAP_FP,
     ISIN_MAP_TTL_DAYS,
     OVERRIDES_FP,
@@ -214,7 +218,135 @@ def _cache_path_for(key: str, category: str) -> Path:
 #       stamps were written but rows never actually walked).
 #   2 — v0.15.3 fixed the unwrap; bumped to invalidate every gen-1
 #       stamp so the corrected migrator runs once per blob.
-_FACET_MIGRATOR_GENERATION = 2
+# 3 (v0.59.0): normalise_facets now resolves the country column at two
+# levels and stamps country_node / country_level, mirroring sector.
+# Caches stamped by generation 2 carry neither, so the region view would
+# read every pre-existing row as unknown until something else happened
+# to rewrite it.
+# v0.70.0 — generation 4. The asset taxonomy became one tree, so every
+# cached blob must re-fold its asset_class + sub_class pair into
+# asset_node + asset_level and re-derive the three level columns. A row
+# whose stored sub_class was an is_default fill rather than something
+# the source said correctly becomes unknown at that level: the fill was
+# never an assertion, and keeping it would carry a claim across the
+# migration that nobody ever made.
+# v0.70.0 — generation 5. Sector and country now store every level of
+# their tree, as asset did from generation 4. A blob stamped 4 carries
+# only the middle sector level and the country level, so a sub-sector,
+# super-sector, region or super-region view of those rows would read as
+# blank everywhere until something else happened to rewrite them. The
+# stated value and its grain were already stored, so the migration
+# re-derives rather than guesses: no row loses or gains an assertion.
+# v0.76.0 — generation 6. Facet resolution now reads from <facet>_raw
+# rather than from the stored node, so a blob written before this release
+# has no input to resolve from. There is nothing to re-derive and nothing
+# honest to guess, so the affected categories are DROPPED instead of
+# migrated — see _drop_legacy_facet_stores.
+_FACET_MIGRATOR_GENERATION = 6
+
+
+def holdings_blobs_in(value: Any) -> list[dict]:
+    """Every per-source holdings blob inside a ``holdings`` cache value.
+
+    Accepts both shapes — the pre-0.77.0 single blob and the source map
+    that replaced it — so the migration passes that walk stored rows do
+    not each need to know which era a file was written in. Returned in
+    :data:`~porxpy.config.HOLDINGS_SOURCES` order where the shape is the
+    map, so a caller reporting on them is deterministic.
+    """
+    if not isinstance(value, dict):
+        return []
+    sources = value.get("sources")
+    if isinstance(sources, dict):
+        return [sources[s] for s in HOLDINGS_SOURCES
+                if isinstance(sources.get(s), dict)]
+    return [value] if isinstance(value.get("rows"), list) else []
+
+
+def _drop_legacy_facet_stores(data: dict) -> list[str]:
+    """Delete cached facet data that predates raw-as-input (v0.76.0).
+
+    Two stores resolved their facet values at INGEST and kept only the
+    canonical result: holdings rows (the raw was overwritten in the level
+    column) and supplied breakdowns (the item's ``key`` was the resolved
+    node). Neither can be re-resolved now that resolution reads from the
+    raw text, and neither can have a raw invented for it — feeding a
+    stored conclusion back in as if it were the source is precisely the
+    loop that made an alias edit unable to reach a stored row.
+
+    They are dropped rather than migrated. ``cache/`` is losable by
+    design: a holdings upload and a factsheet extraction are both
+    repeatable, so the cost is one re-import per fund, against a
+    compatibility branch that would sit in this module permanently and
+    be exercised by fewer rows every month while quietly behaving
+    differently from the main path.
+
+    Nothing outside ``cache/`` is touched. Portfolios, targets,
+    overrides and the ISIN map are user state and hold no facet
+    resolution of their own.
+
+    Args:
+        data: A fund-cache blob. Modified in place.
+
+    Returns:
+        The category names that were dropped, for the caller to record
+        so the UI can tell the user what to re-import.
+    """
+    from porxpy.config import BREAKDOWN_FACETS, facet_raw_field
+
+    dropped: list[str] = []
+
+    holdings = (data.get("holdings") or {}).get("value") \
+        if isinstance(data.get("holdings"), dict) else None
+    if isinstance(holdings, dict):
+        raw_fields = [facet_raw_field(f) for f in BREAKDOWN_FACETS]
+
+        def _is_legacy(blob: dict) -> bool:
+            rows = blob.get("rows")
+            if not isinstance(rows, list) or not rows:
+                return False
+            # "Carries no raw column at all", not "its raw is empty". A
+            # row whose source genuinely said nothing about any facet has
+            # the keys present and blank; a legacy row has never heard of
+            # them.
+            return not any(any(rf in r for rf in raw_fields)
+                           for r in rows if isinstance(r, dict))
+
+        # v0.77.0 — one source's rows can be legacy while another's are
+        # not (a 2025 upload beside a factsheet read last week), so the
+        # drop is per source. Dropping the whole slot for one bad source
+        # would take answers with it that are perfectly readable.
+        sources = holdings.get("sources")
+        if isinstance(sources, dict):
+            gone = [src for src, blob in list(sources.items())
+                    if isinstance(blob, dict) and _is_legacy(blob)]
+            for src in gone:
+                del sources[src]
+            if gone:
+                dropped.append("holdings")
+                if not sources:
+                    data.pop("holdings", None)
+        elif _is_legacy(holdings):
+            data.pop("holdings", None)
+            dropped.append("holdings")
+
+    ub = (data.get("uploaded_breakdowns") or {}).get("value") \
+        if isinstance(data.get("uploaded_breakdowns"), dict) else None
+    if isinstance(ub, dict):
+        legacy = False
+        for per_source in ub.values():
+            if not isinstance(per_source, dict):
+                continue
+            for items in per_source.values():
+                for it in (items or []):
+                    if isinstance(it, dict) and "raw" not in it:
+                        legacy = True
+                        break
+        if legacy:
+            data.pop("uploaded_breakdowns", None)
+            dropped.append("uploaded_breakdowns")
+
+    return dropped
 
 
 def _maybe_migrate_facets(fp, data: dict) -> bool:
@@ -230,10 +362,19 @@ def _maybe_migrate_facets(fp, data: dict) -> bool:
         Mutates ``data`` in place. Adds / updates the
         ``_normalisation`` stamp on every category dict it touches.
     """
-    from porxpy.resources import RESOURCE_VERSIONS
+    from porxpy.resources import RESOURCE_FINGERPRINTS
     if not isinstance(data, dict) or not data:
         return False
-    current_versions = dict(RESOURCE_VERSIONS)
+    # Fingerprints alone since v0.64.0. The declared ``Version=N`` was
+    # removed: it only moved when a writer remembered to bump it, so a
+    # file edited by hand kept its old number and every cache stamped
+    # with it believed itself current. The fingerprint changes whenever
+    # the bytes do, which is the question actually being asked.
+    #
+    # A stamp written before v0.64.0 carries the version keys too, so it
+    # cannot equal this dict and the cache re-normalises once. That is
+    # the correct migration and needs no special case.
+    current_versions = dict(RESOURCE_FINGERPRINTS)
     stamp = data.get("_normalisation") or {}
     # ``generation`` is bumped whenever the migrator itself changes
     # (e.g. v0.15.3 fixed the cache-shape unwrap — earlier stamps
@@ -257,6 +398,13 @@ def _maybe_migrate_facets(fp, data: dict) -> bool:
     # so the migration never retries. (This was the v0.15.0 bug.)
     touched = False
 
+    # Before anything is re-derived: a blob written before v0.76.0 has
+    # facet stores with no raw text to derive FROM. Dropping them first
+    # means the loops below never see a row they would resolve to blank.
+    legacy_dropped = _drop_legacy_facet_stores(data)
+    if legacy_dropped:
+        touched = True
+
     def _unwrap(category: str) -> Any:
         """Return the inner ``value`` of a cache category, or {}."""
         entry = data.get(category)
@@ -269,8 +417,8 @@ def _maybe_migrate_facets(fp, data: dict) -> bool:
     # fields; normalise_facets resolves each and stamps
     # _unmatched_facets for any miss).
     hold_val = _unwrap("holdings")
-    if isinstance(hold_val, dict):
-        rows = hold_val.get("rows") or []
+    for hold_blob in holdings_blobs_in(hold_val):
+        rows = hold_blob.get("rows") or []
         if isinstance(rows, list):
             for r in rows:
                 if isinstance(r, dict):
@@ -339,42 +487,14 @@ def _maybe_migrate_facets(fp, data: dict) -> bool:
                 it["class"] = resolved
                 touched = True
 
-    # Fund-level breakdown lists (asset_class / sector / country /
-    # currency cards built by build_fund_breakdowns). build_fund_
-    # breakdowns runs at request time and is not itself a cached
-    # category — but if a future version persists it, this loop is
-    # already in the correct shape (unwrapped, per-facet items).
-    fb_val = _unwrap("fund_breakdowns")
-    if isinstance(fb_val, dict):
-        from porxpy.resources import resolve_currency
-        for facet, payload in fb_val.items():
-            items = (payload or {}).get("items") or []
-            if not isinstance(items, list):
-                continue
-            for it in items:
-                if not isinstance(it, dict):
-                    continue
-                k = (it.get("key") or "").strip()
-                if not k:
-                    continue
-                if facet == "sector":
-                    resolved = resolve_sector(k)
-                elif facet == "currency":
-                    resolved = resolve_currency(k)
-                elif facet == "country":
-                    resolved = country_to_mstar(k)
-                else:
-                    continue
-                if resolved and resolved != k:
-                    it["key"] = resolved
-                    it.pop("_unmatched", None)
-                    touched = True
-                elif resolved and it.get("_unmatched"):
-                    it.pop("_unmatched", None)
-                    touched = True
-                elif not resolved and not it.get("_unmatched"):
-                    it["_unmatched"] = True
-                    touched = True
+    # A fund_breakdowns re-normalisation loop lived here until v0.60.0,
+    # written speculatively against a cache category that has never
+    # existed: build_fund_breakdowns runs at request time and its output
+    # is never persisted. It was dead on arrival, and v0.59.0 made it
+    # dead twice over — facet values are now resolved on every read, so
+    # there is nothing for a migration to repair. Removed rather than
+    # updated to the levelled block shape, which would have been effort
+    # spent keeping unreachable code plausible.
 
     # Always update the stamp — even when nothing changed, this
     # records that we checked, so subsequent reads short-circuit.
@@ -385,6 +505,15 @@ def _maybe_migrate_facets(fp, data: dict) -> bool:
         "generation":    _FACET_MIGRATOR_GENERATION,
         "normalised_at": datetime.now(timezone.utc).isoformat(),
     }
+    # Kept on the blob rather than only logged: the fund page has to be
+    # able to say WHY its holdings went empty, and "re-upload them" is
+    # only actionable if the screen knows that is what happened.
+    if legacy_dropped:
+        data["_legacy_purge"] = {
+            "categories": legacy_dropped,
+            "at":         datetime.now(timezone.utc).isoformat(),
+            "reason":     "stored before v0.76.0 without a raw facet value",
+        }
     return True
 
 
@@ -454,6 +583,35 @@ def cache_read(key: str, category: str) -> dict:
     return data
 
 
+def _legacy_purge_settle(data: dict) -> None:
+    """Retire the ``_legacy_purge`` notice for categories that are back.
+
+    The v0.76.0 migration drops any cached category stored before every
+    facet kept the source's own wording, and leaves a marker naming what
+    it dropped so the fund page can say why the screen went empty. The
+    marker has to go away again once the user has acted on it, and the
+    only honest signal for that is the category reappearing in the blob.
+
+    Done here, in the one function every writer goes through, rather
+    than at each of the eight ``cache_write``/``cache_put`` call sites.
+    A per-caller clear is a per-caller thing to forget, and a stale
+    "re-import your holdings" banner over holdings that are visibly
+    present is worse than never having shown one.
+
+    Args:
+        data: The full cache blob about to be written. Modified in
+            place; blobs without a marker are left untouched.
+    """
+    marker = data.get("_legacy_purge")
+    if not isinstance(marker, dict):
+        return
+    remaining = [c for c in (marker.get("categories") or []) if c not in data]
+    if not remaining:
+        data.pop("_legacy_purge", None)
+    else:
+        marker["categories"] = remaining
+
+
 def cache_write(key: str, category: str, data: dict) -> None:
     """Persist a cache blob to disk.
 
@@ -464,6 +622,7 @@ def cache_write(key: str, category: str, data: dict) -> None:
             The blob is overwritten in place — callers should
             read-modify-write.
     """
+    _legacy_purge_settle(data)
     fp = _cache_path_for(key, category)
     try:
         with open(fp, "w", encoding="utf-8") as f:
@@ -639,6 +798,221 @@ def cache_purge(key: str | None = None, category: str | None = None) -> int:
     return removed
 
 
+# ---------------------------------------------------------------------------
+# The holdings store (v0.77.0)
+# ---------------------------------------------------------------------------
+# One ISIN-keyed ``holdings`` cache slot, holding one blob PER SOURCE:
+#
+#   {"holdings": {"fetched_at": "...", "value": {
+#       "sources": {
+#           "yahoo":     {"rows": [...], "source": "yahoo_enriched", ...},
+#           "factsheet": {"rows": [...], "source": "factsheet", ...},
+#           "upload":    {"rows": [...], "source": "manual_upload", ...}}}}}
+#
+# Each per-source blob keeps exactly the shape the single blob had before
+# 0.77.0 — rows, variant, counts, provenance, timestamps — so every
+# consumer downstream of the accessors below is unchanged. What changed is
+# that a write no longer destroys the other sources' answers: uploading a
+# CSV used to overwrite the Yahoo rows outright, which is why "go back to
+# what Yahoo says" was a refetch rather than a click.
+#
+# Which source is IN EFFECT is not stored here. It is a fund-level
+# override (``holdings_source`` in overrides.json), applied on read, so it
+# obeys the same rule as every other override: a view over the fetched
+# data, never a mutation of it. With no pin, HOLDINGS_SOURCE_PRECEDENCE
+# decides, richest source first.
+#
+# Every reader and writer in the app goes through the six functions below
+# rather than reaching into the slot, so the on-disk shape is stated once.
+
+
+def _migrate_holdings_value(val: dict | None) -> tuple[dict, bool]:
+    """Rewrite a pre-0.77.0 single-blob holdings value to the source map.
+
+    Detection is by SHAPE, as in :func:`_migrate_supplied_breakdowns`: the
+    old value is a blob with ``rows``/``source`` at the top level, the new
+    one has a ``sources`` dict and nothing else. A shape test converges —
+    running it twice is a no-op — whereas a version marker would have to
+    be written by a release that never wrote one.
+
+    Migration rather than a purge because the blob being converted may be
+    a manual upload, and a manual upload is the one thing in the cache
+    that cannot be re-fetched: purging it would destroy user data whose
+    only copy is the file they no longer have.
+
+    Returns:
+        ``({"sources": {source: blob}}, changed)``.
+    """
+    val = val if isinstance(val, dict) else {}
+    if isinstance(val.get("sources"), dict):
+        sources = {
+            src: blob for src, blob in val["sources"].items()
+            if src in HOLDINGS_SOURCES and isinstance(blob, dict)
+        }
+        return {"sources": sources}, False
+    variant = str(val.get("source") or "").strip()
+    src = holdings_source_of(variant)
+    if not src:
+        # No variant at all - an empty or unrecognisable slot. Nothing to
+        # keep, and nothing lost by saying so.
+        return {"sources": {}}, bool(val)
+    return {"sources": {src: dict(val)}}, True
+
+
+def holdings_store_get(isin: str) -> dict:
+    """Every source's holdings blob for ``isin``, as ``{source: blob}``.
+
+    Only sources that have actually been written are present, so a
+    caller can ask "does this fund have factsheet holdings?" by looking
+    for the key. Pre-0.77.0 entries are migrated on read and written back,
+    exactly as ``uploaded_breakdowns_get`` does for its own store.
+    """
+    isin_u = (isin or "").strip().upper()
+    if not isin_u:
+        return {}
+    blob  = cache_read(isin_u, "holdings")
+    entry = blob.get("holdings")
+    val   = entry.get("value") if isinstance(entry, dict) else None
+
+    migrated, changed = _migrate_holdings_value(val)
+    if changed:
+        blob["holdings"] = {
+            "fetched_at": (entry or {}).get("fetched_at") or now_iso(),
+            "value":      migrated,
+        }
+        cache_write(isin_u, "holdings", blob)
+    return dict(migrated.get("sources") or {})
+
+
+def holdings_sources_available(isin: str, store: dict | None = None) -> dict:
+    """``{source: bool}`` - which sources this fund HAS holdings from.
+
+    "Has" means the slot has been written, not that it carries rows. A
+    Yahoo fetch that came back empty is a real answer ("Yahoo publishes
+    no holdings for this fund") and the tile says so, exactly as an
+    extracted factsheet that lists no positions answers the tile with
+    "the document does not say" rather than with an absence. The one
+    exception is a slot with neither rows nor a variant, which
+    :func:`_migrate_holdings_value` has already dropped.
+    """
+    store = holdings_store_get(isin) if store is None else store
+    return {src: src in store for src in HOLDINGS_SOURCES}
+
+
+def holdings_active_source(isin: str, store: dict | None = None) -> str:
+    """Which source's holdings are in effect for ``isin``.
+
+    The user's pin when they have one AND that source exists; otherwise
+    the first of :data:`~porxpy.config.HOLDINGS_SOURCE_PRECEDENCE` that
+    does. A pin to a source the fund has since lost falls back the same
+    way a breakdown card does rather than showing an empty tile - the
+    pin itself is left alone, so restoring the source restores the view.
+
+    Returns:
+        One of :data:`~porxpy.config.HOLDINGS_SOURCES`, or ``""`` when
+        the fund has no holdings from any source.
+    """
+    store = holdings_store_get(isin) if store is None else store
+    pinned = (override_get(isin, "holdings_source") or "").strip()
+    if pinned in store:
+        return pinned
+    # Precedence considers only sources that carry rows first. A slot can
+    # exist and be empty — Yahoo publishes no top-10 for most European
+    # UCITS ETFs, and a factsheet may print no position table at all —
+    # and letting an empty higher-precedence slot win would hide a list
+    # the fund actually has behind one it does not. The empty slot is
+    # still selectable by hand; it is just not what an unpinned fund
+    # falls into.
+    for src in HOLDINGS_SOURCE_PRECEDENCE:
+        if (store.get(src) or {}).get("rows"):
+            return src
+    for src in HOLDINGS_SOURCE_PRECEDENCE:
+        if src in store:
+            return src
+    return ""
+
+
+def holdings_get(isin: str) -> tuple[dict, str, dict]:
+    """The holdings blob in effect for ``isin``.
+
+    The single read path for "what are this fund's holdings?" - used by
+    the fund load, the row editor, the enrichment button, the status
+    badges and every card rebuild, so none of them can disagree about
+    which source is showing.
+
+    Returns:
+        ``(blob, source, store)`` where ``blob`` is the active source's
+        blob (``{}`` when the fund has none), ``source`` is its key in
+        :data:`~porxpy.config.HOLDINGS_SOURCES` (``""`` when there is no
+        blob) and ``store`` is every source's blob, so a caller that also
+        needs availability does not read the slot twice.
+    """
+    store  = holdings_store_get(isin)
+    active = holdings_active_source(isin, store)
+    return (dict(store.get(active) or {}), active, store)
+
+
+def holdings_put(isin: str, blob: dict, source: str | None = None,
+                 store: dict | None = None) -> dict:
+    """Write one source's holdings blob, leaving the other sources alone.
+
+    Args:
+        isin: Fund ISIN (normalised to upper).
+        blob: The per-source blob - rows, variant, counts, provenance.
+        source: Which source this is. Defaults to the source the blob's
+            own variant belongs to, so a caller that has already stamped
+            ``source: "manual_upload"`` need not say "upload" twice.
+        store: A store already read by the caller, to save a re-read.
+
+    Returns:
+        The cache metadata dict from :func:`cache_put`.
+
+    Raises:
+        ValueError: The source is not one of
+            :data:`~porxpy.config.HOLDINGS_SOURCES`, or could not be
+            worked out from the blob.
+    """
+    isin_u = (isin or "").strip().upper()
+    if not isin_u:
+        raise ValueError("holdings_put requires an ISIN")
+    src = (source or holdings_source_of(blob.get("source") or "")).strip()
+    if src not in HOLDINGS_SOURCES:
+        raise ValueError(f"source must be one of {list(HOLDINGS_SOURCES)}")
+    # A blob always names its own variant, so a slot read back in
+    # isolation still says what kind of rows it holds.
+    if not holdings_source_of(blob.get("source") or ""):
+        blob = dict(blob, source=HOLDINGS_SOURCE_VARIANT[src])
+
+    merged = dict(holdings_store_get(isin_u) if store is None else store)
+    merged[src] = blob
+    return cache_put(isin_u, "holdings", {"sources": merged})
+
+
+def holdings_delete_source(isin: str, source: str) -> bool:
+    """Drop one source's holdings for ``isin``; the others survive.
+
+    Also clears a pin left dangling by the removal, so the stored state
+    matches what :func:`holdings_active_source` would fall back to
+    anyway - the same rule ``_clear_supplied_source`` applies to a
+    breakdown card whose source has gone.
+
+    Returns:
+        True if anything was removed.
+    """
+    isin_u = (isin or "").strip().upper()
+    src = (source or "").strip()
+    if not isin_u or src not in HOLDINGS_SOURCES:
+        return False
+    store = holdings_store_get(isin_u)
+    if src not in store:
+        return False
+    del store[src]
+    cache_put(isin_u, "holdings", {"sources": store})
+    if (override_get(isin_u, "holdings_source") or "") == src:
+        override_delete(isin_u, "holdings_source")
+    return True
+
+
 def holdings_status_from_cache(isin: str) -> dict:
     """Report holdings-status flags for an ISIN, from cache only.
 
@@ -652,14 +1026,19 @@ def holdings_status_from_cache(isin: str) -> dict:
     caller's job (typically via :func:`listing_identity_lookup_isin`).
     An empty ISIN returns an empty status.
 
-    Since v0.5.0 there is a single unified ``holdings`` cache slot. Its
-    ``source`` field records which degree of completeness the cached
+    The blob reported is the one IN EFFECT — the source the user pinned,
+    or the richest they have (see :func:`holdings_get`). A badge that
+    described a source the fund page was not showing would be worse than
+    no badge, so the two answer from the same accessor.
+
+    Its ``source`` field records which degree of completeness the cached
     rows represent:
 
         * ``"manual_upload"``  — full per-position list from a user file
         * ``"yahoo_enriched"`` — Yahoo top-10 enriched via per-symbol
           lookups (country / currency / sector / asset class filled)
         * ``"yahoo_top10"``    — raw Yahoo top-10, sparse rows
+        * ``"factsheet"``      — positions read off an uploaded factsheet
 
     There is no separate "would_enrich" decision to recompute here any
     more: enrichment is applied at fetch time and baked into ``source``.
@@ -673,7 +1052,9 @@ def holdings_status_from_cache(isin: str) -> dict:
         ``{
             "has_full": bool,         # source == "manual_upload"
             "full_count": int,        # row count when has_full else 0
-            "source": str,            # the blob's source, or ""
+            "source": str,            # the blob's variant, or ""
+            "source_key": str,        # yahoo / factsheet / upload, or ""
+            "available": dict,        # {source: bool} across all three
             "top_count": int,         # cached holdings row count
             "top_sum_pct": float|None,# sum of cached row weights, or None
             "would_enrich": bool,     # always False since v0.5.0
@@ -681,12 +1062,11 @@ def holdings_status_from_cache(isin: str) -> dict:
     """
     if not isin:
         return {"has_full": False, "full_count": 0, "source": "",
+                "source_key": "",
+                "available": {s: False for s in HOLDINGS_SOURCES},
                 "top_count": 0, "top_sum_pct": None, "would_enrich": False}
-    blob = cache_read(isin, "holdings")
 
-    hold_blob = (blob.get("holdings") or {}).get("value") or {}
-    if not isinstance(hold_blob, dict):
-        hold_blob = {}
+    hold_blob, source_key, store = holdings_get(isin)
 
     rows   = hold_blob.get("rows") or []
     if not isinstance(rows, list):
@@ -715,6 +1095,8 @@ def holdings_status_from_cache(isin: str) -> dict:
         "has_full":     has_full,
         "full_count":   full_count,
         "source":       source,
+        "source_key":   source_key,
+        "available":    holdings_sources_available(isin, store),
         "top_count":    row_count,
         "top_sum_pct":  sum_pct,
         "would_enrich": False,
@@ -749,9 +1131,43 @@ def holdings_status_from_cache(isin: str) -> dict:
 # blank for equity / cash holdings — that's their normal state. The
 # columns are always present in the schema for shape uniformity; the
 # holdings table can show or hide them via the "Show bond columns" toggle.
+#
+# Levelled facets (v0.70.0) — asset, sector and country each occupy
+# THREE columns, one per level of their tree, and currency occupies one
+# because its tree is one level deep. Every level is present on every
+# row, filled or blank; none of them is the row's answer. The answer is
+# the stated value in ``<facet>_node`` plus its grain in
+# ``<facet>_level``, carried alongside as metadata, and normalise_facets
+# re-derives all three columns from it on every read.
+#
+# The columns exist so that a consumer is never handed one level and
+# asked to infer the others: the holdings tables and breakdown cards
+# choose which level to display, and cannot choose what they were not
+# given. Blank at a level means the tree does not reach it — either the
+# source stated something coarser, or the node has siblings so deriving
+# downward would be a guess.
+#
+# Asset gained its three in v0.70.0's first pass; sector and country
+# kept storing only their middle level until the second, which is why
+# no table could offer a region or sub-sector view.
+#
+# ``<facet>_raw`` (v0.76.0) sits beside each facet's level columns and is
+# the odd one out: every other column here is a DERIVATION, rewritten by
+# normalise_facets on every read, while the raw is what the source
+# actually said and is written exactly once, by whichever writer ingested
+# the row. It is a schema column rather than metadata because the
+# holdings tables offer it as a display level — see FACET_DISPLAY_LEVELS
+# in config.py for why it is a display level and not a tree level.
+#
+# The resolution metadata that is NOT displayable — ``<facet>_node``,
+# ``<facet>_level``, ``<facet>_pinned`` — stays off this list and rides
+# along as extras, which coerce_holdings_row preserves.
 HOLDINGS_ROW_FIELDS: tuple[str, ...] = (
-    "name", "ticker", "isin", "cusip", "sector", "asset_class", "sub_class",
-    "country", "currency", "weight_pct",
+    "name", "ticker", "isin", "cusip",
+    "sector", "sub_sector", "super_sector", "sector_raw",
+    "asset_class", "sub_class", "super_class", "asset_raw",
+    "country", "region", "super_region", "country_raw",
+    "currency", "currency_raw", "weight_pct",
     "duration", "maturity", "coupon", "effective_date",
 )
 
@@ -767,22 +1183,25 @@ HOLDINGS_DATE_FIELDS: tuple[str, ...] = ("maturity", "effective_date")
 # ---------------------------------------------------------------------------
 # Holding asset class / sub class (v0.6.0)
 # ---------------------------------------------------------------------------
-# A *holding's* asset class is a small, lowercase, fixed enum — distinct
-# from a *fund's* asset class (the wider config.ASSET_CLASSES vocabulary).
-# A holding is one of: equity / bond / cash / other.
+# A holding's asset value is a node in the Asset_definitions.csv tree —
+# the same tree a fund's breakdown uses, since v0.70.0. The old
+# four-value enum (equity / bond / cash / other) is gone: it was the
+# same taxonomy at a different grain, spelled differently, which is
+# what made "bond" and "fixed_income" two names for one thing.
 #
-# Sub class is free text — the upload column maps straight through, or it
-# falls back to a per-asset-class default. All values are stored
-# lowercase (storage, table display, and the editor all use the raw
-# lowercase form — no Title-Case formatting layer).
-HOLDING_ASSET_CLASSES: tuple[str, ...] = ("equity", "bond", "cash", "other")
-
-# How a *fund's* asset class (config.ASSET_CLASSES) maps to a *holding's*
-# asset class when a holding has no asset class of its own and we fall
-# back to the fund's. Anything not listed here → "other".
+# What remains here is the bridge between two GENUINELY different
+# facets: a fund's primary_asset_class (what kind of fund this is) and
+# the asset tree (what a position holds). A fund classified equity whose
+# holdings carry no class of their own has equity holdings — that is an
+# inference across facets, not a second vocabulary, so an explicit table
+# is the honest way to state it.
 _FUND_TO_HOLDING_ASSET_CLASS: dict[str, str] = {
-    "equity":       "equity",
-    "fixed_income": "bond",
+    "equity":       "equity",         # super_class
+    "fixed_income": "fixed income",   # super_class
+    # cash maps to the asset_class node, not its super class "liquid" —
+    # the same choice the stored-target migration makes, and for the
+    # same reason: "cash" is what the user means, and liquid's only
+    # child is cash so the two are numerically identical anyway.
     "cash":         "cash",
     # mixed / commodity / other → "other" (via the .get default below)
 }
@@ -791,58 +1210,44 @@ _FUND_TO_HOLDING_ASSET_CLASS: dict[str, str] = {
 # key. Covers Yahoo's quoteType-derived labels (which may arrive as
 # "Equity", "Fixed Income", lowercase, etc.) and the fund-level keys, so
 # whatever a holdings source hands us collapses to the 4-value enum.
-_HOLDING_ASSET_CLASS_ALIASES: dict[str, str] = {
-    "equity":        "equity",
-    "equities":      "equity",
-    "stock":         "equity",
-    "stocks":        "equity",
-    "share":         "equity",
-    "shares":        "equity",
-    "bond":          "bond",
-    "bonds":         "bond",
-    "fixed income":  "bond",
-    "fixed_income":  "bond",
-    "fixedincome":   "bond",
-    "fixed-income":  "bond",
-    "cash":          "cash",
-    "cash & equivalents": "cash",
-    "cash and equivalents": "cash",
-    "money market":  "cash",
-    "other":         "other",
-}
-
-# Per-asset-class default sub class (used when the upload file has no
-# sub-class column and no per-row value). All lowercase.
-_DEFAULT_SUB_CLASS: dict[str, str] = {
-    "equity": "shares",
-    "bond":   "corporate bond",
-    "cash":   "free spendable cash",
-    "other":  "undefined",
-}
-
-
 def normalize_holding_asset_class(raw: str | None) -> str:
     """Collapse any asset-class spelling to the holding enum, or ``""``.
 
-    Maps Yahoo's ``quoteType``-derived labels ("Equity", "Fixed Income",
-    …), the fund-level keys ("fixed_income" → "bond"), and already-correct
-    lowercase values onto one of :data:`HOLDING_ASSET_CLASSES`.
+    Every spelling comes from the ``matches`` column of
+    ``Asset_definitions.csv``, so adding one is a file edit rather than
+    a code change.
+
+    Answers at the asset facet's DEFAULT level, which is what the
+    callers of this function want — a single coarse label for a
+    position. Anything needing the grain the source actually stated
+    reads the row's ``asset_level`` instead of calling this.
 
     Args:
         raw: Any asset-class string, any casing, or ``None``/blank.
 
     Returns:
-        One of ``"equity"`` / ``"bond"`` / ``"cash"`` / ``"other"``, or
-        ``""`` when ``raw`` is blank/``None`` (so callers can tell
-        "no value" apart from a real classification and decide whether
-        to fall back to the fund's asset class).
+        A canonical node at the facet's default level, or ``""`` when
+        ``raw`` is blank, matches nothing, or resolves only at a finer
+        level than the default.
+
+        An unrecognised value returning ``""`` rather than ``"other"`` is
+        deliberate. ``"other"`` is a real classification a file can
+        legitimately assert, and answering it for anything unrecognised
+        hid every unknown spelling from the Resolve dialog: the value
+        looked classified, so nothing ever asked about it.
     """
     if raw is None:
         return ""
     key = str(raw).strip().lower()
     if not key:
         return ""
-    return _HOLDING_ASSET_CLASS_ALIASES.get(key, "other")
+    from porxpy.resources import resolve_asset_tree     # local: avoid cycle
+    from porxpy.config import FACET_DEFAULT_LEVEL
+    tree = resolve_asset_tree(key)
+    if not tree.get("level"):
+        return ""
+    val = tree.get(FACET_DEFAULT_LEVEL.get("asset_class", "super_class")) or ""
+    return "" if val in ("unknown", "n/a") else val
 
 
 def default_holding_asset_class(fund_asset_class: str | None) -> str:
@@ -871,30 +1276,6 @@ def default_holding_asset_class(fund_asset_class: str | None) -> str:
     if not key:
         return ""
     return _FUND_TO_HOLDING_ASSET_CLASS.get(key, "other")
-
-
-def default_sub_class(holding_asset_class: str | None) -> str:
-    """Return the default sub class for a holding asset class.
-
-    ``equity`` → ``"shares"``, ``bond`` → ``"corporate bond"``, ``cash``
-    → ``"free spendable cash"``, ``other`` → ``"undefined"``.
-
-    Args:
-        holding_asset_class: A holding asset-class key (one of
-            :data:`HOLDING_ASSET_CLASSES`), or ``None``/blank.
-
-    Returns:
-        The lowercase default sub class, or ``""`` when
-        ``holding_asset_class`` is blank/``None`` — a holding with no
-        asset class gets no defaulted sub class either; the two are a
-        pair.
-    """
-    if holding_asset_class is None:
-        return ""
-    key = str(holding_asset_class).strip().lower()
-    if not key:
-        return ""
-    return _DEFAULT_SUB_CLASS.get(key, "undefined")
 
 
 def new_row_id() -> str:
@@ -987,52 +1368,111 @@ def normalise_bond_date(raw: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# normalise_facets — single chokepoint for sector / sub_class /
-# currency / country / asset_class normalisation (v0.15.0)
+# normalise_facets — single chokepoint for facet resolution (v0.15.0,
+# rebuilt on raw-as-input in v0.76.0)
 # ---------------------------------------------------------------------------
-# Every value of these five facets that enters PorxPy — whether from
-# Yahoo, a user upload, a manual edit, or a legacy cache file — must
-# pass through this function before it gets written to disk. The
-# function:
+# Every facet value that enters PorxPy — from Yahoo, a user upload, a
+# manual edit, or a cache file — passes through this function before it
+# is written to disk.
 #
-#   * Attempts to resolve each facet against its resource CSV
-#     (sectors.csv, currencies.csv, Holdings_class_definitions.csv,
-#     country_codes.csv).
-#   * On a match, writes the canonical value to the row.
-#   * On a miss, leaves the RAW value in place (so information isn't
-#     lost while the user hasn't resolved unmatched batches yet) AND
-#     appends the field name to a ``_unmatched_facets`` list on the
-#     row. Downstream code uses that list to surface the unmatched
-#     value to the user via the resolution dialog.
-#   * For sub_class: a value that resolves but whose canonical
-#     doesn't belong to the row's asset_class group is treated as
-#     unmatched too (e.g. "shares" with asset_class="cash").
+# **What changed in v0.76.0, and why.** Until this release the function
+# resolved the source's text once and stored the CANONICAL node, keeping
+# the raw text only when it failed to resolve. That made the row's own
+# answer un-re-derivable: a row that matched through the alias
+# "Aandelen" stored "equity", so re-pointing that alias to another node
+# changed every future import and no stored row, and two funds imported
+# either side of the edit disagreed about the same source text with
+# nothing on screen saying why. Re-normalising could not repair it,
+# because by then the only input left was a canonical, and a canonical
+# always resolves to itself.
 #
-# The function is idempotent: calling it on an already-normalised
-# row is a no-op (every facet resolves to itself, no _unmatched_facets
-# gets added). This matters because cache reads call it eagerly to
-# stamp the file with the current resource version.
+# So the row now stores the source's text in ``<facet>_raw``, and that
+# column is the INPUT to every subsequent resolution. ``<facet>_node``,
+# ``<facet>_level`` and the level columns are all derivations, rewritten
+# from the raw on every pass. An alias edit therefore reaches every
+# stored row on its next read, which is the behaviour the resource files
+# were always documented as having.
+#
+# ``<facet>_raw`` is the one column this function must never write. It
+# is evidence, not a conclusion; the writers that ingest a row (the
+# upload commit, Yahoo enrichment, the row editor) capture it once and
+# it stays as the source left it.
+#
+# **The pin.** A user who edits a facet on selected rows is overruling
+# the source, not correcting the vocabulary. Re-deriving from the
+# untouched raw text on the next read would silently undo that, so such
+# an edit also sets ``<facet>_pinned`` and the node is then taken as
+# given. The level columns are still re-derived from the pinned node, so
+# a re-parented tree still migrates a pinned row — the pin freezes which
+# node the row means, not what that node means.
+#
+# The function stays idempotent: a second call resolves the same raw
+# text to the same node and adds nothing to ``_unmatched_facets``. Cache
+# reads call it eagerly to stamp the file with the current resource
+# fingerprints.
 
-NORMALISABLE_FACETS = ("sector", "sub_class", "currency", "country", "asset_class")
+
+def _resolve_facet_tree(facet: str, value: str) -> dict:
+    """Resolve one value through ``facet``'s tree, in one uniform shape.
+
+    Why this exists: the three levelled facets already answer with
+    ``{matched, level, <one key per level>}`` while currency answers
+    with a bare code. Adapting currency to the same shape is what lets
+    :func:`normalise_facets` be a loop over the four facets rather than
+    four hand-written blocks — which is not hypothetical tidiness, it is
+    the exact drift those blocks produced: asset stored all three of its
+    levels from v0.70.0's first pass while sector and country stored
+    only their middle one until the second, purely because each block
+    was maintained separately.
+
+    Args:
+        facet: One of :data:`~porxpy.config.BREAKDOWN_FACETS`.
+        value: The text to resolve.
+
+    Returns:
+        ``{"matched": node, "level": grain, <level>: key, ...}``, with
+        ``level`` empty when the value named nothing in the vocabulary.
+    """
+    from porxpy.resources import (
+        resolve_asset_tree, resolve_country_tree, resolve_currency,
+        resolve_sector_tree,
+    )
+    from porxpy.breakdowns import UNKNOWN_KEY
+
+    if facet == "sector":
+        return resolve_sector_tree(value)
+    if facet == "country":
+        return resolve_country_tree(value)
+    if facet == "asset_class":
+        return resolve_asset_tree(value)
+    if facet == "currency":
+        code = resolve_currency(value)
+        # One level deep, so the node IS the level column and there is
+        # no grain to report beyond whether it resolved at all.
+        return {"currency": code or UNKNOWN_KEY,
+                "level":    "currency" if code else "",
+                "matched":  code or ""}
+    raise KeyError(f"no resolver for facet {facet!r}")
 
 
 def normalise_facets(row: dict | None) -> tuple[dict, list[str]]:
-    """Normalise the five resource-backed facet fields on a row in place.
+    """Re-derive every facet's node and level columns from its raw value.
 
     Args:
-        row: Any dict-shaped row. Modified in place; also returned
-            for chaining. Untouched fields (anything not in
-            :data:`NORMALISABLE_FACETS`) pass through unchanged.
+        row: Any dict-shaped row. Modified in place; also returned for
+            chaining. Fields outside the four facets' column packs pass
+            through untouched.
 
     Returns:
-        ``(row, unmatched_fields)`` where ``unmatched_fields`` is the
-        list of facet names whose raw value did not resolve. The same
-        list is also stored on ``row["_unmatched_facets"]`` (sorted,
-        de-duplicated) for downstream introspection.
+        ``(row, unmatched_facets)`` where ``unmatched_facets`` names the
+        facets whose raw value did not resolve. The same list is stored
+        on ``row["_unmatched_facets"]`` (sorted, de-duplicated) for the
+        Resolve-unmatched-values dialog.
     """
-    from porxpy.resources import (
-        HOLDINGS_CLASS_INDEX, country_to_mstar, resolve_currency,
-        resolve_sector, resolve_sub_class,
+    from porxpy.breakdowns import UNKNOWN_KEY
+    from porxpy.config import (
+        BREAKDOWN_FACETS, FACET_LEVELS, facet_level_field, facet_node_field,
+        facet_pinned_field, facet_raw_field,
     )
 
     if row is None:
@@ -1040,70 +1480,60 @@ def normalise_facets(row: dict | None) -> tuple[dict, list[str]]:
 
     unmatched: list[str] = []
 
-    # asset_class — normalised by the dedicated holding-enum
-    # function, which always maps to one of equity/bond/cash/other
-    # or "" (never adds an alias). It can't "fail to match" the
-    # canonical taxonomy in the same way; an unknown asset_class
-    # silently becomes "" (and downstream sub_class defaulting
-    # kicks in). Not added to unmatched.
-    ac_raw = (row.get("asset_class") or "")
-    ac_norm = normalize_holding_asset_class(ac_raw)
-    row["asset_class"] = ac_norm
+    for facet in BREAKDOWN_FACETS:
+        raw_f   = facet_raw_field(facet)
+        node_f  = facet_node_field(facet)
+        level_f = facet_level_field(facet)
+        pin_f   = facet_pinned_field(facet)
+        levels  = FACET_LEVELS[facet]
 
-    # sector
-    sec_raw = (row.get("sector") or "").strip()
-    if sec_raw:
-        resolved = resolve_sector(sec_raw)
-        if resolved:
-            row["sector"] = resolved
-        else:
-            row["sector"] = sec_raw                   # preserve raw
-            unmatched.append("sector")
-    else:
-        row["sector"] = ""
+        # A pinned row takes its node as given; everything else resolves
+        # from the source text. The pin is read from its own column
+        # rather than inferred from the raw and the node disagreeing: a
+        # source whose text differs from the node it resolved to is the
+        # ordinary case, not a user decision.
+        pinned = bool(row.get(pin_f))
+        stated = ((row.get(node_f) if pinned else row.get(raw_f)) or "").strip()
 
-    # currency
-    cur_raw = (row.get("currency") or "").strip()
-    if cur_raw:
-        resolved = resolve_currency(cur_raw)
-        if resolved:
-            row["currency"] = resolved
-        else:
-            row["currency"] = cur_raw
-            unmatched.append("currency")
-    else:
-        row["currency"] = ""
+        def _blank() -> None:
+            row[node_f] = ""
+            if level_f:
+                row[level_f] = ""
+            for lv in levels:
+                row[lv] = ""
 
-    # country
-    cty_raw = (row.get("country") or "").strip()
-    if cty_raw:
-        resolved = country_to_mstar(cty_raw)
-        if resolved:
-            row["country"] = resolved
-        else:
-            row["country"] = cty_raw
-            unmatched.append("country")
-    else:
-        row["country"] = ""
+        if not stated:
+            _blank()
+            continue
 
-    # sub_class — must resolve AND belong to the row's asset_class
-    # group. A value that resolves canonically but is paired with
-    # the wrong asset_class is still "unmatched" (the user needs to
-    # fix one or the other).
-    sub_raw = (row.get("sub_class") or "").strip()
-    if sub_raw:
-        resolved = resolve_sub_class(sub_raw)
-        valid_subs = HOLDINGS_CLASS_INDEX.get(ac_norm, [])
-        if resolved and resolved in valid_subs:
-            row["sub_class"] = resolved
-        else:
-            row["sub_class"] = sub_raw                # preserve raw
-            unmatched.append("sub_class")
-    else:
-        row["sub_class"] = ""
+        tree = _resolve_facet_tree(facet, stated)
+        if not tree["level"]:
+            # The source said something and it named nothing in the
+            # vocabulary. Every derived column goes blank — the row has
+            # no node, and writing the raw text into a level column (as
+            # this function did until v0.76.0) made an unresolved value
+            # look like a bucket of its own to anything reading the
+            # column directly. The evidence is safe in <facet>_raw, and
+            # the facet is reported so the Resolve dialog can offer it.
+            #
+            # A pinned row can land here too, when the file has since
+            # renamed or dropped the node the user chose. The pin is
+            # deliberately kept: their decision has not become wrong,
+            # its target has gone missing, and surfacing it as unmatched
+            # is what lets them re-point it.
+            _blank()
+            unmatched.append(facet)
+            continue
 
-    # Stamp the unmatched list onto the row. Sorted+unique so
-    # different invocations on the same row are comparable.
+        row[node_f] = tree["matched"]
+        if level_f:
+            row[level_f] = tree["level"]
+        # "" not "unknown" where the tree does not reach: an empty column
+        # is what every consumer reads as "none", and the residual keys
+        # are a breakdown-bucket concept rather than a row-field one.
+        for lv in levels:
+            row[lv] = "" if tree[lv] == UNKNOWN_KEY else tree[lv]
+
     row["_unmatched_facets"] = sorted(set(unmatched))
     return row, sorted(set(unmatched))
 
@@ -1141,7 +1571,8 @@ def coerce_holdings_row(raw: dict | None, *, row_id: str | None = None) -> dict:
       in the upload / extractor paths which do.
     * ``sub_class`` is left as whatever the row carried, lowercased. If
       it's blank BUT ``asset_class`` is now set, it's filled with the
-      per-asset-class default via :func:`default_sub_class`. If
+      the asset tree, which fills levels below a stated value only
+      where the tree gives exactly one answer. If
       ``asset_class`` is also blank, ``sub_class`` stays blank — the two
       are a pair.
 
@@ -1190,18 +1621,14 @@ def coerce_holdings_row(raw: dict | None, *, row_id: str | None = None) -> dict:
     # Holding classification — all five resource-backed facets go
     # through the single normalise_facets() chokepoint (v0.15.0).
     # That function:
-    #   * normalises asset_class to the lowercase 4-value enum
-    #   * resolves sector / currency / country / sub_class to their
-    #     canonical CSV values via the matches alias lists
+    #   * folds the asset columns into one tree, storing the value the
+    #     source stated plus its grain, and deriving the other levels
+    #   * resolves sector / currency / country to their canonical CSV
+    #     values via the matches alias lists
     #   * preserves the raw value (rather than blanking) for any
     #     facet that doesn't resolve, and records the field in
     #     row["_unmatched_facets"] for the user-facing review dialog
-    #   * validates sub_class against the asset_class group
     normalise_facets(out)
-    # If sub_class came through blank (vs unmatched), default from
-    # asset_class — preserves the long-standing fall-through behaviour.
-    if not out.get("sub_class") and out.get("asset_class"):
-        out["sub_class"] = default_sub_class(out["asset_class"])
 
     out["_row_id"] = row_id or raw.get("_row_id") or new_row_id()
     return out
@@ -1278,13 +1705,26 @@ def coerce_cash_position(raw: dict | None, *, id: str | None = None) -> dict:
     Returns:
         A new dict: every schema field present, ``id`` set.
     """
-    from porxpy.resources import (
-        country_to_mstar, resolve_currency, resolve_sector, resolve_sub_class,
-    )
-    from porxpy.resources import HOLDINGS_CLASS_INDEX
+    from porxpy.resources import country_to_mstar, resolve_currency
 
     raw = raw or {}
     out: dict[str, Any] = {}
+
+    # Carry over non-schema extras first so the canonical fields below
+    # always win on key collisions — the same rule coerce_holdings_row
+    # applies, and now for the same reason. CASH_POSITION_FIELDS lists
+    # display columns, not the levelled facets' stated values, so
+    # rebuilding a position from that list alone dropped sector_node,
+    # country_node and asset_node on every read. The fold then had only
+    # a derivation to re-resolve from: a position stated at sub-sector
+    # level came back one level coarser each time it was read, and one
+    # stated at region level came back EMPTY, because the country column
+    # of such a row is legitimately blank and there was nothing else
+    # left to read.
+    for k, v in raw.items():
+        if k in CASH_POSITION_FIELDS or k == "id":
+            continue
+        out[k] = v
 
     for f in CASH_POSITION_FIELDS:
         v = raw.get(f)
@@ -1321,13 +1761,12 @@ def coerce_cash_position(raw: dict | None, *, id: str | None = None) -> dict:
     # on miss, stamps _unmatched_facets.
     normalise_facets(out)
 
-    # If sub_class came through blank, default from asset_class. For
-    # an unmatched sub_class, the raw user value is preserved and
-    # flagged — we don't replace it with a default (that would lose
-    # information the resolution dialog needs).
-    if not out.get("sub_class") and out.get("asset_class") \
-            and "sub_class" not in (out.get("_unmatched_facets") or []):
-        out["sub_class"] = default_sub_class(out["asset_class"]) or ""
+    # No sub-class defaulting here any more. normalise_facets derives
+    # every level of the asset tree from the one value the source
+    # stated, and derives DOWNWARD only where the answer is not a guess
+    # (a node with exactly one child). Filling a sub class from
+    # is_default wrote an assertion nobody made, indistinguishable
+    # afterwards from one the source had actually given.
 
     out["id"] = id or raw.get("id") or new_row_id()
     return out
@@ -1451,7 +1890,18 @@ def symbol_info_get(symbol: str) -> dict | None:
     if age is None or age > SYMBOL_INFO_TTL_DAYS:
         return None
     val = entry.get("value")
-    return val if isinstance(val, dict) else None
+    if not isinstance(val, dict):
+        return None
+    # A cached "we found nothing" gets the short TTL, for the same
+    # reason a negative alias does: the thing that produced it may have
+    # been a rate limit or an outage rather than a fact about the
+    # security. A positive entry keeps the full 90 days, because an
+    # answer Yahoo actually gave is worth remembering.
+    if not val.get("_found", True):
+        from porxpy.config import NEGATIVE_ALIAS_TTL_DAYS
+        if age > NEGATIVE_ALIAS_TTL_DAYS:
+            return None
+    return val
 
 
 def symbol_info_put(symbol: str, info: dict) -> None:
@@ -1479,6 +1929,39 @@ def symbol_info_put(symbol: str, info: dict) -> None:
 # straight to the right entry. A ``None`` value means "tried every
 # candidate, nothing worked" — also short-circuited so we don't probe
 # Yahoo over and over for the same dud input.
+def _negative_alias_ttl(misses: int) -> float:
+    """Days a negative entry is believed, given how often it has missed.
+
+    Doubles per consecutive miss and is capped, so one unlucky probe
+    costs a week while a genuinely unrecognisable spelling settles into
+    silence instead of being re-probed forever.
+    """
+    from porxpy.config import (NEGATIVE_ALIAS_TTL_DAYS,
+                               NEGATIVE_ALIAS_TTL_CAP_DAYS)
+    n = max(1, int(misses or 1))
+    return min(NEGATIVE_ALIAS_TTL_DAYS * (2 ** (n - 1)),
+               NEGATIVE_ALIAS_TTL_CAP_DAYS)
+
+
+def _negative_alias_expired(stamped_at: str | None, misses: int = 1) -> bool:
+    """True when a negative alias is older than its escalating TTL.
+
+    A malformed or missing timestamp counts as expired: an entry we
+    cannot date is an entry we cannot vouch for, and re-probing costs
+    one lookup while trusting it wrongly costs the holding forever.
+    """
+    if not stamped_at:
+        return True
+    try:
+        t = datetime.fromisoformat(str(stamped_at))
+    except (TypeError, ValueError):
+        return True
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - t).total_seconds() / 86400.0
+    return age > _negative_alias_ttl(misses)
+
+
 def alias_get(raw: str) -> tuple[bool, str | None]:
     """Read an alias cache entry for ``raw``.
 
@@ -1501,7 +1984,16 @@ def alias_get(raw: str) -> tuple[bool, str | None]:
     # Tolerate both bare-string entries (older format) and dict entries
     # so a future refactor can add metadata without breaking the cache.
     if isinstance(val, dict):
-        return True, val.get("resolved")
+        resolved = val.get("resolved")
+        # A NEGATIVE entry expires; a positive one never does. See
+        # config.NEGATIVE_ALIAS_TTL_DAYS for why the two are not
+        # equally durable. An expired negative is reported as "never
+        # probed", so the caller re-probes rather than trusting a miss
+        # that may have been a rate limit or an outage.
+        if resolved is None and _negative_alias_expired(
+                val.get("stamped_at"), val.get("misses", 1)):
+            return False, None
+        return True, resolved
     return True, val
 
 
@@ -1516,7 +2008,15 @@ def alias_put(raw: str, resolved: str | None) -> None:
     if not raw:
         return
     blob = cache_read(SYMBOL_ALIAS_CACHE_NAME, "_symbol_aliases")
-    blob[raw] = {"resolved": resolved, "stamped_at": now_iso()}
+    entry = {"resolved": resolved, "stamped_at": now_iso()}
+    if resolved is None:
+        # Consecutive misses drive the escalating TTL. A hit clears the
+        # count by simply not carrying it, so a spelling that starts
+        # working is forgiven its history.
+        prev = blob.get(raw)
+        prior = prev.get("misses", 0) if isinstance(prev, dict) else 0
+        entry["misses"] = int(prior or 0) + 1
+    blob[raw] = entry
     cache_write(SYMBOL_ALIAS_CACHE_NAME, "_symbol_aliases", blob)
 
 
@@ -2052,6 +2552,23 @@ def save_overrides(m: dict) -> None:
         print(f"[Overrides] save error: {exc}")
 
 
+def _vocab_message(field: str, allowed) -> str:
+    """A rejection message that names the field, not the whole dictionary.
+
+    ``focus_detail`` under a geographic focus admits every country, every
+    region and every super region — some 280 values — and printing all of
+    them produced a "rejected" line in the factsheet report that was a
+    wall of country names with the actual problem lost inside it. A
+    handful of examples and a count say the same thing and can be read.
+    """
+    vals = [str(a) for a in (allowed or [])]
+    if len(vals) <= 12:
+        return f"{field} must be one of {tuple(vals)}"
+    shown = ", ".join(vals[:8])
+    return (f"{field} must be one of {len(vals)} allowed values "
+            f"(e.g. {shown}, …)")
+
+
 def coerce_override_value(field: str, value, context: dict | None = None):
     """Validate and coerce a value against the field's registry entry.
 
@@ -2097,9 +2614,13 @@ def coerce_override_value(field: str, value, context: dict | None = None):
 
     v = ("" if value is None else str(value)).strip()
     if kind == "enum":
-        vocab = spec.get("vocab") or ()
+        # field_vocab, not spec["vocab"] — an enum whose vocabulary
+        # lives in a resource file declares vocab_fn instead, and
+        # reading only the tuple would reject every legal value.
+        from porxpy.config import field_vocab
+        vocab = field_vocab(spec, context)
         if v.lower() not in vocab:
-            raise ValueError(f"{field} must be one of {tuple(vocab)}")
+            raise ValueError(_vocab_message(field, vocab))
         return v.lower()
 
     vocab_fn = spec.get("vocab_fn")
@@ -2109,7 +2630,7 @@ def coerce_override_value(field: str, value, context: dict | None = None):
         # None means "free text is fine for this context" — a thematic
         # focus is exactly the case nothing can enumerate.
         if allowed is not None and v and v not in allowed:
-            raise ValueError(f"{field} must be one of {tuple(allowed)}")
+            raise ValueError(_vocab_message(field, allowed))
     return v
 
 
@@ -2186,6 +2707,36 @@ def field_source_set(isin: str, field: str, source: str, value=None,
     m[key] = entry
     save_overrides(m)
     return env
+
+
+def purge_default_pins(isin: str) -> list[str]:
+    """Delete pins to "yahoo", which are not assertions.
+
+    Every other source is a real instruction — ask justETF, read the
+    factsheet, use my value. "Ask Yahoo" is what happens anyway, so
+    storing it records nothing while doing two kinds of harm: it freezes
+    a snapshot of the value (the v0.27 bug, in a new place), and it
+    outranks the seed's own origin in the provenance map, captioning a
+    name-inferred value as Yahoo data.
+
+    Selecting Yahoo now withdraws the pin instead of writing one, the
+    way the breakdown-source endpoint has always treated its default.
+    This clears the ones already written, on fund load, so a fund
+    corrects itself the first time it is read.
+
+    Args:
+        isin: Fund ISIN.
+
+    Returns:
+        The field names whose pins were removed.
+    """
+    if not isin:
+        return []
+    gone = [f for f, e in overrides_for(isin).items()
+            if isinstance(e, dict) and e.get("source") == "yahoo"]
+    for f in gone:
+        override_delete(isin, f)
+    return gone
 
 
 def field_pins(isin: str) -> dict:
@@ -2343,25 +2894,69 @@ def apply_overrides(isin: str, payload: dict) -> dict:
 # overrides.json. The cache entry is manual-refresh-only: never fetched,
 # only written when the user commits a CSV upload.
 #
-# On-disk shape (under the ``uploaded_breakdowns`` category):
+# On-disk shape (under the ``uploaded_breakdowns`` category), one item
+# list per facet PER SOURCE since v0.44.0 — a factsheet extraction and a
+# user CSV are both "someone handed us these numbers" and neither may
+# overwrite the other:
 #   { "fetched_at": "...",
-#     "value": { "asset_class": [{"key","weight"}, ...],
-#                "sector":      [...],
-#                "country":     [...],
-#                "currency":    [...] } }
-# Only facets present with a non-empty list count as "uploaded"; absent
-# or empty facets cannot be flipped to source "upload" on the fund page.
+#     "value": { "asset_class": {"upload":    [{"raw","weight"}, ...],
+#                                "factsheet": [...]},
+#                "sector":      {...},
+#                "country":     {...},
+#                "currency":    {...} } }
+# Each item carries ``raw`` — the source's own wording, resolved afresh
+# on every read (v0.76.0) — plus an optional ``key`` where the user
+# pinned it to a node. Only facets present with a non-empty list count as
+# "uploaded"; absent or empty facets cannot be flipped to that source on
+# the fund page.
 
 def _clean_items(items) -> list[dict]:
-    """Coerce a raw item list to ``[{"key","weight"}, ...]``."""
+    """Coerce a raw item list to ``[{"raw", ["key"], "weight"}, ...]``.
+
+    The supplied-breakdown item shape since v0.76.0: ``raw`` is what the
+    source actually said and is re-resolved on every read, and ``key`` is
+    present only where the user pinned the item to a node, in which case
+    it is taken as given. :func:`porxpy.breakdowns._resolve_items` is the
+    reader that answers the pair; this is the only normaliser between it
+    and the two writers (a CSV commit and a factsheet extraction).
+
+    Until v0.76.3 it required ``key`` and emitted nothing else, which was
+    the pre-0.76.0 shape and had three compounding effects. Every
+    unpinned item was dropped — the whole of a factsheet extraction, and
+    every un-pinned row of a CSV upload — so the breakdown card had
+    nothing to show. The pins that did survive lost their ``raw``, so
+    they read as pre-0.76.0 to :func:`_drop_legacy_facet_stores` and the
+    next cache read deleted the entry outright. And because this function
+    also runs on the READ path, via :func:`_migrate_supplied_breakdowns`,
+    fixing only the writers would not have been enough.
+
+    An item with no ``raw`` is a pre-0.76.0 conclusion with its input
+    already thrown away, and is dropped for the reason
+    :func:`_drop_legacy_facet_stores` gives: inventing a raw from a
+    stored conclusion is exactly the loop that made an alias edit unable
+    to reach a stored row. In practice the legacy drop has already
+    removed those before this function sees them; the guard is here so
+    nothing can write the old shape back in.
+    """
     if not isinstance(items, list):
         return []
-    return [
-        {"key": str(it.get("key") or ""),
-         "weight": float(it.get("weight") or 0.0)}
-        for it in items
-        if isinstance(it, dict) and it.get("key")
-    ]
+    out: list[dict] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        raw = str(it.get("raw") or "").strip()
+        if not raw:
+            continue
+        try:
+            weight = float(it.get("weight") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        row = {"raw": raw, "weight": weight}
+        key = str(it.get("key") or "").strip()
+        if key:
+            row["key"] = key
+        out.append(row)
+    return out
 
 
 def _migrate_supplied_breakdowns(val: dict) -> tuple[dict, bool]:
@@ -2593,6 +3188,18 @@ def normalise_fund_structure(raw: dict | None) -> dict:
     if style_box not in STYLE_BOXES:
         style_box = "unknown"
     focus_type = str(raw.get("focus_type", "")).strip().lower()
+    # v0.68.0 renamed "region" to "geography". The forward map is applied
+    # HERE, before the membership test, because this function is the
+    # gate every stored structure passes through on its way to being
+    # used. LEGACY_FOCUS_TYPES was applied only in scoring.peer_key,
+    # which runs far downstream: the merge normalised first, found
+    # "region" outside FOCUS_TYPES, reset it to "none" and blanked
+    # focus_detail with it, so peer_key received a fund that no longer
+    # claimed any focus at all. Every fund still carrying the old value
+    # therefore collapsed into the "<class>|none|" catch-all and was
+    # ranked against everything else of its asset class — a US growth
+    # fund against a metals-miners ETF, which is what surfaced it.
+    focus_type = LEGACY_FOCUS_TYPES.get(focus_type, focus_type)
     if focus_type not in FOCUS_TYPES:
         focus_type = "none"
 
@@ -2643,8 +3250,10 @@ def load_portfolios() -> list[dict]:
     # Lazy facet migration (v0.15.0). The stamp lives on the wrapper
     # object — since portfolios.json holds a list, we use a sidecar
     # ``_normalisation`` key on each individual portfolio dict.
-    from porxpy.resources import RESOURCE_VERSIONS
-    current_versions = dict(RESOURCE_VERSIONS)
+    from porxpy.resources import RESOURCE_FINGERPRINTS
+    # The same fingerprint dict the cache stamp uses, so a hand-edited
+    # file re-normalises portfolios as well as fund caches.
+    current_versions = dict(RESOURCE_FINGERPRINTS)
     touched_any = False
     for portfolio in data:
         if not isinstance(portfolio, dict):
@@ -2768,6 +3377,56 @@ def delete_portfolio(pid: str) -> bool:
 #   (which uses fractions). Storing percents avoids float drift on
 #   the values the user actually sees.
 
+# The asset facet's pre-v0.70.0 keys, which were the fund-level
+# vocabulary (equity / fixed_income / cash / mixed / commodity / other)
+# rather than anything in the holdings taxonomy.
+_ASSET_TARGET_RENAMES: dict[str, str] = {
+    "fixed_income": "fixed income",   # same node, new spelling
+}
+_ASSET_TARGET_DROPPED: frozenset[str] = frozenset({"mixed", "commodity"})
+
+
+def _migrate_asset_target_keys(block: dict) -> dict:
+    """Rename and drop pre-v0.70.0 asset target keys.
+
+    Works on either shape — a legacy ``{key: pct}`` block or a levelled
+    ``{level: {key: pct}}`` one — because a fund saved between the two
+    releases can be in either, and a migration that handles one shape
+    only is a migration that fires once and then stops.
+
+    Args:
+        block: The raw asset_class target block from disk.
+
+    Returns:
+        A new block with renames applied and dropped keys removed.
+    """
+    dropped: list[str] = []
+
+    def _one(d: dict) -> dict:
+        out = {}
+        for k, v in (d or {}).items():
+            key = (k or "").strip() if isinstance(k, str) else ""
+            if not key:
+                continue
+            if key in _ASSET_TARGET_DROPPED:
+                dropped.append(key)
+                continue
+            out[_ASSET_TARGET_RENAMES.get(key, key)] = v
+        return out
+
+    if block and any(isinstance(v, dict) for v in block.values()):
+        out = {lvl: _one(blk) for lvl, blk in block.items()
+               if isinstance(blk, dict)}
+        out = {lvl: blk for lvl, blk in out.items() if blk}
+    else:
+        out = _one(block)
+
+    if dropped:
+        print(f"[Targets] dropped asset-class target(s) with no node in "
+              f"Asset_definitions.csv: {', '.join(sorted(set(dropped)))}")
+    return out
+
+
 def _coerce_targets(raw) -> dict:
     """Coerce a user/disk-supplied targets dict into the canonical shape.
 
@@ -2786,6 +3445,8 @@ def _coerce_targets(raw) -> dict:
     """
     from porxpy.config import META_FACET_TARGETABLE, TARGET_FACETS
 
+    from porxpy.config import FACET_DEFAULT_LEVEL, FACET_LEVELS
+
     out: dict[str, dict] = {f: {} for f in TARGET_FACETS}
     if not isinstance(raw, dict):
         return out
@@ -2793,26 +3454,125 @@ def _coerce_targets(raw) -> dict:
         block = raw.get(facet)
         if not isinstance(block, dict):
             continue
-        # v0.28.0: the meta facets have a closed, short vocabulary and
-        # not all of it is targetable. "unknown" is a data gap and
-        # "n/a" duplicates the cash target on asset_class — neither is
-        # something a user can meaningfully aim for, so a target on one
-        # is dropped rather than stored and then never satisfiable.
-        allowed = META_FACET_TARGETABLE.get(facet)
-        for k, v in block.items():
-            if not isinstance(k, str) or not k.strip():
+
+        # v0.65.0: targets are {facet: {level: {key: pct}}}.
+        #
+        # A bare key is not enough any more. `japan` is both a country
+        # and a Morningstar region, and `unitedKingdom` the region
+        # differs from `unitedkingdom` the country only in case — so
+        # {"country": {"japan": 30}} does not say which 30% is meant.
+        #
+        # A pre-v0.65.0 dict is {key: pct} with no level. Detected by
+        # shape rather than by a stored version: a level block's values
+        # are dicts, a legacy block's are numbers.
+        #
+        # Each legacy key goes to the level that RECOGNISES it, not to
+        # the facet's default level.
+        #
+        # v0.65.3: putting them all at the default was wrong for
+        # country, and silently so. Before levels existed the Targets
+        # tab offered REGIONS for the country facet — the old exposure
+        # builder remapped country to region to match — so every legacy
+        # country target is a region key. Migrating them to `country`
+        # level left them where no exposure would ever carry that key,
+        # and the optimiser reported them as simply unachieved with
+        # nothing to indicate why.
+        levels  = FACET_LEVELS.get(facet) or (facet,)
+        default = FACET_DEFAULT_LEVEL.get(facet, levels[-1])
+
+        # v0.70.0: the asset vocabulary became one tree, and two of its
+        # old keys have no node under the new spelling. The generic
+        # relocation below can only move a key it RECOGNISES, so these
+        # are renamed first — otherwise they sit at a level whose
+        # exposures can never carry them and the optimiser reports them
+        # as merely unmet, which is indistinguishable from a real miss.
+        #
+        # "mixed" and "commodity" are dropped rather than renamed: a
+        # HOLDING is never mixed, and commodity has no node in the tree.
+        # They existed only in the fund-level vocabulary this facet used
+        # to borrow. Dropping user data silently would be worse than the
+        # bug, so it is logged.
+        if facet == "asset_class" and isinstance(block, dict):
+            block = _migrate_asset_target_keys(block)
+        if block and not any(isinstance(v, dict) for v in block.values()):
+            from porxpy.breakdowns import _key_at_level
+            migrated: dict[str, dict] = {}
+            for k, v in block.items():
+                key = (k or "").strip() if isinstance(k, str) else ""
+                if not key:
+                    continue
+                # The level a key belongs to is the one where it maps to
+                # itself. A region key answers at region level and
+                # nowhere else, so this is unambiguous.
+                home = next((lv for lv in levels
+                             if _key_at_level(facet, key, lv) == key), default)
+                migrated.setdefault(home, {})[key] = v
+            block = migrated
+
+        for level, lvl_block in block.items():
+            if level not in levels or not isinstance(lvl_block, dict):
                 continue
-            key = k.strip()
-            if allowed is not None and key not in allowed:
-                continue
-            try:
-                pct = float(v)
-            except (TypeError, ValueError):
-                continue
-            if pct < 0:
-                pct = 0.0
-            out[facet][key] = pct
+            out[facet].setdefault(level, {})
+            _coerce_level_targets(facet, level, lvl_block, out)
+
+        # v0.66.5: relocate any key sitting at a level that does not
+        # recognise it, whatever shape it arrived in.
+        #
+        # v0.66.2 repaired this only for LEGACY (unlevelled) blocks —
+        # which missed the case that actually bit: v0.65.0's migration
+        # put region keys at country level, and the moment the user
+        # opened the Targets tab and saved, that wrong placement was
+        # persisted in the levelled shape. The legacy branch then never
+        # fired again, and the targets sat at a level whose exposures
+        # can never carry them. The optimiser reported them as simply
+        # unmet, because from its side that is indistinguishable.
+        #
+        # Idempotent: a key already at its home level maps to itself and
+        # is left alone.
+        if len(levels) > 1:
+            from porxpy.breakdowns import _key_at_level
+            relocated: dict[str, dict] = {}
+            for level, blk in (out[facet] or {}).items():
+                for key, pct in (blk or {}).items():
+                    home = level
+                    if _key_at_level(facet, key, level) != key:
+                        home = next((lv for lv in levels
+                                     if _key_at_level(facet, key, lv) == key),
+                                    level)
+                    relocated.setdefault(home, {})[key] = pct
+            out[facet] = {lv: blk for lv, blk in relocated.items() if blk}
     return out
+
+
+def _coerce_level_targets(facet: str, level: str, block: dict,
+                          out: dict) -> None:
+    """Coerce one ``(facet, level)`` block of ``{key: percent}``.
+
+    Drops malformed entries, coerces percents to floats, clamps
+    negatives to 0. Percents over 100 are KEPT — a 110% target is a
+    user error worth surfacing rather than silently truncating.
+    """
+    from porxpy.config import META_FACET_TARGETABLE
+
+    # The meta facets have a closed, short vocabulary and not all of it
+    # is targetable. "unknown" is a data gap and "n/a" duplicates the
+    # cash target on asset_class — neither is something a user can
+    # meaningfully aim for, so a target on one is dropped rather than
+    # stored and then never satisfiable.
+    allowed = META_FACET_TARGETABLE.get(facet)
+    for k, v in block.items():
+        if not isinstance(k, str) or not k.strip():
+            continue
+        key = k.strip()
+        if allowed is not None and key not in allowed:
+            continue
+        try:
+            pct = float(v)
+        except (TypeError, ValueError):
+            continue
+        if pct < 0:
+            pct = 0.0
+        out[facet][level][key] = pct
 
 
 def portfolio_targets_get(pid: str) -> dict:
@@ -2961,13 +3721,13 @@ def portfolio_ticker_hint(isin: str, exchange: str | None
 # ---------------------------------------------------------------------------
 # Holdings rollup — moved to porxpy.breakdowns
 # ---------------------------------------------------------------------------
-# ``rollup_holdings`` and ``canonicalise_facet_key`` now live in
+# ``rollup_holdings`` and ``resolve_facet_value`` now live in
 # :mod:`porxpy.breakdowns`, the pure derivation layer shared by the
 # fund, holding, and portfolio breakdown paths. They are re-exported
 # here so existing ``from porxpy.utils import ...`` call sites keep
 # working unchanged.
 from porxpy.breakdowns import (  # noqa: F401  (compatibility re-export)
-    canonicalise_facet_key,
+    resolve_facet_value,
     rollup_holdings,
 )
 

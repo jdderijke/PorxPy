@@ -1,6 +1,6 @@
 # The PorxPy Optimizer — how it works
 
-*Applies to `porxpy/optimizer.py` as of v0.37.0.*
+*Applies to `porxpy/optimizer.py` as of v0.77.0.*
 
 ---
 
@@ -32,12 +32,12 @@ you hold as close as possible to the exposure you asked for.
 
 | Input | Meaning |
 |---|---|
-| `candidates` | Every pre-loaded fund: ticker, price, shares currently held, `include` flag, and its look-through exposure per facet |
-| `targets` | Per facet, a `{bucket: fraction}` map — e.g. `{"country": {"northAmerica": 0.40, ...}}` |
+| `candidates` | Every pre-loaded fund: ticker, price, shares currently held, `include` flag, and its look-through exposure per `(facet, level, bucket)` — built by `breakdowns.candidate_exposures`, which computes only the levels the target set actually mentions |
+| `targets` | Per facet, per LEVEL, a `{bucket: fraction}` map — e.g. `{"country": {"region": {"northAmerica": 0.40, ...}, "country": {"japan": 0.05}}}`. Sparse: a facet or level with no targets is ignored entirely |
 | `cash_base` | Cash available, in the portfolio's base currency |
 | `cash_exposure` | What cash itself counts as (asset class `cash`, a currency, a country) |
 | `max_funds` | Ceiling on how many funds the design may use |
-| `max_error` | Tolerance **per facet**, in fractions — `{"country": 0.02}` means "within 2 percentage points" |
+| `max_error` | Tolerance **per facet**, in fractions — `{"country": 0.02}` means "within 2 percentage points". Per facet, NOT per level; see §12 |
 | `min_weight` | Positions below this are pruned as dust |
 | `min_trade_base` | Trades below this amount are suppressed as noise |
 
@@ -87,6 +87,32 @@ problem is linear, and why nothing more elaborate is called for.
 A facet you set no targets on contributes no rows. Scoring it would mean
 inventing an intention you never expressed.
 
+### Levels — each target is a constraint at its own grain
+
+Since v0.65.0 a target names a **level** as well as a bucket, and the
+matrix takes them one `(facet, level)` block at a time. Every fund's
+exposure is measured independently at every level the target set
+mentions, so a target set that mixes grains needs no ordering rule.
+
+Targeting semiconductors 15%, software 10% and technology 35% gives
+three rows. The semiconductor funds satisfy their own row and contribute
+to the technology row as well, leaving 10% of technology to be filled by
+any technology fund. That falls out of the algebra; there is no
+"children first, then the remainder" pass anywhere in the module.
+
+Levels are **not** re-expressed at a common grain. Rolling a sector
+target down to sub-sectors would invent detail the user never gave, and
+rolling one up would discard detail they did. The rule that a parent is
+held to at least the sum of its targeted children is enforced at save
+time by `targets.validate_target_levels`, so an arithmetically
+impossible brief is refused before the solver ever sees it.
+
+All three tree facets take part on equal terms: `sector`
+(sub-sector / sector / super-sector), `country` (country / region /
+super-region) and, since v0.70.0, `asset_class` (sub-class / asset class
+/ super class). `currency` declares a single level of the same shape, so
+nothing in this module branches on whether a facet has levels.
+
 ### The `__other__` row
 
 Each facet gets one extra synthetic row collecting all exposure that falls
@@ -115,6 +141,15 @@ scale_f = facet_weight_f / √(n_buckets_f + 1)
 
 The `√n` divisor equalises facets of different sizes. The
 `facet_weight` then expresses how much you care.
+
+The scaling is applied **per `(facet, level)` block**, and each block
+carries the full facet weight. A facet you target at three levels
+therefore contributes three blocks of rows rather than one, and so
+counts for roughly three times as much in the objective as an otherwise
+identical facet you targeted at a single level. That is defensible — you
+did state three separate intentions — but it is a consequence of the
+construction rather than a decision anyone took, and it is worth knowing
+before you conclude the solver is ignoring a facet you targeted once.
 
 ### Where facet weights come from
 
@@ -210,7 +245,8 @@ would work, since it is minimised at the vertices. Not currently used.)*
   points, because that is the number you set a threshold on:
 
 ```
-deviation_f = max over that facet's targeted buckets of |A_raw·w − t_raw|
+deviation_f = max over that facet's targeted buckets, AT EVERY LEVEL,
+              of |A_raw·w − t_raw|
 ```
 
 Reported per facet rather than as one overall number: forcing a single
@@ -452,11 +488,13 @@ target.
 
 - **`trades`** — the buy/sell list, sorted by size.
 - **`positions`** — the resulting portfolio, frozen ones flagged.
-- **`achieved`** / **`deviation`** — per targeted bucket, what the design
-  actually delivers and how far that is from the target. Signed: positive
-  is overweight.
+- **`achieved`** / **`deviation`** — `{facet: {level: {bucket: value}}}`,
+  mirroring the shape of `targets`. What the design actually delivers and
+  how far that is from the target, each bucket measured against the
+  exposure **at its own level**. Signed: positive is overweight.
 - **`facets`** — per facet: worst deviation, the tolerance, whether it was
-  met.
+  met. Flat, one entry per facet — the levels of a facet are collapsed
+  into a single worst-case figure here, unlike `deviation` above.
 - **`target_met`** — all facets within tolerance.
 - **`reason`** — when a target is missed, which facet and by how much, plus
   whether more funds would help or the exposure simply is not available in
@@ -503,9 +541,101 @@ early and returning a worse portfolio.
   seconds of wall clock.
 - **Tolerance does double duty** — stopping test and objective weight. Set
   `facet_weights` explicitly if you want those to differ.
+- **Tolerance and reported error are per facet, not per level.** The
+  matrix fits each level separately, but `max_error` is keyed by facet
+  alone and `_facet_devs` groups residuals by facet alone, so the three
+  levels of a sector target collapse into one worst-case number. You
+  cannot ask for 2pp at super-sector and 8pp at sub-sector, and when a
+  facet misses, the headline figure does not say which grain missed.
+  The per-bucket `deviation` block does carry the level, so the answer
+  is available — just not in the summary or the stopping test.
 - **Exposure quality is the real limit.** The optimizer is exact about the
   data it is given. If a fund's look-through breakdown is stale, partial,
   or from an issuer card rather than actual holdings, the design is precise
   about the wrong numbers. Check coverage before trusting a tight fit.
+- **An `unknown` slice is dead weight to the solver** (and, since v0.77.0,
+  can be asserted away). A fund whose sector card covers 40% of it
+  contributes 40% of its value to the sector fit and nothing usable for
+  the rest: there is no "unknown" bucket to allocate against, so the fund
+  looks like a poor fit for every target it might in fact satisfy. Where
+  no source can supply more, the user can tick **coverage complete** on
+  that card, which drops the unknown slice and scales the identified part
+  up before `candidate_exposures` ever sees it. It is a fund-level
+  override (`breakdown_complete.<facet>`), so the optimizer needs no
+  knowledge of it — the block simply arrives complete. The cost is that a
+  design can then be exact about an *assumption*, which is why nothing
+  asserts it automatically and the card's badge reads `100% ASSUMED`.
 - **No transaction costs, no tax, no minimum lot sizes.** Fractional shares
   are assumed throughout.
+
+---
+
+## 13. Known open issues
+
+Defects specific to the optimiser, as opposed to the deliberate
+boundaries in §12. Each is something that should be fixed rather than
+something someone chose.
+
+### The metadata facets are targetable, but the optimiser is blind to them
+
+`config.TARGET_FACETS` is `BREAKDOWN_FACETS + META_FACETS`, so the
+Targets tab offers `market_cap` and `style_box`, `targets.py` computes
+deviations for them, and the X-ray card renders them. The optimise
+endpoint does not. It builds each candidate's exposure with
+`candidate_exposures(data["fund_breakdowns"], targets)`, and
+`fund_breakdowns` covers only `_FUND_BD_FACETS` — `asset_class`,
+`sector`, `country`, `currency`. The metadata one-hots come from
+`breakdowns.meta_facet_items`, which is called by
+`rollup_portfolio_fundlevel` and by nothing on the optimise path.
+
+Every candidate therefore reports empty exposure for a metadata facet.
+All of its weight falls into the synthetic `__other__` bucket, and the
+target becomes unsatisfiable by any portfolio whatsoever. Confirmed by
+running it rather than by reading it: with a `market_cap` target set,
+`candidate_exposures` returns `{'market_cap': {}}` for every fund, and
+the run reports
+
+```
+market_cap 100.0% (allowed 5%) … these targets need exposure none of
+your candidate funds have.
+```
+
+That message is wrong in the way that matters. Every fund carries a
+`market_cap` on its structure block; the optimiser was simply never
+handed it. The user is told their universe is inadequate when the
+universe is fine.
+
+The proposed design itself is still correct — the dead rows are constant
+across all assets, so they shift the least-squares fit not at all — but
+`target_met` is false forever, and the stated reason sends the user
+looking for funds they already own. Until this is closed, set targets on
+the four breakdown facets only.
+
+The fix is to merge `meta_facet_items` into the exposure dict the
+optimise route builds, so a metadata facet answers as a one-hot
+distribution at its own single level, exactly as `currency` already
+does. `market_cap` and `style_box` have no entry in `FACET_LEVELS`, so
+their level key is the facet name itself — the shape `_key_at_level` and
+`build_facet_block` already assume for a flat facet, so nothing else has
+to change.
+
+### Targeting one facet at several levels silently multiplies its weight
+
+`_add_target_rows` is called once per `(facet, level)` block, and each
+call applies the full `facet_weight` for that facet. A facet targeted at
+three levels therefore contributes three blocks of rows, each scaled as
+though it were the facet's only one, and so pulls on the objective
+roughly three times as hard as an otherwise identical facet targeted at
+a single level.
+
+Nobody decided this. It falls out of iterating levels inside the same
+loop that applies the weight, and it means the relative importance of
+your facets shifts as a side effect of how many grains you happened to
+express them at — add a super-sector target to a sector target you
+already had, and country quietly matters less than it did. The
+`facet_weights` you set are no longer the weights in force.
+
+The honest fix is to divide each block's scale by the number of levels
+targeted for that facet, so a facet's total pull is the same however
+many grains it is expressed at. That is a behaviour change to existing
+designs, which is why it is recorded here rather than applied.

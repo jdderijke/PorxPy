@@ -54,6 +54,7 @@ from datetime import date, datetime, timedelta
 
 from porxpy.config import (
     DEFAULT_SIZE_FLOOR_BASE,
+    LEGACY_FOCUS_TYPES,
     MIN_PEER_GROUP,
     RETURN_PERIODS,
     SCORE_COMPONENTS,
@@ -176,6 +177,13 @@ def peer_key(fund: dict) -> str:
     ac = (fund.get("primary_asset_class") or "unknown").strip().lower()
     ft = (fund.get("focus_type") or "none").strip().lower()
     fd = (fund.get("focus_detail") or "").strip().lower()
+    # v0.68.0: "region" was renamed "geography". Normalised HERE rather
+    # than by rewriting stored structures, because this is the one place
+    # the value decides anything: a fund still carrying "region" while
+    # its neighbours had moved to "geography" would land in a different
+    # key and drop silently out of its own peer group — a group of one,
+    # scored against nobody.
+    ft = LEGACY_FOCUS_TYPES.get(ft, ft)
     return f"{ac}|{ft}|{fd}" if ft != "none" else f"{ac}|none|"
 
 

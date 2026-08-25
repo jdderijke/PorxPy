@@ -28,6 +28,34 @@ weights them by your allocation, and shows you the merged reality:
 - How much is equity vs fixed income vs cash, after looking through
   every fund?
 
+### Read every facet at the grain you're asking about
+
+"What sector is this?" and "where is this?" are not single questions, so
+they are not single numbers. Each is a tree, and the same breakdown is
+available at every level of it:
+
+- **Sector** — sub-sector → sector → super-sector. Semiconductors,
+  technology, cyclicals. A semiconductor fund is not a technology fund,
+  and asking whether you are overweight "tech" means something
+  different at each of the three.
+- **Country** — country → region → super-region. Japan, Asia Developed,
+  Developed Markets. "How much of me is in emerging markets?" is a
+  super-region question; "how much in India?" is a country one.
+- **Asset** — sub-class → asset class → super class. Government bond,
+  government, fixed income. "How much fixed income do I hold?" and "how
+  much of that is government paper?" are two different questions, and
+  a holdings file that says only "bond" answers the coarse one without
+  pretending to answer the fine one.
+
+The level selector sits on the breakdown cards — on the fund page and
+on Portfolio → X-ray alike — and on both holdings tables, the fund
+page's and Portfolio → Holdings. Every level is computed independently
+rather than by rolling the finest one up. A fund that only publishes
+region-level data still contributes to the region distribution instead
+of being lost in it — and a holdings file that says "Europe ex-UK"
+answers at region level rather than being flagged as an unrecognised
+country.
+
 ### Design a portfolio, don't just measure one
 
 Set your targets, and PorxPy will propose the trades that get you there:
@@ -41,6 +69,19 @@ list. A holding you have opted out of is left alone — but its exposure
 still counts toward your targets, so the optimiser designs around it
 rather than pretending it isn't there.
 
+Alongside the design, the optimiser prices every **better-scoring
+alternative** to each fund it chose: swap the peer in, re-solve the
+weights, and report what the substitution actually costs — *"this fund
+scores 12, its peer scores 95, taking it costs you 1.2pp of country
+accuracy"*. Nothing is applied. An optimiser that spent an error budget
+automatically would be guessing at how much accuracy you are willing to
+trade, which varies per portfolio and is exactly the judgement you are
+best placed to make. Alternatives that break a tolerance are shown and
+flagged rather than hidden, and each is priced against the same baseline
+independently — so accepting two does not cost the sum of their two
+prices, and the combined result is recomputed before anything is
+applied.
+
 ### Compare against your own targets
 
 You set target allocations per facet (e.g. "40% North America, 25%
@@ -49,7 +90,22 @@ portfolio against them and shows signed deviation bars — green for
 overweight, red for underweight — so you can see at a glance where
 you're off your plan.
 
-Targets come in two groups. **Exposure** — asset class, sector, region,
+A target names a **level** as well as a bucket, so "25% Europe" at
+region level and "10% Germany" at country level are two different
+statements and are fitted at their own grain. Where both are set, a
+parent is held to at least the sum of its targeted children — that rule
+is enforced when you save, not discovered later as an unmeetable brief.
+
+Because targets nest that way, the per-facet total shown while you edit
+them, and on the Targets tab, is **what they commit**, not the levels
+added together: every target is rolled up into the bucket that contains
+it and counted once, at the coarsest level. Targeting semiconductors 15%
+inside technology 35% commits 35%, not 50%. So the figure stays on a
+scale where 100% means the whole category is spoken for, and a total
+above it is a genuine over-commitment rather than an artefact of
+counting a sub-sector twice.
+
+Targets come in two groups. **Exposure** — asset class, sector, country,
 currency — is measured by looking through your funds to what they
 actually hold. **Style** — market cap and equity style — is a
 classification of each fund as a whole, so a fund nobody has classified
@@ -57,15 +113,90 @@ shows up as "unknown" rather than being quietly dropped from the
 denominator. Both groups are targetable; "unknown" is not, because it is
 a gap in the data rather than something you can aim for.
 
+### Rank the funds, not just the portfolio
+
+Two funds can supply the same exposure at very different cost. PorxPy
+scores every fund in your pre-loaded set on three components — TER, fund
+size, and trailing returns — as **percentiles**, so a cost in fractions
+of a percent and a size in billions can be combined without inventing an
+exchange rate between them. Fund size is a floor test rather than a
+percentile: past "big enough not to be at risk of closure", more of it
+is not better.
+
+Each fund carries two scores:
+
+- **Overall** — against the whole universe. Answers "is this a good
+  fund", and is what the fund list and detail page show.
+- **Peer** — against funds with the same asset class and focus. Answers
+  "is this the best fund *for this job*", which is the only question
+  worth asking when the optimiser holds a European bond fund because the
+  targets demand one. Ranked globally, bond funds would sit at the
+  bottom of any returns-weighted score permanently — not because they
+  are bad but because they are bonds — and offering to replace one with
+  a high-scoring US equity tracker would be answering a question nobody
+  asked. The optimiser's alternatives table reads the peer score and
+  nothing else.
+
+Three weight presets ship in Settings — **cost driven** (the default),
+**cost and returns**, and **returns driven** — and each score travels
+with its coverage, so a high score computed from one component out of
+three is visibly thin. A peer group smaller than three funds yields no
+peer score at all, because a percentile within a group of one is 100 by
+construction.
+
+Every place a score appears also names the model it was computed under —
+the fund list's column header, the fund page's Score row, the peer lists,
+and the optimiser's trade and alternatives tables. A rank means nothing
+without the weights it was taken over: the same fund is 100 under Cost
+driven and 12 under Returns driven, and a bare 12 reads as a bad fund
+rather than as one the chosen model does not reward.
+
+The peer group is visible from both places a score is — the fund list's
+Peers column and the fund page's Score row — as ISIN, name and score in
+three columns, ranked best first. Either list carries the picker for the
+weight model, and the model is one setting: changing it in one place
+re-ranks the other, since two lists of the same funds under different
+weightings would be two answers to one question. The optimiser's own
+quality picker is separate on purpose — that model is part of a run, not
+a way of looking at a list — which is why its tables are captioned with
+the model that run actually used, not with whatever the picker reads now.
+
+The fund price chart can also overlay every peer's price series —
+indexed to 100 at the left edge of the window, since two funds priced at
+12 and 480 tell you nothing side by side.
+
 ### Manage funds and portfolios
 
 - Add funds by ticker or ISIN. PorxPy fetches profile, price history,
   and holdings from Yahoo Finance.
 - Group funds into one or more portfolios, with shares (or units) held
-  per fund.
+  per fund, plus cash positions.
 - Upload full holdings CSVs or Excel files when the fund issuer
   publishes them (top-10 from Yahoo is often not enough for a real
   X-ray).
+- Hold **three position lists per fund at once** — Yahoo's top-10, the
+  table read off the factsheet, and your uploaded file — and choose
+  which one the fund shows. The choice is saved with the fund, so every
+  portfolio holding it and the optimiser use the list you picked; an
+  upload no longer destroys what Yahoo said, and removing it takes you
+  back rather than leaving you with an empty table.
+- Upload the issuer's **factsheet** for funds Yahoo covers badly, and
+  pin any breakdown card to it. Optionally, let the AI helper read the
+  document and stage the fields, breakdowns and positions it finds —
+  every value carrying the page and verbatim quote it came from, and
+  nothing applied until you say so.
+- Tell a breakdown card that its source **covers the whole fund**, when
+  the breakdown rests on a partial holdings list and nothing better
+  exists. The unknown slice is dropped and the rest scaled up, and the
+  assertion is saved with the fund — so the portfolio X-ray, the target
+  deviations and the optimiser all read the fund as fully described,
+  which an "unknown" slice never lets them do. The badge still says
+  `ASSUMED`, so nobody mistakes the assertion for a measurement.
+- See where every field's value actually came from. A source is
+  recorded where a value is produced, never assumed: a fund class
+  worked out from words in the fund's name says "inferred from name"
+  rather than claiming to be Yahoo data, and a field nobody has a
+  source for says nothing at all rather than guessing.
 - Override anything that's wrong at the source — asset class,
   replication method, breakdown source, TER, total net assets — and the
   override sticks across every portfolio that holds the fund and
@@ -94,6 +225,58 @@ file before uploading:
 Once resolved, the canonical ticker, ISIN, and CUSIP are all written
 back to the holding row so you have clean data going forward.
 
+### Say "we couldn't place this" instead of guessing
+
+A facet value that doesn't resolve against its resource file is **not** a
+bucket. It counts as `unknown`, and the raw text is kept and shown
+beneath the slice — *of which unrecognised: "Diversified Holdings" 6%*.
+The alternative, which PorxPy used to do, was to let the raw text be the
+bucket key, so an unrecognised sector became a slice called "Diversified
+Holdings" — conflating *this fund holds 8% of that thing* with *the
+source said something we could not place*, when only the first belongs in
+a distribution.
+
+Every facet also distinguishes two residuals: `unknown` is a gap somebody
+could close, `n/a` means the question does not apply. One bucket could
+not say which, and the reader wants to know whether better data would fix
+it.
+
+In the holdings tables the same distinction is drawn a row at a time.
+`—` means this row says nothing about this facet; `unknown` means it says
+something, just not at the grain you are currently looking at. A single
+column could not tell you which, so switching level looked like data
+appearing and disappearing.
+
+The **Resolve unmatched values** dialog lists what didn't resolve,
+sorted by weight, with a row per distinct value across every fund and
+every source. Tell it what a value means once and the alias is written
+to the resource file; every occurrence everywhere resolves on the next
+read, including a factsheet extracted last month — resolution happens at
+derivation time, so nothing is rewritten and no migration is needed.
+
+### Back up your work, or hand it to someone else
+
+Building a usable pre-loaded set — a hundred-odd funds with holdings,
+factsheets, corrected structure fields and per-facet source pins — is
+days of work. Two bundle types, deliberately kept separate:
+
+- **Funds** — the curated asset. What a fund *is* and what was
+  established about it, including factsheets and resource files.
+  Portable between installs and between users.
+- **Portfolios** — what *you* hold: portfolios, targets, cash and
+  settings. Personal, and restored on top of whatever fund set is
+  present.
+
+Mixing them would mean you cannot take someone else's fund research
+without also taking their holdings.
+
+Both are plain zips with a readable `manifest.json`, so a failed import
+can be diagnosed by opening the file. Import is two-phase: the bundle is
+inspected against your install first and nothing is written until you
+have seen the conflict table, where overwriting states its cost inline
+(*"replaces 3 of your edits"*) at the moment of choosing rather than
+afterwards.
+
 ---
 
 ## High-level architecture
@@ -109,29 +292,108 @@ side either — just one HTML file with embedded JavaScript.
 main.py               Entry point — starts Flask on 0.0.0.0:5000
 porxpy/
   app.py              Flask app factory and all HTTP/API routes
-  config.py           Paths, constants, TTLs, exchange code maps
+  config.py           Paths, constants, TTLs, facet/level tables,
+                      the overridable-field registry
   extractors.py       Yahoo Finance fetching and per-holding enrichment
   resolver.py         Ticker variant generation and resolution chain
-  breakdowns.py       Holdings roll-up → per-facet weighted breakdown
+  breakdowns.py       Holdings roll-up → per-facet levelled breakdown
   targets.py          Target-vs-actual deviation computation
-  scoring.py          Best-in-class fund ranking (cost / size / returns)
+  scoring.py          Fund scoring and peer groups (cost / size / returns)
   ai.py               Factsheet extraction via the Anthropic API (opt-in)
   optimizer.py        Greedy portfolio design against exposure targets
   trades.py           Atomic trade execution (cash ↔ fund positions)
   upload.py           Holdings file parsing, column mapping, enrichment
+  bundles.py          Export/import of fund sets and portfolio backups
   utils.py            Cache I/O, portfolio data, coercion helpers
-  resources.py        Reference data loading (countries, currencies, ...)
+  resources.py        Reference-data loading and facet-value resolution
 fund_explorer.html    Single-file frontend (HTML + JS, no framework)
 resources/            Reference CSVs (shipped with the project)
-                      countries, currencies, sectors, regions,
-                      holdings + fund class definitions
+  Geography_definitions.csv    country → region → super-region
+  Sector_definitions.csv       sub-sector → sector → super-sector
+  Asset_definitions.csv        sub-class → asset class → super class
+  Currency_definitions.csv     ISO-4217 currencies
+  Primary_asset_class_definitions.csv  what kind of fund this IS
 ```
+
+`Asset_definitions.csv` and `Primary_asset_class_definitions.csv` are
+close in name and answer different questions. The first is the
+vocabulary the asset BREAKDOWN rolls up to — a distribution over a
+fund's holdings, at three grains. The second is a single CLASSIFICATION
+of the fund itself, captured from Yahoo, a factsheet, justETF or the
+user, and never derived from its holdings. A 60/40 fund is `mixed` in
+the second while its breakdown is roughly 60% equity / 40% fixed income
+in the first. Peer-group selection reads the classification.
+
+`Asset_definitions.csv` arrived in 0.70.0 and replaces
+`Holdings_class_definitions.csv` (the per-holding class of a row) and
+`Fund_class_definitions.csv` (the vocabulary the rollup aggregated to).
+Those were two files describing one taxonomy at two grains, and they
+disagreed on spelling — `bond` in one, `fixed_income` in the other, for
+the same concept. **Both must be deleted from `resources/` when
+upgrading.**
+
+The frontend has four tabs — **Explore Funds/ETFs**, **Portfolio** (with
+Funds, Cash, History, X-ray, Targets, Holdings and Optimizer views),
+**Tools** (source inspector, resource reload) and **Settings**.
+
+### Reference files and facet levels
+
+All five resource CSVs share one hierarchical schema:
+
+```
+type,name,description,parent_name,matches,is_default,attrs
+```
+
+The delimiter is sniffed per file rather than fixed, so a file saved by
+a spreadsheet in a locale that uses `;` is read as-is instead of having
+to be converted first.
+
+`parent_name` is singular, which is what makes each tree a chain by
+construction rather than by convention. `matches` holds every spelling
+that should resolve to the row — alpha-2 and alpha-3 codes, numeric ISO
+codes, index names, and non-English labels, since a Dutch factsheet says
+*Aandelen* and a holdings file may say `756` for Switzerland.
+
+Which levels exist per facet:
+
+| Facet         | Levels (finest first)                      | Default level |
+|---------------|--------------------------------------------|---------------|
+| `sector`      | `sub_sector` → `sector` → `super_sector`   | `sector`      |
+| `country`     | `country` → `region` → `super_region`      | `country`     |
+| `currency`    | `currency`                                 | `currency`    |
+| `asset_class` | `sub_class` → `asset_class` → `super_class` | `super_class` |
+
+The `country` facet is fed by `Geography_definitions.csv` — the file
+covers the whole tree, so naming it after the finest level would have
+been wrong, but the facet keeps the name every consumer already stores.
+The same file also carries `focus_group` rows (europe, asia, pacific,
+world), which sit outside the chain: they are the pan-regional groupings
+a fund *name* can imply but a holding cannot belong to uniquely, which
+is exactly why they cannot be levels.
+
+`asset_class` defaults to `super_class` rather than to its own middle
+level. Until 0.70.0 the asset vocabulary WAS equity / fixed_income /
+cash / other, which in the tree is the super level (today's four are
+equity, fixed income, liquid and other); defaulting to the middle one
+would have silently moved every existing target, deviation and optimiser
+fit to a much finer grain than the one it was set at.
+
+The default level is fixed per facet and never computed from the data:
+"deepest available" would make the meaning of a word depend on what
+happened to arrive, so uploading a more detailed factsheet for one fund
+would silently change the grain its targets are measured at. Non-tree
+facets declare a single level of the same shape, so nothing downstream
+has to branch on whether a facet has levels.
+
+Editing a resource file needs no version bump — the files are hashed, and
+Tools → **Reload resource files** picks up changes without a restart.
 
 ### Data layout
 
 ```
-portfolios.json       Your portfolios (name, funds, shares, targets)
-settings.json         App-level settings
+portfolios.json       Your portfolios (name, funds, shares, cash, targets)
+settings.json         App-level settings (enrichment, scoring presets,
+                      factsheet staleness, AI on/off)
 overrides.json        Per-fund overrides, keyed by ISIN, then by field
                       ({value, source, ts, note} per assertion)
 isin_map.json         Cached ISIN → ticker resolutions (from OpenFIGI)
@@ -141,7 +403,7 @@ cache/
   funds/<isin>.json         Per-fund data (holdings, breakdowns, sectors)
   _symbol_info.json         Shared per-symbol info cache (HQ country, etc.)
   _symbol_aliases.json      Resolved ticker alias cache
-  FX_*.json                 FX rate caches
+  FX_*.json / FXH_*.json    FX spot and historical rate caches
 uploads/              Server-side scratch for in-progress holdings uploads
 ```
 
@@ -152,9 +414,23 @@ the GBp and USD share classes of one ETF) share one fund-level cache
 entry, so a holdings upload made against either listing is immediately
 visible from both.
 
+Two fund-level slots hold one entry **per source** rather than a single
+value: `uploaded_breakdowns` keeps a CSV upload and a factsheet reading
+side by side per facet, and (since 0.77.0) `holdings` keeps Yahoo's
+top-10, the factsheet's position table and your uploaded file side by
+side. In both cases the sources are independent assertions about the
+same fund, writing one leaves the others untouched, and which one is in
+effect is a fund-level override applied on read — never a property of
+the stored data.
+
 The user-data files at the project root (portfolios, settings,
 overrides) live outside `cache/` on purpose: cache is "stuff we can
 lose without losing user state", and is purgeable. User intent is not.
+
+Factsheets are the exception that proves the rule — they sit under
+`cache/` because they are fetched artefacts, but they are never expired
+automatically, because nothing else can replace a document the user went
+and found.
 
 ### Request flow
 
@@ -167,13 +443,14 @@ A typical fund page render looks like:
    `extractors.load_fund_data` fetches from Yahoo, applies overrides,
    and writes back to the cache.
 4. The JSON response includes profile, price history, the four
-   breakdown cards (each from its configured source), and the merged
-   holdings list.
+   breakdown cards (each from its configured source, each carrying every
+   level it has), and the merged holdings list.
 
 A portfolio X-ray goes through `/api/portfolios/<pid>/view` and is
 much the same, but adds a final aggregation pass in `breakdowns.py`
 that weighs every fund's facet breakdown by its allocation in the
-portfolio.
+portfolio — once per level, since a fund contributes to each level
+independently.
 
 ### External services
 
@@ -182,10 +459,85 @@ portfolio.
 | Yahoo Finance  | Fund profile, price history, holdings, FX, search    | Always (the main data source)        |
 | OpenFIGI       | ISIN → ticker resolution                             | When adding a fund by ISIN           |
 | justETF        | ETF structure (replication, style) — best effort     | Optional, ETFs only, user-confirmed  |
+| Anthropic API  | Reading an uploaded issuer factsheet                 | Off by default; only when you ask    |
 
 All responses are cached locally with TTLs that reflect how often the
-underlying data actually changes (price: 1 day, sectors: 7 days,
-profile: 30 days, asset class: 90 days, ISIN→ticker: 30 days).
+underlying data actually changes (price: 1 day, sectors and issuer asset
+allocation: 7 days, profile: 30 days, fund asset class: 90 days,
+ISIN→ticker: 30 days, FX: 6 hours). Holdings are the exception: they are
+never expired on a clock, because a fund's holdings only change when you
+ask for them — "Reload fund data" on the fund page, or "Refresh all" on
+the portfolio.
+
+### TLS interception (antivirus and corporate proxies)
+
+Software that inspects HTTPS — most antivirus "web shields", most
+corporate proxies — does not observe your traffic, it replaces it. It
+terminates the connection itself and re-signs the response with a root
+certificate of its own, which it installs in the **operating system's**
+certificate store. Every browser on the machine keeps working and shows
+no warning, because browsers read that store.
+
+Python does not. It ships a fixed list of public certificate
+authorities (`certifi`) and knows nothing about the machine's own. So
+the moment such a scanner is switched on, every Yahoo call starts
+failing with:
+
+```
+curl: (60) SSL certificate problem: unable to get local issuer certificate
+```
+
+and PorxPy reports it as "Yahoo did not return live data for …", because
+from the fetch's point of view that is all it knows.
+
+PorxPy handles this itself: at startup it builds a certificate bundle of
+`certifi`'s roots **plus** the roots the operating system already trusts,
+and points its Yahoo transport at it (`porxpy/yf_session.py`; the startup
+banner logs how many were added). Verification stays on, and nothing is
+trusted that the machine did not already trust. Set `PORXPY_CA_BUNDLE` to
+a PEM file to supply your own instead.
+
+**Turning the scanning off, if you would rather.** In Avast Free
+Antivirus the two controls are in different places:
+
+- *Exclude individual sites* — **☰ Menu ▸ Settings ▸ General ▸
+  Exceptions ▸ Add exception**, confirm with **Next ▸ I understand the
+  risks**, choose the **Website / Domain** tab, enter the domain (e.g.
+  `api.openfigi.com`) and click **Add**.
+- *Stop inspecting HTTPS altogether* — **☰ Menu ▸ Settings ▸ Scam
+  Guardian ▸ Web Guard**, and untick **Enable HTTPS scanning**. Avast
+  then stops re-signing encrypted traffic; the rest of Web Guard's
+  protection stays on. (Web Guard was called Web Shield in older
+  versions.)
+
+To check whether a host is still being intercepted, look at who issued
+its certificate:
+
+```bash
+echo | openssl s_client -connect api.openfigi.com:443 -servername api.openfigi.com 2>/dev/null | grep issuer
+```
+
+A real certificate authority (DigiCert, Amazon, Let's Encrypt) means the
+traffic reaches the site untouched. The scanner's own name there means it
+is still in the middle.
+
+**Known limit.** This restores Yahoo, which is where the funds come from,
+but not the `requests`-based lookups — OpenFIGI ISIN resolution and
+justETF enrichment. Python 3.13 enabled the strict X.509 check
+`VERIFY_X509_STRICT` by default, and some scanner roots are malformed in
+a way it rejects outright (Avast's, for one, does not mark its basic
+constraints critical) no matter which bundle they are offered in. Turning
+that check off would relax certificate validation for every connection
+the app makes, so PorxPy does not. If you need those two services while a
+scanner is active, exclude `api.openfigi.com` and `www.justetf.com` from
+its HTTPS scanning, or turn that scanning off.
+
+Individual fields age by **group** rather than by cache category, since
+how often something changes is a property of the data and not of where
+it happens to be stored: identification effectively never (an ISIN does
+not change), structure yearly, operational figures like TER and fund
+size quarterly, trading data daily. That is what the field-level
+freshness indicators and the per-field re-source controls read.
 
 ---
 
@@ -202,7 +554,7 @@ Dependencies (see `requirements.txt`):
 - `Flask` — HTTP server
 - `Flask-Cors` — CORS support
 - `yfinance` — Yahoo Finance client
-- `requests` — HTTP for OpenFIGI / justETF
+- `requests` — HTTP for OpenFIGI / justETF / Anthropic
 - `pandas` — CSV / Excel parsing in the holdings upload flow
 - `openpyxl` — Excel file reading
 
@@ -222,6 +574,12 @@ pip install -r requirements.txt
 
 That's it. There's nothing else to configure.
 
+The AI helper is the one optional extra. It is off by default; to use
+it, set `ANTHROPIC_API_KEY` in your environment before starting the app
+and switch it on in Settings. The key is read from the environment and
+never written to `settings.json`, which sits in the project directory in
+plaintext and gets copied around.
+
 ---
 
 ## Running
@@ -236,7 +594,7 @@ You should see a startup banner:
 
 ```
 =======================================================
-  PorxPy  v0.49.2  (built 2026-07-26)
+  PorxPy  v0.80.0  (built 2026-08-24)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -259,6 +617,9 @@ If you want a clean slate, delete `cache/` to wipe all fetched data
 the web UI, which does the same and offers selective wipes (e.g. just
 the price cache, or everything including portfolios).
 
+Export a bundle from Settings → Backup & restore first if there is
+curation you don't want to redo.
+
 ---
 
 ## Privacy
@@ -277,12 +638,84 @@ leaves your machine. The only outbound traffic is:
   Off by default, and the API key is read from the environment rather
   than stored.
 
+Bundles are files on your disk. Nothing is uploaded anywhere, and a
+fund bundle deliberately leaves out the overrides that describe how
+*you* use a fund rather than what the fund is.
+
 There are no telemetry, analytics, or update checks.
+
+---
+
+## Known open issues
+
+Verified defects in the parts of PorxPy this document owns — the app as a
+whole, its endpoints and its transport. Deliberate design boundaries are
+described where the feature is, not here, and each of the other design
+documents keeps the issues of its own subject: `OPTIMIZER.md` §13 for the
+solver, `FACET_TREE.md` §17 for the facet trees. Ideas that are merely
+absent rather than wrong belong in `WISHLIST.md`.
+
+### A portfolio view ships every fund's price history and holdings, and reads neither
+
+*Found 2026-08-24, at v0.80.0.*
+
+`GET /api/portfolios/<pid>/view` attaches each fund's whole
+`load_fund_data` blob under `funds[].data`. Two keys in there dominate
+the response and are never read by the screen it serves. Measured on a
+27-fund portfolio, 7.9MB of compact JSON:
+
+| Block | Bytes | Share | Read by this view? |
+|---|---|---|---|
+| `funds[].data.price_history` | 4,849,698 | 61.3% | no |
+| `funds[].data.holdings_rows` | 2,790,864 | 35.3% | only `.length` |
+| everything the view actually uses | 274,394 | 3.5% | yes |
+
+Neither block is idle by accident — each has its own endpoint. The
+portfolio History chart calls `/api/portfolios/<pid>/price_history`,
+which returns per-fund daily *values* in the base currency with FX
+applied and carry-forward alignment; raw OHLCV would not answer that
+question. The aggregated holdings table calls `/holdings_rollup`.
+Valuation for the view itself is finished server-side in
+`_build_enriched_funds` before anything is serialised, so the price
+series is spent by the time it is attached. The only readers of
+`f.data.holdings_rows` in portfolio code are two
+`hs.top_count || (f.data?.holdings_rows || []).length` fallbacks, and
+`holdings_status.top_count` is present for every real fund (only the
+synthetic cash rows lack it, and they hold nothing).
+
+**The consequence is not just waste.** With debug pretty-printing the
+response reaches ~15.7MB, and the development server does not deliver
+all of it: `Content-Length: 15707874` against 15698590 bytes received,
+so the JSON arrives truncated and unparseable and that portfolio's view
+fails to load. Smaller portfolios (400KB–3.3MB) are unaffected, which is
+why this reads as an intermittent fault rather than a size limit.
+
+**The fix** is to strip both keys from the view response only — the fund
+page reads both and must keep them. That takes the payload to ~274KB and
+removes the truncation. One open question before doing it: whether to
+drop `price_history` outright, or keep a trimmed date-and-close series
+inline (~40% of its current size) against a future portfolio screen that
+might want it. Each point currently carries `open`, `high`, `low`,
+`close` and `volume` at ~88 bytes.
+
+### Debug mode doubles the size of every JSON response
+
+*Found 2026-08-24, at v0.80.0.*
+
+`create_app()` leaves `app.json.compact` unset, so Flask decides by debug
+mode and indents every response when `debug=True` — which is how
+`main.py` runs. Measured on one portfolio view: 661,155 bytes in debug
+against 309,630 without, a factor of 2.14. It is invisible on small
+responses and it is what pushes the payload above into the range where
+the development server truncates it. Setting `app.json.compact = True`
+in `create_app()` fixes it for every endpoint at once; indentation is not
+something a browser needs, and anyone reading a response by hand has
+`jq`.
 
 ---
 
 ## Version
 
-Current release: **0.49.2** (2026-07-26)
+Current release: **0.80.0** (2026-08-24)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

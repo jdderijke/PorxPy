@@ -1,5 +1,5 @@
 """
-PorxPy — Portfolio X-ray Python.
+PorxPy — Portfolio X-ray Python
 
 Entry point. Prints a startup banner and runs the Flask development
 server. The actual program metadata (name, version, build date) lives in

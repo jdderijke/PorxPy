@@ -21,7 +21,7 @@ go stale: there is nowhere to store a stale one.
 
 The derivation levels, and the function for each:
 
-* :func:`canonicalise_facet_key` — normalise one raw facet value to a
+* :func:`resolve_facet_value` — resolve one raw facet value to a
   canonical rollup-bucket key (shared by every rollup below).
 * :func:`rollup_holdings` — **fund / holding level.** One fund's
   per-position rows → that fund's look-through breakdowns.
@@ -33,7 +33,7 @@ The derivation levels, and the function for each:
   its own card is set to, so there is no portfolio-wide source switch.
 
 For backwards compatibility, :mod:`porxpy.utils` re-exports
-``canonicalise_facet_key`` and ``rollup_holdings`` so existing
+``resolve_facet_value`` and ``rollup_holdings`` so existing
 ``from porxpy.utils import ...`` call sites keep working.
 """
 
@@ -41,7 +41,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from porxpy.config import (BREAKDOWN_SOURCES, FACET_NOT_APPLICABLE,
+from porxpy.config import (BREAKDOWN_SOURCES, FACET_DEFAULT_LEVEL,
+                           FACET_LEVELS, FACET_NOT_APPLICABLE,
                            META_FACETS, NA_KEY, SUPPLIED_BREAKDOWN_SOURCES,
                            TARGET_FACETS, UNKNOWN_KEY)
 
@@ -50,9 +51,20 @@ from porxpy.config import (BREAKDOWN_SOURCES, FACET_NOT_APPLICABLE,
 # somebody could close (UNKNOWN_KEY) or a question that does not apply to
 # the position (NA_KEY) — see the note beside them in config.
 #
-# Neither is ever renormalised away: a top-10 list covering a fifth of a
-# fund describes a fifth of a fund, and scaling it to 100% would invent
-# the rest.
+# Neither is renormalised away on its own: a top-10 list covering a fifth
+# of a fund describes a fifth of a fund, and scaling it to 100% by
+# default would invent the rest.
+#
+# v0.77.0 adds the one exception, and it is an exception the USER makes,
+# per fund and per facet: `breakdown_complete.<facet>`. Where no source
+# can supply more — the issuer publishes a top-10 and nothing else, and
+# there is no factsheet and no file to be had — an `unknown` slice is not
+# a gap anyone can close, and leaving it in place makes the fund useless
+# to the optimiser rather than merely incompletely described. The
+# assertion says "read this source's coverage as the whole fund", and
+# assume_complete_items below is what carries it out. Nothing asserts it
+# automatically: the default is still, and deliberately, that a fifth is
+# a fifth.
 _RESIDUAL_KEYS = (UNKNOWN_KEY, NA_KEY)
 
 
@@ -111,60 +123,205 @@ def _blank_facet_key(facet: str, asset_class: str) -> str:
 
 # NOTE: the asset-class spelling aliases that used to live here as
 # _ASSET_CLASS_ALIASES have moved to Fund_class_definitions.csv (loaded
-# by resources.py). canonicalise_facet_key now calls
-# resources.resolve_fund_asset_class so there is a single maintained
+# by resources.py). resolve_facet_value now calls
+# resources.resolve_asset_tree so there is a single maintained
 # authority for the fund-level vocabulary rather than three hand-kept
 # copies. To add a spelling, edit the `matches` column in that CSV.
 
 
-def canonicalise_facet_key(facet: str, raw: Any) -> str:
-    """Return the canonical key for a rollup-bucket lookup.
+def resolve_facet_node(facet: str, raw: Any) -> tuple[str, str]:
+    """Resolve a value to its canonical node AT THE LEVEL IT NAMED.
 
-    Empty / ``None`` / ``"-"`` inputs return ``""`` so the caller can
-    decide which residual bucket to fold them into.
-    Non-empty inputs return a canonical string suitable for use as a
-    rollup-bucket key.
+    The difference from :func:`resolve_facet_value` is the whole reason
+    levelled blocks work. That function answers "what is this at the
+    facet's default level", which is what a flat consumer wants; a
+    factsheet saying "Cyclical" therefore comes back ``unknown``,
+    because cyclical is not a sector.
 
-    Args:
-        facet: One of ``"country"``, ``"asset_class"``, ``"currency"``,
-            ``"sector"``. Unknown facets pass through with just
-            ``.strip()``.
-        raw: The raw facet value off a holdings row.
+    Folding a value to one level before deriving the others destroys
+    what the source actually said: a super-sector-only factsheet would
+    report NO level as available, its own included. The block stores the
+    deepest thing the source said and derives every level from it, so
+    this is the resolution the block builder uses.
 
     Returns:
-        Canonical key string, or ``""`` for blank/sentinel inputs.
+        ``(node, unresolved_raw)`` — same contract as
+        :func:`resolve_facet_value`, but ``node`` may sit at any of the
+        facet's levels.
     """
-    # Local import to avoid a circular reference at module import time —
-    # resources.py only depends on config, not on utils, so this is safe.
-    from porxpy.resources import country_to_mstar
+    from porxpy.resources import resolve_country_tree, resolve_sector_tree
 
     s = ("" if raw is None else str(raw)).strip()
     if not s or s == "-":
-        return ""
+        return "", ""
+    if s in _RESIDUAL_KEYS:
+        return s, ""
+
+    if facet == "sector":
+        tree = resolve_sector_tree(s)
+        return (tree["matched"], "") if tree["level"] else ("", s)
 
     if facet == "country":
-        # country_to_mstar normalises case + handles aliases. Falls back
-        # to a lowercased+stripped form on unmappable inputs so two
-        # "Atlantis" rows from two different funds still bucket together.
-        mstar = country_to_mstar(s)
-        return mstar if mstar else s.lower()
+        tree = resolve_country_tree(s)
+        return (tree["matched"], "") if tree["level"] else ("", s)
 
     if facet == "asset_class":
-        # Resolve against Fund_class_definitions.csv (the fund-level
-        # vocabulary the rollup aggregates to). resolve_fund_asset_class
-        # handles "bond"/"bonds"/"fixed income"/"bondPosition" → the
-        # canonical "fixed_income", etc. Unmappable inputs fall back to
-        # the lowercased raw so two identical unknowns still bucket
-        # together (matching the old behaviour).
-        from porxpy.resources import resolve_fund_asset_class
-        canon = resolve_fund_asset_class(s)
-        return canon if canon else s.lower()
+        # Asset was missing from this list until v0.76.0, so it alone
+        # fell through to resolve_facet_value below — which answers at
+        # the facet's own level, not at the level the source named. The
+        # asset tree fills a finer level through single-child nodes, so
+        # "Aandelen" (an alias of the super class *equity*) came back as
+        # the middle-level "shares and options": a grain no source had
+        # stated. A holdings row carrying the same word resolved to
+        # equity, because normalise_facets always used the tree. One
+        # spelling, two answers, depending only on whether it arrived in
+        # a row or in a factsheet.
+        from porxpy.resources import resolve_asset_tree
+        tree = resolve_asset_tree(s)
+        return (tree["matched"], "") if tree["level"] else ("", s)
+
+    # Single-level facets: the node IS the value.
+    return resolve_facet_value(facet, raw)
+
+
+def resolve_facet_value(facet: str, raw: Any) -> tuple[str, str]:
+    """Resolve one raw facet value, reporting whether it resolved.
+
+    **v0.59.0.** Replaces ``canonicalise_facet_key``, which returned a
+    bucket key and nothing else — so a value the taxonomy had never
+    heard of came back as its own lowercased self and became a slice on
+    the card, sitting beside real keys as though it were one of them.
+    "Diversified Holdings" is not a sector; the fund does not hold 8% of
+    it. That conflated two different statements — *this fund holds 8% of
+    that thing* and *the source said something we could not place* — and
+    only the first belongs in a distribution.
+
+    Two consequences of separating them:
+
+    * Coverage becomes monotonic across the sector levels. The
+      non-monotonic case — covered at sector, unknown at super — existed
+      only because an unrecognised value passed through at sector level
+      and could go no further.
+    * The tree derivation loses its special case: recognised values roll
+      up, everything else is ``unknown``, at every level.
+
+    Nothing about *storage* changes. Every store already preserves the
+    raw value on a miss — a holdings row keeps it in the column, a
+    factsheet item keeps it as its key — so resolution happens here, on
+    the way to a bucket, and re-runs on every read. That is what makes
+    an added alias repair history with no migration: the next read
+    resolves what the previous read could not.
+
+    Args:
+        facet: ``"country"``, ``"region"``, ``"asset_class"``,
+            ``"currency"`` or ``"sector"``. Unknown facets pass through
+            as resolved, stripped — they are not resource-backed and
+            have no vocabulary to fail against.
+        raw: The raw facet value.
+
+    Returns:
+        ``(key, unresolved_raw)``.
+
+        * ``("", "")`` — blank input. The caller picks a residual.
+        * ``(key, "")`` — resolved; ``key`` is canonical.
+        * ``("", raw)`` — the source said something, and it named
+          nothing in the vocabulary. The caller folds the weight into
+          ``unknown`` and records ``raw`` so the user can resolve it.
+    """
+    # Local import to avoid a circular reference at module import time —
+    # resources.py only depends on config, not on utils, so this is safe.
+    from porxpy.resources import (
+        country_to_mstar, resolve_currency,
+        resolve_region_facet, resolve_sector_tree,
+    )
+
+    s = ("" if raw is None else str(raw)).strip()
+    if not s or s == "-":
+        return "", ""
+
+    # Residual keys are answers, not values to re-resolve. A rollup
+    # feeding its own output back through here — which build_fund_
+    # breakdowns does for the holdings source — must not report
+    # "unknown" as an unresolved raw value.
+    if s in _RESIDUAL_KEYS:
+        return s, ""
+
+    if facet == "country":
+        mstar = country_to_mstar(s)
+        if mstar:
+            return mstar, ""
+        # A value naming a region is a real answer that this level
+        # cannot carry — "Europe ex-UK" tells us something true, just
+        # not which country. Reporting it unresolved would put it in the
+        # dialog asking to be mapped to a country, and any such mapping
+        # would claim the source said more than it did. Unknown here,
+        # answered in the region view, and silent in the dialog.
+        if resolve_region_facet(s):
+            return "", ""
+        return "", s
+
+    if facet == "super_region":
+        from porxpy.resources import resolve_country_tree
+        tree = resolve_country_tree(s)
+        if tree["level"]:
+            k = tree["super_region"]
+            return (k, "") if k not in ("unknown",) else ("", "")
+        return "", s
+
+    if facet == "region":
+        # A country column may name a region — "Europe ex-UK" is a real
+        # answer, just not to the country question. Resolved here so the
+        # region view can use it; the country view reports it unknown.
+        reg = resolve_region_facet(s)
+        if reg:
+            return reg, ""
+        mstar = country_to_mstar(s)
+        if mstar:
+            from porxpy.resources import MSTAR_TO_REGION
+            derived = MSTAR_TO_REGION.get(mstar) or ""
+            return (derived, "") if derived else ("", "")
+        return "", s
+
+    if facet in ("asset_class", "sub_class", "super_class"):
+        # One tree (Asset_definitions.csv), answered at the level asked
+        # for. Until v0.70.0 this read Fund_class_definitions.csv while
+        # holdings rows read Holdings_class_definitions.csv — two files
+        # describing one taxonomy at two grains, disagreeing on spelling
+        # ("bond" against "fixed_income") for the same concept.
+        #
+        # A value that resolves but cannot reach the level asked for is
+        # NOT a miss: "equity" is a perfectly good answer that simply
+        # says nothing at sub-class grain. Reporting it as unresolved
+        # would send the user to the Resolve dialog to fix a value that
+        # was never wrong.
+        from porxpy.resources import resolve_asset_tree
+        tree = resolve_asset_tree(s)
+        if not tree["level"]:
+            return "", s
+        key = tree.get(facet) or UNKNOWN_KEY
+        return ("", "") if key == UNKNOWN_KEY else (key, "")
 
     if facet == "currency":
-        return s.upper()
+        # Validated against currencies.csv for the first time in
+        # v0.59.0. It used to be uppercased and accepted, so an
+        # unrecognised currency was indistinguishable from a real one
+        # and no dialog could ever surface it.
+        code = resolve_currency(s)
+        return (code, "") if code else ("", s)
 
-    # sector and any unknown facet — keep raw form (already stripped).
-    return s
+    if facet == "sector":
+        tree = resolve_sector_tree(s)
+        if tree["level"]:
+            # The rollup's "sector" bucket is the middle level. A value
+            # that matched only at super-sector level has no sector to
+            # report — that is a gap in what the source said, not an
+            # unresolved value, so it is not offered for aliasing.
+            return (tree["sector"] if tree["sector"] not in _RESIDUAL_KEYS
+                    else UNKNOWN_KEY), ""
+        return "", s
+
+    # Not a resource-backed facet — nothing to fail against.
+    return s, ""
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +339,7 @@ def rollup_holdings(rows: list[dict]) -> dict:
     while a derivative or a gap in the upload is ``"unknown"`` — see
     :data:`~porxpy.config.FACET_NOT_APPLICABLE`.
 
-    Facet values are canonicalised via :func:`canonicalise_facet_key`
+    Facet values are resolved via :func:`resolve_facet_value`
     before bucketing — see that function for the per-facet rules.
 
     Returned weights are FRACTIONS (0–1) of the WHOLE FUND, not of the
@@ -210,10 +367,25 @@ def rollup_holdings(rows: list[dict]) -> dict:
               "total_weight_pct": 99.87,
             }
     """
-    facets = ("sector", "currency", "country", "asset_class")
+    # sub_sector rides alongside sector rather than replacing it. The
+    # two answer different questions of the same rows, and every existing
+    # consumer — targets, the deviation report, the X-ray cards — reads
+    # "sector" meaning the middle level. Widening that name would have
+    # changed what it means to all of them at once.
+    #
+    # v0.59.0 adds "region" beside "country" on exactly the same
+    # footing. A country column may name a region — "Europe ex-UK" is a
+    # real answer, just not to the country question — and until then
+    # such a value became a bucket called "europe ex-uk" sitting among
+    # the countries. Deriving the region for every row also means the
+    # region view is aggregated from what each row actually said rather
+    # than re-bucketed afterwards.
+    facets = ("sector", "sub_sector", "currency", "country", "region",
+              "super_region", "asset_class", "sub_class", "super_class")
     empty  = {
         **{f: [] for f in facets},
         "coverage":         {f: 0.0 for f in facets},
+        "unresolved":       {f: [] for f in facets},
         "total_weight_pct": 0.0,
     }
     if not rows:
@@ -223,6 +395,11 @@ def rollup_holdings(rows: list[dict]) -> dict:
     # contributes its weight to every facet's bucket — to a real key, or
     # to one of the two residuals when the row's value is blank.
     buckets: dict[str, dict[str, float]] = {f: {} for f in facets}
+    # Weight behind each raw value the vocabulary did not recognise,
+    # per facet. Not a bucket of its own — these weights are already
+    # inside "unknown" — but the annotation that lets the card say what
+    # its unknown slice is made of and the dialog say what to fix.
+    unresolved: dict[str, dict[str, float]] = {f: {} for f in facets}
     total_w = 0.0
 
     for r in rows:
@@ -236,9 +413,57 @@ def rollup_holdings(rows: list[dict]) -> dict:
         # A blank sector means one thing on an equity row and another on
         # a cash row, so the row's own asset class decides which residual
         # it lands in.
-        row_ac = canonicalise_facet_key("asset_class", r.get("asset_class"))
+        # normalise_facets has already resolved the row's asset tree, so
+        # the column is canonical. Re-resolving it here would ask the
+        # same question twice and could answer differently.
+        row_ac = (r.get("asset_class") or "").strip().lower()
         for facet in facets:
-            key = canonicalise_facet_key(facet, r.get(facet))
+            raw_miss = ""
+            if facet == "sub_sector":
+                # Derived, never read from a column of its own: the row
+                # stores the deepest value it matched plus which level
+                # that is, and a sub sector exists only when the match
+                # went that deep. A row matched at sector level has a sub
+                # sector — the source just did not say which — so this is
+                # a gap, not an inapplicable question.
+                node = (r.get("sector_node") or "").strip().lower()
+                # ...unless the row resolved to the n/a residual, which
+                # is not a level-specific answer: a sovereign issuer has
+                # no line of business at ANY grain, so "no sector
+                # applies" holds for the sub-sector view too. That is the
+                # rule sector_key_at_level already states for bucket keys
+                # ("residuals pass through unchanged at every level");
+                # this derivation simply did not follow it, so a treasury
+                # sleeve counted against sub-sector coverage as a gap
+                # nothing could ever close. Only the sub-sector view
+                # needs saying: every other level reads its own column,
+                # where normalise_facets has already put the residual.
+                key = node if (node == NA_KEY
+                               or (r.get("sector_level") or "") == "sub_sector") else ""
+            elif facet in ("asset_class", "sub_class", "super_class"):
+                # One tree, three levels, read from the level columns
+                # normalise_facets already derived from the ONE value the
+                # source stated. Reading them rather than re-resolving
+                # keeps the buckets agreeing with the rows: a row that
+                # said "equity" has a super class and an asset class (its
+                # single child) and no sub class, and re-resolving from a
+                # derived column would lose which of those the file
+                # actually asserted.
+                key = (r.get(facet) or "").strip().lower()
+            elif facet in ("region", "super_region"):
+                # Read from country_node — the deepest value the row
+                # actually said — not from the derived country column.
+                # A row whose file said "Europe (Developed)" has an
+                # EMPTY country (there is no country to name) but a real
+                # region, and reading the derived column would throw
+                # that away and report the row as a gap.
+                key, raw_miss = resolve_facet_value(
+                    facet, r.get("country_node") or r.get("country"))
+            else:
+                key, raw_miss = resolve_facet_value(facet, r.get(facet))
+            if raw_miss:
+                unresolved[facet][raw_miss] = \
+                    unresolved[facet].get(raw_miss, 0.0) + w
             if not key:
                 key = _blank_facet_key(facet, row_ac)
             buckets[facet][key] = buckets[facet].get(key, 0.0) + w
@@ -278,12 +503,39 @@ def rollup_holdings(rows: list[dict]) -> dict:
             items = []
         out[facet] = items
 
-    # Coverage is the share of the fund the rows actually account for —
-    # a real number again, rather than 1.0 by construction. It is what
-    # the card's coverage badge should report: a top-10 list is 21%
-    # covered however tidily its own weights add up.
-    covered = (total_w / denom) if total_w > 0 else 0.0
-    out["coverage"] = {f: round(covered, 6) for f in facets}
+    # Coverage is the share of the fund this facet has been ANSWERED for,
+    # computed per facet rather than once for all of them.
+    #
+    # It used to be row completeness — total_w / denom — which is the
+    # same number for every facet and says nothing about whether the
+    # rows actually carried a value. A full holdings list where nothing
+    # matched at sub-sector level read 100% covered while every slice
+    # said "unknown". Excluding the unknown bucket generalises the old
+    # meaning rather than replacing it: for a top-10 list whose sectors
+    # are all known, the missing 79% IS the unknown bucket, so this still
+    # reports 21%.
+    #
+    # "n/a" counts as covered. A cash sleeve has no sector and never
+    # will, and scoring that as a gap left a cash-heavy fund permanently
+    # short of 100% with nothing anyone could do about it.
+    out["coverage"] = {}
+    for facet in facets:
+        if total_w <= 0:
+            out["coverage"][facet] = 0.0
+            continue
+        unknown_w = sum(it["weight"] for it in out[facet]
+                        if it["key"] == UNKNOWN_KEY)
+        out["coverage"][facet] = round(max(0.0, 1.0 - unknown_w), 6)
+
+    # Unresolved values, normalised against the same denominator as the
+    # buckets so their weights are directly comparable to the unknown
+    # slice they sit inside.
+    out["unresolved"] = {}
+    for facet in facets:
+        rows_u = [{"raw": raw, "weight": round(w / denom, 6)}
+                  for raw, w in unresolved[facet].items()] if total_w > 0 else []
+        rows_u.sort(key=lambda x: -x["weight"])
+        out["unresolved"][facet] = rows_u
     return out
 
 
@@ -364,12 +616,68 @@ def _items_from_issuer_asset_allocation(alloc: list[dict] | None) -> list[dict]:
     return out
 
 
+def _resolve_items(facet: str,
+                   items: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Re-bucket one source's items, separating what would not resolve.
+
+    Supplied sources store what the source said, in ``raw``, and
+    resolution happens here on every read — which is what lets an alias
+    added today repair a factsheet extracted last month with nothing
+    rewritten.
+
+    Until v0.76.0 this docstring described that behaviour while the
+    commit path stored the RESOLVED node under ``key``, so a factsheet
+    naming "Diversified Holdings" was filed as whatever it resolved to
+    at ingest and this function re-resolved a canonical to itself. The
+    claim was true of the reader and false of the writer, which is the
+    hardest kind of wrong to notice.
+
+    Returns:
+        ``(items, unresolved)``. Items are canonical-keyed with
+        unresolved weight folded into ``unknown``; ``unresolved`` is
+        ``[{"raw", "weight"}]``, sorted heaviest first.
+    """
+    buckets: dict[str, float] = {}
+    misses:  dict[str, float] = {}
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        try:
+            w = float(it.get("weight") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if w <= 0:
+            continue
+        # ``raw`` is what the source said and is resolved here, on every
+        # read; ``key`` is a user's pin and is taken as given. Before
+        # v0.76.0 the stored ``key`` WAS the resolved node, so this
+        # resolution re-resolved a canonical to itself and the docstring
+        # above described a propagation that could not happen. Items
+        # written under the old shape are dropped by the cache migration
+        # rather than read here, so there is no third case.
+        pinned = (it.get("key") or "").strip()
+        key, raw_miss = ((pinned, "") if pinned
+                         else resolve_facet_node(facet, it.get("raw")))
+        if raw_miss:
+            misses[raw_miss] = misses.get(raw_miss, 0.0) + w
+        if not key:
+            key = UNKNOWN_KEY
+        buckets[key] = buckets.get(key, 0.0) + w
+
+    out_items = [{"key": k, "weight": round(w, 6)} for k, w in buckets.items()]
+    out_items.sort(key=lambda x: (x["key"] in _RESIDUAL_KEYS, -x["weight"]))
+    out_miss = [{"raw": r, "weight": round(w, 6)} for r, w in misses.items()]
+    out_miss.sort(key=lambda x: -x["weight"])
+    return out_items, out_miss
+
+
 def build_fund_breakdowns(holdings_breakdowns: dict,
                           sectors: list[dict] | None,
                           asset_allocation: list[dict] | None,
                           overrides: dict | None,
                           uploaded_facets: dict | None = None,
-                          sources_present: dict | None = None) -> dict:
+                          sources_present: dict | None = None,
+                          completed: dict | None = None) -> dict:
     """Resolve the four fund-level breakdown cards into one uniform block.
 
     This is a pure function: it reads only its arguments and does no I/O.
@@ -406,6 +714,16 @@ def build_fund_breakdowns(holdings_breakdowns: dict,
             :func:`porxpy.utils.uploaded_breakdowns_get`). Shape
             ``{facet: {source: [{"key","weight"}, ...]}}``. ``None`` is
             equivalent to all-empty.
+        completed: ``{facet: bool}`` — facets the user has asserted are
+            fully covered by their chosen source (the
+            ``breakdown_complete.*`` override fields). For those, the
+            card's ``unknown`` slice is dropped and the identified part
+            scaled up to account for the fund; the block carries
+            ``completed: True`` and keeps the pre-assertion coverage in
+            ``identified``. Everything downstream — the portfolio X-ray,
+            the target deviations, the optimiser — then reads the fund as
+            fully described, which is the point: an ``unknown`` slice
+            tells the solver nothing it can act on.
         sources_present: ``{"holdings": bool, "factsheet": bool}`` —
             whether the fund has any holdings at all, and whether it has
             a factsheet that has been extracted. Yahoo is always
@@ -463,9 +781,16 @@ def build_fund_breakdowns(holdings_breakdowns: dict,
         # are both "someone handed us these numbers" and neither should
         # overwrite the other.
         per_source = (ub.get(facet) or {}) if isinstance(ub.get(facet), dict) else {}
+        # A supplied item is real if it has EITHER — ``raw`` (the source's
+        # wording, resolved by _resolve_items below) or ``key`` (a user's
+        # pin). Testing only ``key`` was the pre-0.76.0 shape and dropped
+        # every unpinned item here, so a factsheet extraction reached the
+        # card as nothing at all. The holdings list above is different and
+        # correctly tests ``key``: rollup_holdings resolves as it rolls
+        # up, so its items are canonical by the time they arrive.
         supplied = {
             name: [it for it in (per_source.get(name) or [])
-                   if isinstance(it, dict) and it.get("key")]
+                   if isinstance(it, dict) and (it.get("raw") or it.get("key"))]
             for name in SUPPLIED_BREAKDOWN_SOURCES
         }
 
@@ -493,18 +818,90 @@ def build_fund_breakdowns(holdings_breakdowns: dict,
             # the only source that is always there.
             src = "yahoo"
 
-        items = [dict(it) for it in (items_by_source.get(src) or [])]
+        raw_items = [dict(it) for it in (items_by_source.get(src) or [])]
+
+        # Resolve every source's keys through the one chokepoint, so a
+        # value the vocabulary does not recognise counts as unknown
+        # rather than becoming a slice of its own. The holdings source
+        # arrives already resolved (rollup_holdings ran the same
+        # function), so this is a no-op for it and its unresolved list
+        # is carried through instead of recomputed — the rollup knows
+        # the per-row weights, which the bucketed items no longer do.
+        items, unresolved = _resolve_items(facet, raw_items)
+        if src == "holdings":
+            unresolved = [dict(u) for u in
+                          ((hb.get("unresolved") or {}).get(facet) or [])]
+
         if not items:
             # The source exists but says nothing about this facet. That
             # is a gap in what it publishes, not an inapplicable
             # question — a different factsheet would answer it.
             items = [{"key": UNKNOWN_KEY, "weight": 1.0}]
 
-        out[facet] = {
-            "items":     items,
-            "source":    src,
-            "available": available,
-        }
+        block = build_facet_block(facet, items)
+
+        # The holdings rollup folds its sector buckets to sector level,
+        # so its finer grain lives in a distribution of its own rather
+        # than in the items — and the same for country/region. Those are
+        # two independent rollups of the SAME rows, so they agree by
+        # construction, and each is a better answer at its level than
+        # anything derivable from the other. Where such a rollup exists,
+        # it replaces the derived level.
+        #
+        # This is precisely why items are materialised per level rather
+        # than derived on read: for this source the finer level is not a
+        # function of the coarser one.
+        if src == "holdings":
+            for lv in block["levels"]:
+                if lv in (facet, block["default_level"]):
+                    continue
+                native = [it for it in (hb.get(lv) or [])
+                          if isinstance(it, dict) and it.get("key")]
+                if native:
+                    block["items"][lv]            = [dict(it) for it in native]
+                    block["coverage"][lv]         = level_coverage(native)
+                    block["levels_available"][lv] = any(
+                        it["key"] not in _RESIDUAL_KEYS for it in native)
+
+        # Which VIEWS each source could offer, not just the chosen one.
+        # The card uses this to say "this source does not report at that
+        # level, but another one does" — which is actionable where a
+        # bare disabled button is not.
+        #
+        # It has to be answered from each source's own items. The
+        # previous frontend asked the question by re-deriving the
+        # CURRENT source's items under a different source name, so it
+        # returned the same answer for every source and the tooltip was
+        # decorative.
+        lav_by_source: dict[str, dict[str, bool]] = {}
+        for sname, sitems in items_by_source.items():
+            if not available.get(sname):
+                continue
+            resolved, _ = _resolve_items(facet, sitems)
+            sblock = build_facet_block(facet, resolved)
+            if sname == "holdings":
+                for lv in sblock["levels"]:
+                    native = [it for it in (hb.get(lv) or [])
+                              if isinstance(it, dict) and it.get("key")]
+                    if native:
+                        sblock["levels_available"][lv] = any(
+                            it["key"] not in _RESIDUAL_KEYS for it in native)
+            lav_by_source[sname] = sblock["levels_available"]
+
+        # The user's completeness assertion, applied last so it acts on
+        # the finished block — including the native finer levels the
+        # holdings source substitutes above, which would otherwise keep
+        # an unknown slice the chosen level no longer has.
+        if (completed or {}).get(facet):
+            assume_complete_block(block)
+
+        block["source"]     = src
+        block["available"]  = available
+        block["levels_available_by_source"] = lav_by_source
+        # What the unknown slice is made of. Empty when the gap is a
+        # silence rather than something we failed to place.
+        block["unresolved"] = unresolved
+        out[facet] = block
     return out
 
 
@@ -608,8 +1005,25 @@ def rollup_portfolio_fundlevel(enriched: list[dict],
         breakdown cards. They aggregate identically once reshaped,
         which is the whole point of reshaping them.
     """
-    buckets:       dict[str, dict[str, float]] = {f: {} for f in TARGET_FACETS}
-    covered_value: dict[str, float] = {f: 0.0 for f in TARGET_FACETS}
+    # {facet: {level: {key: money}}} — every level aggregated, always.
+    #
+    # A portfolio's sector data is three complete distributions exactly
+    # as a fund's is. Each fund contributes to each level independently,
+    # from its OWN block at that level: fund A reporting sub sectors and
+    # fund B reporting only sectors both count in full at sector level,
+    # while at sub-sector level B's whole weight is unknown. Nothing is
+    # derived from another level's portfolio total.
+    #
+    # Doing it any other way — aggregating one level and re-cutting it —
+    # would mean the portfolio could only ever be as fine as its
+    # coarsest fund, which is the opposite of what the levels are for.
+    def _levels_of(facet: str) -> tuple[str, ...]:
+        return FACET_LEVELS.get(facet) or (facet,)
+
+    buckets: dict[str, dict[str, dict[str, float]]] = {
+        f: {lv: {} for lv in _levels_of(f)} for f in TARGET_FACETS}
+    covered_value: dict[str, dict[str, float]] = {
+        f: {lv: 0.0 for lv in _levels_of(f)} for f in TARGET_FACETS}
 
     for e in enriched:
         v = (e.get("valuation") or {}).get("value_base")
@@ -628,57 +1042,81 @@ def rollup_portfolio_fundlevel(enriched: list[dict],
         meta = meta_facet_items(data.get("fund_structure"))
         fv = float(v)
         for facet in TARGET_FACETS:
-            if facet in META_FACETS:
-                items = meta.get(facet) or []
-            else:
-                items = (fb.get(facet) or {}).get("items") or []
-            if not items:
-                continue
-            unknown_w = 0.0
-            for it in items:
-                key = (it.get("key") or "").strip()
-                if not key:
-                    key = UNKNOWN_KEY
-                try:
-                    w = float(it.get("weight") or 0.0)
-                except (TypeError, ValueError):
+            for level in _levels_of(facet):
+                if facet in META_FACETS:
+                    items = meta.get(facet) or []
+                else:
+                    # This fund's OWN distribution at this level. A fund
+                    # that cannot reach the level contributes unknown
+                    # there and its real answer at the levels it can.
+                    items = facet_items(fb.get(facet) or {}, level)
+                if not items:
                     continue
-                if key == UNKNOWN_KEY:
-                    unknown_w += w
-                buckets[facet][key] = buckets[facet].get(key, 0.0) + fv * w
-            # Coverage measures the share of the portfolio this facet has
-            # been ANSWERED for, so only "unknown" counts against it.
-            # "n/a" is an answer — a cash sleeve has no sector and never
-            # will — and scoring it as a gap left a cash-heavy portfolio
-            # permanently short of 100% with nothing anyone could do.
-            # Everything else counts in full, including issuer fractions
-            # that don't quite total 1.0: an incomplete answer is still
-            # an answer.
-            covered_value[facet] += fv * max(0.0, 1.0 - unknown_w)
+                unknown_w = 0.0
+                for it in items:
+                    key = (it.get("key") or "").strip() or UNKNOWN_KEY
+                    try:
+                        w = float(it.get("weight") or 0.0)
+                    except (TypeError, ValueError):
+                        continue
+                    if key == UNKNOWN_KEY:
+                        unknown_w += w
+                    buckets[facet][level][key] = \
+                        buckets[facet][level].get(key, 0.0) + fv * w
+                # Coverage measures the share of the portfolio this facet
+                # has been ANSWERED for, so only "unknown" counts against
+                # it. "n/a" is an answer — a cash sleeve has no sector and
+                # never will — and scoring it as a gap left a cash-heavy
+                # portfolio permanently short of 100% with nothing anyone
+                # could do. Everything else counts in full, including
+                # issuer fractions that don't quite total 1.0: an
+                # incomplete answer is still an answer.
+                #
+                # Per level, because the same portfolio is genuinely
+                # better covered at some grains than others.
+                covered_value[facet][level] += fv * max(0.0, 1.0 - unknown_w)
 
-    fundlevel_breakdowns: dict[str, list[dict]] = {}
-    fundlevel_coverage:   dict[str, float] = {}
+    fundlevel_breakdowns: dict[str, dict] = {}
+    fundlevel_coverage:   dict[str, dict[str, float]] = {}
     for facet in TARGET_FACETS:
-        covered = covered_value[facet]
-        fundlevel_coverage[facet] = (
-            round(covered / total_base, 6) if total_base > 0 else 0.0)
-        if covered <= 0:
-            fundlevel_breakdowns[facet] = []
-            continue
-        # Normalise against the summed bucket money rather than `covered`
-        # directly — issuer fractions may not total 1.0 per fund, and the
-        # card should still read as a 100% distribution.
-        bucket_total = sum(buckets[facet].values())
-        denom = bucket_total if bucket_total > 0 else covered
-        items: list[dict] = []
-        for k, val in buckets[facet].items():
-            items.append({
-                "key":    k,
-                "weight": round(val / denom, 6),
-                "value":  round(val, 2),
-            })
-        items.sort(key=lambda x: (x["key"] in _RESIDUAL_KEYS, -x["weight"]))
-        fundlevel_breakdowns[facet] = items
+        levels    = _levels_of(facet)
+        per_level: dict[str, list[dict]] = {}
+        cov_level: dict[str, float] = {}
+        for level in levels:
+            covered = covered_value[facet][level]
+            cov_level[level] = (round(covered / total_base, 6)
+                                if total_base > 0 else 0.0)
+            if covered <= 0:
+                per_level[level] = []
+                continue
+            # Normalise against the summed bucket money rather than
+            # `covered` directly — issuer fractions may not total 1.0
+            # per fund, and the card should still read as a 100%
+            # distribution.
+            bucket_total = sum(buckets[facet][level].values())
+            denom = bucket_total if bucket_total > 0 else covered
+            items = [{"key": k,
+                      "weight": round(val / denom, 6),
+                      "value":  round(val, 2)}
+                     for k, val in buckets[facet][level].items()]
+            items.sort(key=lambda x: (x["key"] in _RESIDUAL_KEYS, -x["weight"]))
+            per_level[level] = items
+
+        # The SAME block shape the fund cards read, so the portfolio
+        # card, the fund card and facet_items() are one contract rather
+        # than three. levels_available carries no source dimension here:
+        # a portfolio has no source selector, its funds each have their
+        # own.
+        fundlevel_breakdowns[facet] = {
+            "levels":           list(levels),
+            "items":            per_level,
+            "coverage":         cov_level,
+            "levels_available": {
+                lv: any(it["key"] not in _RESIDUAL_KEYS for it in per_level[lv])
+                for lv in levels},
+            "default_level":    FACET_DEFAULT_LEVEL.get(facet, levels[-1]),
+        }
+        fundlevel_coverage[facet] = cov_level
 
     return {
         "fundlevel_breakdowns": fundlevel_breakdowns,
@@ -720,8 +1158,8 @@ def rollup_portfolio_fundlevel(enriched: list[dict],
 # Field overrule (the same holding, conflicting non-blank values across
 # funds). For each output field, among all contributing funds that have
 # a non-blank value, the winner is chosen by:
-#   1. source rank — manual_upload (0) beats yahoo_enriched (1) beats
-#      yahoo_top10 (2) / anything else (3);
+#   1. source rank — manual_upload (0) beats factsheet (1) beats
+#      yahoo_enriched (2) beats yahoo_top10 (3) / anything else (4);
 #   2. then larger contributing fund — bigger fund_value_base wins.
 # A blank field in one fund is simply filled from another fund that has
 # it; only genuine non-blank disagreements invoke the ranking.
@@ -729,16 +1167,31 @@ def rollup_portfolio_fundlevel(enriched: list[dict],
 # Source trust ranking for the field-overrule tie-break. Lower = wins.
 _SOURCE_RANK: dict[str, int] = {
     "manual_upload":  0,
-    "yahoo_enriched": 1,
-    "yahoo_top10":    2,
+    # v0.77.0. A factsheet's position table is the issuer's own list,
+    # with whatever sector / country / currency columns the issuer chose
+    # to print beside it — the same kind of evidence an uploaded file
+    # carries, and better than a per-symbol Yahoo lookup, which is a
+    # third party's opinion about the security rather than the fund's
+    # own statement. It ranks below an upload only because an upload is
+    # usually the complete schedule where a factsheet prints the top ten.
+    "factsheet":      1,
+    "yahoo_enriched": 2,
+    "yahoo_top10":    3,
 }
-_SOURCE_RANK_DEFAULT = 3
+_SOURCE_RANK_DEFAULT = 4
 
 # Output fields carried on a merged portfolio-holding row, excluding the
 # identity/weight/value fields which are handled specially.
 _MERGE_FIELDS: tuple[str, ...] = (
     "name", "ticker", "isin", "sector", "asset_class", "sub_class",
     "country", "currency",
+    # The stated value of each levelled facet. Merged rather than the
+    # derived level columns, and re-derived from afterwards, because the
+    # per-field overrule picks a winner INDEPENDENTLY for each field: a
+    # merged row could otherwise take its sub sector from one fund and
+    # its super sector from another and end up describing a tree that
+    # does not exist. One fact wins, the rest follow from it.
+    "asset_node", "sector_node", "country_node",
 )
 
 # The synthetic residual row's match identity. Chosen so it cannot
@@ -922,6 +1375,12 @@ def aggregate_portfolio_holdings(funds: list[dict],
         covered_value += money
         row: dict = {fld: (slot["fields"].get(fld, ("", None))[0])
                      for fld in _MERGE_FIELDS}
+        # Re-derive the level columns from the nodes that won the merge,
+        # so every level of the merged row describes the same tree. The
+        # import is local: utils imports breakdowns for UNKNOWN_KEY, and
+        # a module-level import here would close the cycle.
+        from porxpy.utils import normalise_facets
+        normalise_facets(row)
         row["weight_pct"] = (
             round(money / total_base * 100.0, 6) if total_base > 0 else 0.0)
         row["portfolio_value"] = round(money, 2)
@@ -1099,6 +1558,14 @@ def synth_enriched_for_cash_position(pos: dict,
         "sub_class":       pos_sub_class,
         "country":         pos_country,
         "currency":        pos_currency,
+        # The stated value of each levelled facet, carried so the
+        # portfolio holdings table can show a cash position at any level
+        # its tree reaches. Without these the row arrives with one level
+        # filled and the rest blank, and a region or sub-sector view
+        # would show every cash position as a gap.
+        "asset_node":      pos.get("asset_node") or "",
+        "sector_node":     pos.get("sector_node") or "",
+        "country_node":    pos.get("country_node") or "",
         "weight_pct":      100.0,
         # Bond columns — duration / coupon / maturity are blank; the
         # cash position's interest rate IS the "coupon equivalent",
@@ -1210,3 +1677,353 @@ def cash_position_value_on_date(pos: dict, date_str: str) -> float:
     delta_days = (target - eff).total_seconds() / 86400.0
     t = max(0.0, delta_days / 365.25)
     return principal * math.exp(rate * t)
+
+
+# ---------------------------------------------------------------------------
+# Facet levels — derivation and the one accessor (v0.60.0)
+# ---------------------------------------------------------------------------
+# A facet with levels is one facet whose value is a tree. Aggregation
+# happens at EVERY level: a fund's sector data is three complete
+# distributions, each summing to the fund, describing the same money at
+# three grains. Semiconductors 40% IS Technology 40% IS Cyclical 40%.
+#
+# The level selector chooses which finished distribution is displayed
+# and nothing else. It never leaves the browser.
+#
+# Two rules, both one-directional:
+#
+#   * Rolling UP is derivation. Rolling DOWN would be invention — a key
+#     naming only a sector cannot answer a sub-sector question, and a
+#     super sector cannot be pushed back into a sector because
+#     "cyclical" is not one.
+#   * Weight that cannot reach a level becomes ``unknown``, never
+#     dropped, so every level still sums to the fund.
+#
+# Since v0.59.0 there is no third rule. A key the taxonomy does not
+# recognise used to pass through at sector level; it is now resolved to
+# ``unknown`` before it ever reaches here, so these functions see only
+# canonical names and residuals.
+
+
+def sector_key_at_level(key: str, level: str) -> str | None:
+    """Move one sector bucket key to ``level``, or ``None`` if it cannot.
+
+    Args:
+        key: A canonical sector-tree name, or a residual.
+        level: One of ``sub_sector`` / ``sector`` / ``super_sector``.
+
+    Returns:
+        The key at that level, or ``None`` when the key cannot reach it.
+        Residuals pass through unchanged at every level — ``n/a`` stays
+        inapplicable however you look at it.
+    """
+    from porxpy.resources import (SECTOR_LEVEL_OF, SECTOR_SUPER,
+                                  SUB_SECTOR_PARENT)
+
+    if key in _RESIDUAL_KEYS:
+        return key
+    lvl = SECTOR_LEVEL_OF.get(key, "")
+    if not lvl:
+        return None
+    if lvl == level:
+        return key
+    if level == "sub_sector":
+        return None                     # cannot go finer
+    sector = (SUB_SECTOR_PARENT.get(key) if lvl == "sub_sector"
+              else key if lvl == "sector" else None)
+    if level == "sector":
+        return sector or None
+    if lvl == "super_sector":
+        return key
+    return (SECTOR_SUPER.get(sector) or [None])[0] if sector else None
+
+
+def country_key_at_level(key: str, level: str) -> str | None:
+    """Move one country bucket key to ``level``, or ``None`` if it cannot.
+
+    The country counterpart of :func:`sector_key_at_level`, with two
+    levels rather than three. See :data:`~porxpy.config.FACET_LEVELS` for
+    why there is no super-region level.
+    """
+    from porxpy.resources import (DEVELOPMENT_KEYS, MSTAR_TO_REGION,
+                                  REGION_DEVELOPMENT, REGION_KEYS)
+
+    if key in _RESIDUAL_KEYS:
+        return key
+    is_country = key in MSTAR_TO_REGION
+    is_region  = key in REGION_KEYS
+    is_dev     = key in DEVELOPMENT_KEYS
+
+    if level == "country":
+        return key if is_country else None
+
+    region = (key if is_region
+              else MSTAR_TO_REGION.get(key) if is_country
+              else None)
+    if level == "region":
+        return region or None
+    if level == "super_region":
+        if is_dev:
+            return key
+        return (REGION_DEVELOPMENT.get(region) or None) if region else None
+    return None
+
+
+def _key_at_level(facet: str, key: str, level: str) -> str | None:
+    """Dispatch to the right tree, or pass through for a flat facet."""
+    if facet == "sector":
+        return sector_key_at_level(key, level)
+    if facet == "country":
+        return country_key_at_level(key, level)
+    if facet == "asset_class":
+        from porxpy.resources import asset_key_at_level
+        return asset_key_at_level(key, level)
+    # Single-level facet: it answers at its own level and nowhere else.
+    return key if level == FACET_DEFAULT_LEVEL.get(facet, facet) else None
+
+
+def items_at_level(facet: str, items: list[dict], level: str) -> list[dict]:
+    """Re-bucket one distribution at ``level``.
+
+    Anything that cannot reach the level becomes ``unknown``: the weight
+    is real and still has to appear, we simply cannot place it at this
+    grain. That is what keeps every level summing to the same total.
+    """
+    buckets: dict[str, dict] = {}
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        k = _key_at_level(facet, it.get("key") or "", level) or UNKNOWN_KEY
+        b = buckets.setdefault(k, {"key": k, "weight": 0.0})
+        try:
+            b["weight"] += float(it.get("weight") or 0.0)
+        except (TypeError, ValueError):
+            pass
+        if it.get("value") is not None:
+            try:
+                b["value"] = b.get("value", 0.0) + float(it["value"])
+            except (TypeError, ValueError):
+                pass
+    out = list(buckets.values())
+    for b in out:
+        b["weight"] = round(b["weight"], 6)
+    out.sort(key=lambda x: (x["key"] in _RESIDUAL_KEYS, -x["weight"]))
+    return out
+
+
+def level_coverage(items: list[dict]) -> float:
+    """Share of the distribution that has been ANSWERED at this level.
+
+    ``unknown`` counts against coverage; ``n/a`` counts as answered — a
+    cash sleeve has no sector and never will, and scoring that as a gap
+    left cash-heavy funds permanently short of 100% with nothing anyone
+    could do about it.
+
+    Computed per level rather than once per facet, because the same fund
+    is genuinely better covered at some grains than others.
+    """
+    unknown = sum(float(it.get("weight") or 0.0) for it in items or []
+                  if isinstance(it, dict) and it.get("key") == UNKNOWN_KEY)
+    return round(max(0.0, 1.0 - unknown), 6)
+
+
+def assume_complete_items(items: list[dict]) -> list[dict]:
+    """Read a partial distribution as if it accounted for the whole fund.
+
+    Drops the ``unknown`` slice and scales what was identified up to fill
+    the space it leaves — the answer to "if the part we could not place
+    looks like the part we could, what is the split?".
+
+    ``n/a`` keeps its weight and is not scaled. It means the question does
+    not apply to that exposure — a cash sleeve has no sector — so it is
+    not a gap that could be filled, and moving exposure into or out of it
+    would state something false in both directions. The identified part
+    is therefore scaled to ``1 - n/a``, not to 1.
+
+    This also closes an IMPLICIT shortfall: issuer fractions that simply
+    sum to 0.94 with no residual item are scaled up the same way, because
+    the assertion is about coverage, not about how the source chose to
+    express the gap.
+
+    Returns ``items`` unchanged when nothing was identified — a card that
+    is entirely unknown has no shape to lend the gap, and inventing one
+    is precisely what this must not do. ``value`` (the portfolio cards'
+    money column) is scaled with the weight so the two stay consistent.
+
+    Args:
+        items: One level's distribution, weights as fractions.
+
+    Returns:
+        A new list.
+    """
+    src = items or []
+    na = sum(float(it.get("weight") or 0.0) for it in src
+             if isinstance(it, dict) and it.get("key") == NA_KEY)
+    known = sum(float(it.get("weight") or 0.0) for it in src
+                if isinstance(it, dict) and it.get("key") not in _RESIDUAL_KEYS)
+    if known <= 0:
+        return [dict(it) for it in src if isinstance(it, dict)]
+
+    scale = max(0.0, 1.0 - na) / known
+    out: list[dict] = []
+    for it in src:
+        if not isinstance(it, dict):
+            continue
+        key = it.get("key")
+        if key == UNKNOWN_KEY:
+            continue
+        row = dict(it)
+        if key != NA_KEY:
+            row["weight"] = round(float(it.get("weight") or 0.0) * scale, 6)
+            if it.get("value") is not None:
+                try:
+                    row["value"] = float(it["value"]) * scale
+                except (TypeError, ValueError):
+                    pass
+        out.append(row)
+    out.sort(key=lambda x: (x["key"] in _RESIDUAL_KEYS, -x["weight"]))
+    return out
+
+
+def assume_complete_block(block: dict) -> dict:
+    """Apply :func:`assume_complete_items` to every level of one facet block.
+
+    Every level travels together (invariant 1), so the assertion is made
+    at all of them or the card would mean different things depending on
+    which chip is selected. A level with nothing identified is left alone
+    and stays unavailable — asserting completeness cannot conjure a
+    sub-sector split out of a card that only reaches sector.
+
+    The block records what it did: ``completed`` is the flag, and
+    ``identified`` keeps the coverage BEFORE the assertion, per level, so
+    the fund page can show that 100% is asserted rather than measured.
+    Mutates and returns ``block``.
+    """
+    block["identified"] = dict(block.get("coverage") or {})
+    for lv in block.get("levels") or []:
+        items = assume_complete_items((block.get("items") or {}).get(lv) or [])
+        block["items"][lv]            = items
+        block["coverage"][lv]         = level_coverage(items)
+        block["levels_available"][lv] = any(
+            it["key"] not in _RESIDUAL_KEYS for it in items)
+    block["completed"] = True
+    return block
+
+
+def facet_items(block: dict, level: str | None = None) -> list[dict]:
+    """The one accessor. Every consumer goes through it.
+
+    No consumer indexes ``block["items"]["sector"]`` by hand — that is
+    what makes adding a level to a facet a one-argument change at each
+    call site rather than a hunt through nine files.
+
+    Args:
+        block: One facet's block from :func:`build_fund_breakdowns` or
+            :func:`rollup_portfolio_fundlevel`.
+        level: Which grain. ``None`` means the facet's default level —
+            fixed per facet, never the deepest one present; see
+            :data:`~porxpy.config.FACET_DEFAULT_LEVEL`.
+
+    Returns:
+        The item list, or ``[]`` for a level this block does not carry.
+    """
+    if not isinstance(block, dict):
+        return []
+    items = block.get("items")
+    if not isinstance(items, dict):
+        # Not a levelled block. Nothing should emit one after v0.60.0,
+        # but a caller handed a bare list back gets it rather than [].
+        return items if isinstance(items, list) else []
+    lvl = level or block.get("default_level") or ""
+    return items.get(lvl) or []
+
+
+def build_facet_block(facet: str, items: list[dict]) -> dict:
+    """Materialise one facet's levels from a single source's items.
+
+    Args:
+        facet: The facet name.
+        items: That source's distribution, at whatever grain it came in.
+
+    Returns:
+        ``{levels, items, coverage, levels_available, default_level}``.
+
+        ``levels_available`` says which VIEWS this source's data
+        supports — a level is available when its items produce at least
+        one non-residual bucket there. Kept deliberately apart from
+        ``available``, which says which SOURCES the fund has. The same
+        word for both is exactly the collision that has bitten this
+        project repeatedly.
+    """
+    levels = FACET_LEVELS.get(facet) or (facet,)
+    per_level = {lv: items_at_level(facet, items, lv) for lv in levels}
+    return {
+        "levels":           list(levels),
+        "items":            per_level,
+        "coverage":         {lv: level_coverage(per_level[lv]) for lv in levels},
+        "levels_available": {
+            lv: any(it["key"] not in _RESIDUAL_KEYS for it in per_level[lv])
+            for lv in levels
+        },
+        "default_level":    FACET_DEFAULT_LEVEL.get(facet, levels[-1]),
+    }
+
+
+def candidate_exposures(fund_breakdowns: dict,
+                        targets: dict) -> tuple[dict, dict]:
+    """One fund's look-through exposure, per ``(facet, level, key)``.
+
+    **v0.66.3.** Lifted out of the optimise endpoint, where it was an
+    inline block that could not be tested against a real fund block
+    without a live Yahoo fetch — which is why a region-level failure
+    could sit in it unseen while both the pieces either side of it
+    tested clean.
+
+    Only the levels the target set actually mentions are computed. A
+    fund contributes to each independently: nothing is derived from
+    another level's total.
+
+    Args:
+        fund_breakdowns: The fund's ``{facet: block}`` map.
+        targets: ``{facet: {level: {key: fraction}}}``.
+
+    Returns:
+        ``(exposures, sources)`` where exposures is
+        ``{facet: {level: {key: weight}}}`` and sources is
+        ``{facet: source_name}`` (``"none"`` when the fund answers
+        nothing for that facet).
+    """
+    exposures: dict[str, dict[str, dict[str, float]]] = {}
+    sources:   dict[str, str] = {}
+
+    for facet, per_level in (targets or {}).items():
+        block = (fund_breakdowns or {}).get(facet) or {}
+        per_level_out: dict[str, dict[str, float]] = {}
+        answered = False
+
+        for level in (per_level or {}):
+            blk: dict[str, float] = {}
+            for it in facet_items(block, level):
+                if not isinstance(it, dict):
+                    continue
+                key = (it.get("key") or "").strip()
+                if not key:
+                    continue
+                try:
+                    w = float(it.get("weight") or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                blk[key] = blk.get(key, 0.0) + w
+            per_level_out[level] = blk
+            # "Answered" means a real bucket, not a residual. A block
+            # that is entirely `unknown` carries weight but no
+            # information, and counting it as an answer is what let a
+            # fund with no country data look like a fund with country
+            # data whose targets simply were not met.
+            if any(k not in _RESIDUAL_KEYS for k in blk):
+                answered = True
+
+        exposures[facet] = per_level_out
+        sources[facet] = (block.get("source") or "yahoo") if answered else "none"
+
+    return exposures, sources

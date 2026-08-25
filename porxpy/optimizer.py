@@ -252,7 +252,7 @@ def _build_facet_matrix(candidates: list[dict],
 
     Returns:
         ``(A, t, rows)`` where ``A`` is ``(n_buckets, n_assets)``, ``t`` is
-        ``(n_buckets,)``, and ``rows`` is ``[(facet, bucket), ...]``
+        ``(n_buckets,)``, and ``rows`` is ``[(facet, bucket, level), ...]``
         labelling each row for the caller's diagnostics. Assets are ordered
         as ``candidates`` then cash (cash is always the last column).
     """
@@ -261,7 +261,7 @@ def _build_facet_matrix(candidates: list[dict],
 
     A_rows: list[np.ndarray] = []
     t_vals: list[float] = []
-    rows: list[tuple[str, str]] = []
+    rows: list[tuple[str, str, str]] = []
     # Unscaled twins. The scaled matrix is what the solver optimises; these
     # are what we *measure* with, because an error the user is asked to set a
     # threshold on has to be in units they recognise — percentage points of
@@ -270,10 +270,21 @@ def _build_facet_matrix(candidates: list[dict],
     t_raw_vals: list[float] = []
     is_explicit: list[bool] = []
 
-    for facet, tgt in (targets or {}).items():
-        if not tgt:
-            continue                        # facet has no targets → ignore
-
+    # v0.65.0: targets are {facet: {level: {key: fraction}}}.
+    #
+    # Each target is a constraint AT ITS OWN LEVEL, and every fund's
+    # exposure is measured at every level independently — so a target
+    # set mixing grains needs no ordering rule. Targeting semiconductors
+    # 15%, software 10% and technology 35% gives three rows; the
+    # semiconductor funds satisfy their own row and contribute to the
+    # technology row too, leaving 10% of technology to be filled by any
+    # technology fund. That is the behaviour without a "children first,
+    # then the remainder" pass, because the algebra already says it.
+    #
+    # Levels are NOT re-expressed at a common grain. Rolling a sector
+    # target down to sub-sectors would invent detail the user did not
+    # give, which is the rule this whole refactor is built on.
+    def _add_target_rows(facet: str, level: str, tgt: dict) -> None:
         keys = sorted(tgt.keys())
         tgt_sum = sum(float(v) for v in tgt.values())
         # Slack for the "everything else" bucket. Clamped: an over-100%
@@ -290,14 +301,16 @@ def _build_facet_matrix(candidates: list[dict],
         for key in keys + [OTHER_BUCKET]:
             row = np.zeros(n_assets)
             for j, c in enumerate(candidates):
-                exp_f = (c.get("exposures") or {}).get(facet) or {}
+                exp_f = (((c.get("exposures") or {}).get(facet) or {})
+                         .get(level) or {})
                 if key == OTHER_BUCKET:
                     row[j] = max(0.0, 1.0 - sum(float(exp_f.get(k, 0.0))
                                                 for k in keys))
                 else:
                     row[j] = float(exp_f.get(key, 0.0))
 
-            cash_f = (cash_exposure or {}).get(facet) or {}
+            cash_f = (((cash_exposure or {}).get(facet) or {})
+                      .get(level) or {})
             if key == OTHER_BUCKET:
                 row[-1] = max(0.0, 1.0 - sum(float(cash_f.get(k, 0.0))
                                              for k in keys))
@@ -308,7 +321,7 @@ def _build_facet_matrix(candidates: list[dict],
                           else float(tgt[key]))
             A_rows.append(row * scale)
             t_vals.append(raw_target * scale)
-            rows.append((facet, key))
+            rows.append((facet, key, level))
 
             A_raw_rows.append(row)
             t_raw_vals.append(raw_target)
@@ -318,6 +331,11 @@ def _build_facet_matrix(candidates: list[dict],
             # penalising the user for missing a target they never set would
             # make the error number meaningless.
             is_explicit.append(key != OTHER_BUCKET)
+
+    for facet, per_level in (targets or {}).items():
+        for level, tgt in (per_level or {}).items():
+            if tgt:
+                _add_target_rows(facet, level, tgt)
 
     if not A_rows:
         return (np.zeros((0, n_assets)), np.zeros(0), [],
@@ -782,9 +800,12 @@ def optimise_portfolio(candidates: list[dict],
               "price_base":     102.34,   # per share, in BASE currency
               "current_shares": 0.0,      # what's held right now
               "include":        True,     # may the optimiser trade it?
-              "exposures": {              # look-through, fractions 0–1
-                  "asset_class": {"equity": 1.0},
-                  "country":     {"northAmerica": 0.62, ...},
+              # look-through, fractions 0–1, per (facet, LEVEL, key)
+              "exposures": {
+                  "asset_class": {"asset_class": {"equity": 1.0}},
+                  "country":     {"country": {"unitedstates": 0.62, ...},
+                                  "region":  {"northAmerica": 0.62, ...},
+                                  "super_region": {"developed": 0.9, ...}},
                   ...
               },
             }
@@ -801,10 +822,12 @@ def optimise_portfolio(candidates: list[dict],
             the point of it — so ``reason`` says so when a target is
             missed and frozen holdings are in play.
 
-        targets: ``{facet: {bucket: fraction}}``. Sparse — a facet with no
-            targets is ignored entirely. Fractions, not percents.
+        targets: ``{facet: {level: {bucket: fraction}}}``. Sparse — a
+            facet or level with no targets is ignored entirely.
+            Fractions, not percents.
         cash_base: Total investable cash, in base currency.
-        cash_exposure: Cash's own exposure, same shape as a candidate's.
+        cash_exposure: Cash's own exposure, same shape as a candidate's
+            — including the level dimension.
             Defaults to 100% ``asset_class: cash``.
         max_funds: Cap on how many funds the design may use.
         min_weight: Drop any fund the solver gives less than this weight,
@@ -1233,22 +1256,32 @@ def optimise_portfolio(candidates: list[dict],
              * float(c.get("price_base") or 0.0)) / total_base
             if total_base else 0.0)
 
-    achieved: dict[str, dict[str, float]] = {}
-    deviation: dict[str, dict[str, float]] = {}
-    for facet, tgt in (targets or {}).items():
-        if not tgt:
-            continue
-        achieved[facet], deviation[facet] = {}, {}
-        for key in sorted(tgt.keys()):
-            got = sum(w_full[j] * float(((c.get("exposures") or {})
-                                         .get(facet) or {}).get(key, 0.0))
-                      for j, c in enumerate(usable + frozen))
-            got += w_full[cash_idx] * float(
-                ((cash_exposure or {}).get(facet) or {}).get(key, 0.0))
-            # float() because `got` is a numpy scalar here, and the
-            # Flask JSON encoder does not know what to do with one.
-            achieved[facet][key]  = round(float(got), 6)
-            deviation[facet][key] = round(float(got) - float(tgt[key]), 6)
+    # v0.65.0: {facet: {level: {key: ...}}}, mirroring the targets, and
+    # each bucket measured against the exposure AT ITS OWN LEVEL. Reading
+    # exposures[facet][key] here would have silently found nothing and
+    # reported every achieved exposure as 0.0 — a wrong number rather
+    # than an error, which is the worse failure.
+    achieved: dict[str, dict[str, dict[str, float]]] = {}
+    deviation: dict[str, dict[str, dict[str, float]]] = {}
+    for facet, per_level in (targets or {}).items():
+        for level, tgt in (per_level or {}).items():
+            if not tgt:
+                continue
+            achieved.setdefault(facet, {})[level] = {}
+            deviation.setdefault(facet, {})[level] = {}
+            for key in sorted(tgt.keys()):
+                got = sum(w_full[j] * float((((c.get("exposures") or {})
+                                              .get(facet) or {})
+                                             .get(level) or {}).get(key, 0.0))
+                          for j, c in enumerate(usable + frozen))
+                got += w_full[cash_idx] * float(
+                    (((cash_exposure or {}).get(facet) or {})
+                     .get(level) or {}).get(key, 0.0))
+                # float() because `got` is a numpy scalar here, and the
+                # Flask JSON encoder does not know what to do with one.
+                achieved[facet][level][key]  = round(float(got), 6)
+                deviation[facet][level][key] = round(
+                    float(got) - float(tgt[key]), 6)
 
     # Errors, per facet, in real percentage points on the buckets the user
     # actually targeted — the same numbers the deviation table shows, so the

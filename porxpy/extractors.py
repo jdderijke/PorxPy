@@ -29,7 +29,16 @@ from typing import Any, Callable
 import pandas as pd
 import yfinance as yf
 
+# Pin the TLS impersonation profile before any Yahoo call is made. See
+# porxpy.yf_session for why: yfinance asks curl_cffi for the NEWEST
+# Chrome profile, and Chrome 124+ profiles fail the handshake through
+# TLS-inspecting middleboxes, reported misleadingly as a certificate
+# error.
+from porxpy.yf_session import install as _install_yf_session
+_install_yf_session()
+
 from porxpy.config import (
+    rollup_label_of,
     BREAKDOWN_FACETS,
     DEFAULT_FUND_STRUCTURE,
     DEFAULT_INCLUDE_IN_OPTIMIZER,
@@ -38,6 +47,7 @@ from porxpy.config import (
     PRICE_HISTORY_FULL_REFRESH_DAYS,
 )
 from porxpy.resolver import (
+    search_name_only,
     build_ticker,
     candidate_variants,
     clean_holding_ticker_input,
@@ -369,6 +379,12 @@ def extract_sectors(ticker: yf.Ticker) -> list[dict]:
 # `matches` column of the relevant row in that CSV.
 
 
+# Yahoo keys already reported as unresolved. Once per key per run: the
+# allocation extractor runs on every fund load, and a key Yahoo emits
+# for a whole fund family would otherwise print on each one.
+_ASSET_KEYS_REPORTED: set[str] = set()
+
+
 def extract_asset_allocation(ticker: yf.Ticker) -> list[dict]:
     """Extract the issuer-published asset-allocation breakdown.
 
@@ -415,11 +431,32 @@ def extract_asset_allocation(ticker: yf.Ticker) -> list[dict]:
         if wf <= 0:
             continue
         # Yahoo's position keys ("bondPosition", "stockPosition", …)
-        # are carried in the `matches` column of
-        # Fund_class_definitions.csv, so resolve_fund_asset_class folds
-        # them to the canonical vocabulary. Unmapped keys → "other".
-        from porxpy.resources import resolve_fund_asset_class
-        canon = resolve_fund_asset_class(str(raw_key)) or "other"
+        # are carried in the `matches` column of Asset_definitions.csv,
+        # on the SUPER-class rows: Yahoo is saying "this slice is
+        # equity", not naming an instrument. The tree answers at
+        # whatever level the key names, and this distribution is built
+        # at the facet's default grain. Unmapped keys → "other".
+        # An unrecognised key still folds to "other", because a slice of
+        # a fund has to land somewhere and dropping it would misstate
+        # the whole distribution. But it says so: "other" is a real
+        # classification an issuer can assert, so absorbing an unknown
+        # key into it silently made a new Yahoo key indistinguishable
+        # from a fund that genuinely holds other. The key set is small
+        # and stable, so a log line is the proportionate answer — the
+        # fix is a one-word alias edit, not a release.
+        from porxpy.resources import resolve_asset_tree
+        from porxpy.config import FACET_DEFAULT_LEVEL
+        _lvl = FACET_DEFAULT_LEVEL.get("asset_class", "super_class")
+        _tree = resolve_asset_tree(str(raw_key))
+        canon = _tree.get(_lvl) if _tree.get("level") else ""
+        if not canon or canon == "unknown":
+            if str(raw_key) not in _ASSET_KEYS_REPORTED:
+                _ASSET_KEYS_REPORTED.add(str(raw_key))
+                print(f"[AssetAllocation] Yahoo key {raw_key!r} "
+                      f"({wf:.1%}) does not resolve — counted as \"other\". "
+                      f"Add it as an alias on the matching row of "
+                      f"Asset_definitions.csv to classify it.")
+            canon = "other"
         buckets[canon] = buckets.get(canon, 0.0) + wf
 
     out = [{"key": k, "weight": round(v, 6)} for k, v in buckets.items()]
@@ -1131,8 +1168,17 @@ def detect_asset_class(ticker: yf.Ticker, profile: dict) -> dict:
         profile: Output of :func:`extract_profile`.
 
     Returns:
-        ``{"class": <one_of_ASSET_CLASSES>, "confidence": <str>,
-        "signals": [str, ...]}``.
+        ``{"class": <one_of the classification keys>, "confidence": <str>,
+        "signals": [str, ...], "origin": <str>}``.
+
+        ``origin`` says which KIND of evidence decided it, which the
+        source pin cannot: this whole function is the "Yahoo" pin, but
+        within it a class can come from Yahoo's own holdings data
+        (``"yahoo"``) or from words in the fund's name (``"name"``).
+        Reporting the pin alone presented a reading of marketing copy
+        as measured data. Same vocabulary as the fund_structure
+        origins, which have drawn this distinction since v0.28.0.
+        ``"none"`` when nothing decided it and the answer is a fallback.
     """
     signals: list[str] = []
     has_equity_data = False
@@ -1175,15 +1221,20 @@ def detect_asset_class(ticker: yf.Ticker, profile: dict) -> dict:
         str(profile.get("legalType")  or ""),
     ]).lower()
 
-    bond_kw      = ["bond", "treasury", "gilt", "aggregate", "credit", "fixed income", "govies"]
-    equity_kw    = ["equity", "stock", "msci", "s&p", "russell", "nasdaq", "dividend", "growth", "value"]
-    cash_kw      = ["money market", "t-bill", "cash", "ultrashort", "enhanced cash"]
-    commodity_kw = ["gold", "silver", "commodity", "oil", "copper", "metals"]
+    # The phrases live in Primary_asset_class_definitions.csv's
+    # style_match column, not in four lists here. They are exactly the
+    # kind of thing that needs correcting from live usage — a fund named
+    # in Dutch, an issuer with a house word for money-market — and until
+    # v0.69.0 that meant editing code. The precedence below stays in
+    # code, because weighing a name hint against Yahoo's structural data
+    # is a judgement, not a vocabulary.
+    from porxpy.resources import primary_class_name_hits   # local: cycle
+    name_hits = set(primary_class_name_hits(hay))
 
-    cat_equity    = any(k in hay for k in equity_kw)
-    cat_bond      = any(k in hay for k in bond_kw)
-    cat_cash      = any(k in hay for k in cash_kw)
-    cat_commodity = any(k in hay for k in commodity_kw)
+    cat_equity    = "equity"       in name_hits
+    cat_bond      = "fixed_income" in name_hits
+    cat_cash      = "cash"         in name_hits
+    cat_commodity = "commodity"    in name_hits
 
     if cat_bond:      signals.append("name/category mentions bonds")
     if cat_equity:    signals.append("name/category mentions equity")
@@ -1191,21 +1242,26 @@ def detect_asset_class(ticker: yf.Ticker, profile: dict) -> dict:
     if cat_commodity: signals.append("name/category mentions commodity")
 
     if cat_cash and not has_equity_data:
-        return {"class": "cash", "confidence": "high", "signals": signals}
+        return {"class": "cash", "confidence": "high",
+                "signals": signals, "origin": "name"}
     if cat_commodity:
-        return {"class": "commodity", "confidence": "medium", "signals": signals}
+        return {"class": "commodity", "confidence": "medium",
+                "signals": signals, "origin": "name"}
     if has_equity_data and has_bond_data:
-        return {"class": "mixed", "confidence": "high", "signals": signals}
+        return {"class": "mixed", "confidence": "high",
+                "signals": signals, "origin": "yahoo"}
     if has_equity_data or cat_equity:
         return {"class": "equity",
                 "confidence": "high" if has_equity_data else "medium",
-                "signals": signals}
+                "signals": signals,
+                "origin": "yahoo" if has_equity_data else "name"}
     if has_bond_data or cat_bond:
         return {"class": "fixed_income",
                 "confidence": "high" if has_bond_data else "medium",
-                "signals": signals}
+                "signals": signals,
+                "origin": "yahoo" if has_bond_data else "name"}
     return {"class": "other", "confidence": "low",
-            "signals": signals or ["no usable signals"]}
+            "signals": signals or ["no usable signals"], "origin": "none"}
 
 
 # ---------------------------------------------------------------------------
@@ -1427,9 +1483,104 @@ def derive_structure_from_name(name: str | None) -> dict:
     # leave it for Yahoo's numbers or the user.
 
     focus_type, focus_detail = _derive_focus_from_name(padded)
+    # v0.68.0 rename, applied where the derived value is produced so the
+    # seeded value and a user-set one are always the same vocabulary.
+    from porxpy.config import LEGACY_FOCUS_TYPES
+    focus_type = LEGACY_FOCUS_TYPES.get(focus_type, focus_type)
     if focus_type != "none":
         out["focus_type"]   = focus_type
         out["focus_detail"] = focus_detail
+
+    return out
+
+
+
+# ---------------------------------------------------------------------------
+# Per-field provenance (v0.69.3)
+# ---------------------------------------------------------------------------
+# Where each field's EFFECTIVE value actually came from, for every field
+# the UI presents. One map, produced once, read by both the fund tiles
+# and the Edit dialog.
+#
+# Before this the two surfaces worked it out separately and disagreed:
+# the tile read fund_structure_sources and could say "inferred from
+# name", while the dialog read the fields endpoint, whose fallback for
+# anything unpinned was the literal string "yahoo". The same field, at
+# the same moment, captioned two different ways.
+#
+# The rule is that a source is RECORDED, never assumed. Yahoo is a
+# source when Yahoo supplied the value and at no other time. A field
+# with no recorded source is absent from this map, and a field with no
+# value has nothing to caption anyway — there is no provenance for an
+# absence.
+def _field_provenance(profile: dict, asset_class: dict, fund_structure: dict,
+                      structure_sources: dict, overrides: dict,
+                      isin: str | None) -> dict[str, str]:
+    """Effective source per field, for every field in FIELD_GROUPS.
+
+    Args:
+        profile: The Yahoo profile block.
+        asset_class: The classification block, carrying its own origin.
+        fund_structure: The effective structure block.
+        structure_sources: Per-field origins from _merge_fund_structure.
+        overrides: Sparse per-field override envelopes for this fund.
+        isin: Used to read the resolver's recorded identity sources.
+
+    Returns:
+        ``{field: source}`` covering only fields whose source is known.
+        Sources are the SOURCE_LABELS keys plus ``"name"`` (inferred
+        from the fund's own name) and ``"calculated"``.
+    """
+    from porxpy.config import FIELD_GROUPS
+    from porxpy.utils import listing_identity_get
+
+    ident_src = (listing_identity_get(isin) or {}).get("sources") or {} if isin else {}
+    out: dict[str, str] = {}
+
+    for grp in FIELD_GROUPS:
+        for f in grp["fields"]:
+            key = f["key"]
+
+            # A pin is an assertion by the user about where to look, and
+            # it outranks whatever the seed had.
+            env = overrides.get(key) or {}
+            if env.get("source"):
+                out[key] = env["source"]
+                continue
+
+            if f.get("calculated"):
+                out[key] = "calculated"
+                continue
+
+            if f.get("readonly"):
+                # The resolver records which of the identity parts it got
+                # from where. Caches written before it did carry nothing,
+                # and report nothing.
+                src = ident_src.get(key)
+                if src:
+                    out[key] = src
+                continue
+
+            if key == "primary_asset_class":
+                origin = (asset_class or {}).get("origin") or ""
+                if origin and origin != "none":
+                    out[key] = origin
+                continue
+
+            if key in (structure_sources or {}):
+                origin = structure_sources[key]
+                # "default" means nobody supplied it and the neutral
+                # stood in — which is an absence, not a source.
+                if origin and origin != "default":
+                    out[key] = origin
+                continue
+
+            # Operational and trading fields come from the Yahoo profile.
+            # Yahoo is the source when Yahoo actually returned something;
+            # a missing value has no source, which is why this is a
+            # presence test and not a fallback.
+            if profile.get(key) is not None:
+                out[key] = "yahoo"
 
     return out
 
@@ -1767,7 +1918,7 @@ def extract_symbol_info(symbol: str) -> dict:
     on lookup failure or missing keys — never raises.
 
     Returned values are CANONICAL forms ready for the rollup chokepoint
-    (see :func:`porxpy.utils.canonicalise_facet_key`):
+    (see :func:`porxpy.breakdowns.resolve_facet_value`):
 
     * ``country``     — lowercased mstar form (e.g. ``"unitedstates"``);
                         unmappable Yahoo strings fall through lowercased.
@@ -1798,12 +1949,8 @@ def extract_symbol_info(symbol: str) -> dict:
         "name", "quote_type"}``. Empty strings indicate "Yahoo had
         nothing useful for this symbol".
     """
-    # Local imports — resources / utils depend only on config, no
-    # circular risk. default_sub_class lets us emit sub_class as a
-    # first-class enrichment field without the caller having to know
-    # the asset-class → sub-class derivation rule.
+    # Local import — resources depends only on config, no circular risk.
     from porxpy.resources import country_to_mstar
-    from porxpy.utils import default_sub_class
 
     out = {"country": "", "currency": "", "asset_class": "",
            "sub_class": "", "sector": "",
@@ -1813,7 +1960,12 @@ def extract_symbol_info(symbol: str) -> dict:
     try:
         info = yf.Ticker(symbol).info or {}
     except Exception as exc:
+        # Carry the reason out with the empty result. Without it the
+        # caller cannot tell "Yahoo has no such symbol" from "we never
+        # reached Yahoo", and an outage reads on screen as though every
+        # one of your holdings were unknown to the data source.
         print(f"[SymbolInfo] {symbol} lookup failed: {exc}")
+        out["_error"] = f"{type(exc).__name__}: {exc}"
         return out
 
     raw_country = (info.get("country")   or "").strip()
@@ -1822,13 +1974,14 @@ def extract_symbol_info(symbol: str) -> dict:
     name        = (info.get("longName") or info.get("shortName") or "").strip()
     sector      = (info.get("sector") or "").strip()
 
-    # Canonicalise Yahoo's country (typically "United States") to the
-    # mstar form ("unitedstates") so it merges with CSV-upload rows.
-    if raw_country:
-        mstar = country_to_mstar(raw_country)
-        country = mstar if mstar else raw_country.lower()
-    else:
-        country = ""
+    # Yahoo's own wording, passed through (v0.76.0). This used to fold
+    # "United States" to the mstar form here so it would merge with
+    # upload rows in the rollup. Merging is no longer this function's
+    # problem — every facet value is stored as the source said it and
+    # resolved by normalise_facets on read, so two spellings of one
+    # country merge because they resolve to one node, not because one
+    # writer happened to canonicalise on the way past.
+    country = raw_country
 
     ac = _quotetype_to_asset_class(qt)
     # Sub class is derived from the (holding-flavoured) asset class via
@@ -1836,7 +1989,11 @@ def extract_symbol_info(symbol: str) -> dict:
     # types ac is blank, and sub_class follows — the enrichment loop
     # downstream only fills non-blank values, so blanks here are safe.
     from porxpy.utils import default_holding_asset_class
-    sub = default_sub_class(default_holding_asset_class(ac))
+    # No sub class derived here. normalise_facets fills the levels below
+    # a stated value only where the tree gives one answer, so inventing
+    # one from a Yahoo quoteType — which says "this is equity" and
+    # nothing finer — would assert a grain no source stated.
+    sub = ""
 
     out.update({
         "country":     country,
@@ -1848,6 +2005,19 @@ def extract_symbol_info(symbol: str) -> dict:
         "quote_type":  qt,
     })
     return out
+
+
+# Which row column each symbol-info field feeds. The facet fields land
+# in their raw column; ``sub_class`` shares the asset tree's single raw
+# column with ``asset_class``, exactly as an upload's two asset columns
+# do. Fields absent from this map keep their own name.
+_ENRICH_TARGET: dict[str, str] = {
+    "country":     "country_raw",
+    "currency":    "currency_raw",
+    "sector":      "sector_raw",
+    "asset_class": "asset_raw",
+    "sub_class":   "asset_raw",
+}
 
 
 def _info_looks_found(info: dict) -> bool:
@@ -1931,6 +2101,11 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False,
         ``"_found"`` (bool). ``{"_found": False}`` if no candidate
         resolved on Yahoo or the cleaned input was empty.
     """
+    # Transport errors seen while probing. Any non-empty value means the
+    # network, not Yahoo, is why nothing was found — which must not be
+    # cached as a negative alias and must not be reported as a miss.
+    _probe_error = ""
+
     cleaned = clean_holding_ticker_input(symbol)
 
     # No ticker supplied — skip variant probing entirely and go straight to
@@ -1944,6 +2119,7 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False,
             id_ticker = search_id_variant(_id_val)
             if id_ticker:
                 info = extract_symbol_info(id_ticker)
+                if info.get('_error') and not _probe_error: _probe_error = info['_error']
                 info["_found"] = _info_looks_found(info)
                 symbol_info_put(id_ticker, info)
                 if info["_found"]:
@@ -1953,9 +2129,13 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False,
                     return info
         # Name search as last resort when no ticker and no id resolved
         if name:
-            name_cand = search_name_variant(name, "")
+            # Name-only: search_name_variant needs a ticker to verify a
+            # hit against and returns nothing without one, which is why
+            # this branch could never resolve anything before v0.77.0.
+            name_cand = search_name_only(name)
             if name_cand:
                 info = extract_symbol_info(name_cand)
+                if info.get('_error') and not _probe_error: _probe_error = info['_error']
                 info["_found"] = _info_looks_found(info)
                 symbol_info_put(name_cand, info)
                 if info["_found"]:
@@ -1963,6 +2143,8 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False,
                     print(f"[SymbolInfo] no ticker — resolved via name"
                           f" search ('{name}') → {name_cand}")
                     return info
+        if _probe_error:
+            return {"_found": False, "_error": _probe_error}
         return {"_found": False}
 
     # Alias cache short-circuit. ``present`` means we've probed before;
@@ -2009,6 +2191,7 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False,
 
         # Not in cache — live probe via yfinance
         info = extract_symbol_info(cand)
+        if info.get('_error') and not _probe_error: _probe_error = info['_error']
         info["_found"] = _info_looks_found(info)
         symbol_info_put(cand, info)
 
@@ -2043,6 +2226,7 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False,
                     return cached
             else:
                 info = extract_symbol_info(isin_cand)
+                if info.get('_error') and not _probe_error: _probe_error = info['_error']
                 info["_found"] = _info_looks_found(info)
                 symbol_info_put(isin_cand, info)
                 if info["_found"]:
@@ -2072,6 +2256,7 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False,
                 return cached
         else:
             info = extract_symbol_info(id_ticker)
+            if info.get('_error') and not _probe_error: _probe_error = info['_error']
             info["_found"] = _info_looks_found(info)
             symbol_info_put(id_ticker, info)
             if info["_found"]:
@@ -2096,6 +2281,7 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False,
                     return cached
             else:
                 info = extract_symbol_info(name_cand)
+                if info.get('_error') and not _probe_error: _probe_error = info['_error']
                 info["_found"] = _info_looks_found(info)
                 symbol_info_put(name_cand, info)
                 if info["_found"]:
@@ -2106,7 +2292,12 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False,
                     return info
 
     # All fallbacks failed. Record a negative alias so the next probe of
-    # this raw input doesn't re-run the full loop.
+    # this raw input doesn't re-run the full loop — but ONLY when Yahoo
+    # actually answered. Caching a miss produced by an unreachable
+    # network would make the outage outlive it: every symbol probed
+    # during the outage would stay negatively aliased afterwards.
+    if _probe_error:
+        return {"_found": False, "_error": _probe_error}
     alias_put(cleaned, None)
     return {"_found": False}
 
@@ -2159,19 +2350,17 @@ def _apply_lookup_to_row(row: dict, info: dict, fields: list[str], *,
             continue
 
         if blank_only:
-            cur = row.get(f)
+            cur = row.get(_ENRICH_TARGET.get(f, f))
             is_empty = cur is None or (
                 isinstance(cur, str) and not cur.strip())
             if not is_empty:
                 continue
 
-        if f == "country":
-            mstar = country_to_mstar(v_s) or v_s
-            row[f] = mstar
-        elif f == "currency":
-            row[f] = v_s.upper()
-        else:
-            row[f] = v_s
+        # Facet values go to <facet>_raw; everything else (name,
+        # quote_type) keeps its own column. Writing the level column
+        # directly would be overwritten by the next normalise pass,
+        # which re-derives every level from the raw.
+        row[_ENRICH_TARGET.get(f, f)] = v_s
         written.append(f)
     return written
 
@@ -2321,6 +2510,10 @@ def enrich_existing_holdings(rows: list[dict], fields: list[str]
         "rows_processed":         0,
         "rows_skipped_no_ticker": 0,
         "rows_yahoo_not_found":   0,
+        # Distinct from the above: the lookup could not be COMPLETED
+        # (TLS, DNS, proxy, rate limit), so nothing is known either way.
+        "rows_lookup_failed":     0,
+        "lookup_error":           "",
         "rows_with_changes":      0,
     }
     if not eff_fields or not rows:
@@ -2331,7 +2524,14 @@ def enrich_existing_holdings(rows: list[dict], fields: list[str]
         sym      = (row.get("ticker") or "").strip()
         row_isin = row.get("isin")  or None
         row_cusip= row.get("cusip") or None
-        if not sym and not row_isin and not row_cusip:
+        row_name = row.get("name")  or None
+        # A name is enough to try with (v0.77.0). It used to take a
+        # ticker, an ISIN or a CUSIP, which meant a factsheet's position
+        # table — names and weights, routinely nothing else — could not
+        # be enriched at all, and the button reported every row skipped.
+        # The name path is strict about what it accepts; see
+        # resolver.search_name_only.
+        if not sym and not row_isin and not row_cusip and not row_name:
             stats["rows_skipped_no_ticker"] += 1
             continue
         try:
@@ -2339,13 +2539,28 @@ def enrich_existing_holdings(rows: list[dict], fields: list[str]
                 sym,
                 isin=row_isin,
                 cusip=row_cusip,
-                name=row.get("name") or None,
+                name=row_name,
             )
         except Exception as exc:
+            # A transport failure is NOT a miss, and counting it as one
+            # is how an unreachable Yahoo looks exactly like a Yahoo
+            # that has never heard of your holdings: every row "not
+            # found", nothing filled, no error anywhere. Recorded
+            # separately, with the first message kept, so the dialog can
+            # say "could not reach Yahoo" instead of implying the data
+            # does not exist.
+            stats["rows_lookup_failed"] += 1
+            if not stats["lookup_error"]:
+                stats["lookup_error"] = f"{type(exc).__name__}: {exc}"
             print(f"[enrich_existing] {sym} error: {exc}")
             continue
         if not isinstance(info, dict) or not info.get("_found"):
-            stats["rows_yahoo_not_found"] += 1
+            if isinstance(info, dict) and info.get("_error"):
+                stats["rows_lookup_failed"] += 1
+                if not stats["lookup_error"]:
+                    stats["lookup_error"] = str(info.get("_error"))
+            else:
+                stats["rows_yahoo_not_found"] += 1
             continue
 
         # Backfill ticker / ISIN / CUSIP from the resolved info.
@@ -2710,6 +2925,97 @@ def get_price_history_cached(yf_sym: str, ticker: yf.Ticker,
 # ---------------------------------------------------------------------------
 # Top-level orchestrator
 # ---------------------------------------------------------------------------
+def build_holdings_meta(isin: str, blob: dict, source: str, store: dict, *,
+                        enrichment_meta: dict | None = None,
+                        top10_sum_pct: float | None = None) -> dict:
+    """Describe the holdings a fund is showing, for the holdings tile.
+
+    Why this is a function rather than a literal inside the fund load:
+    three endpoints hand the tile its state — the fund load, the source
+    switch, and (indirectly) the enrichment button — and a tile told
+    three slightly different stories about the same rows is exactly the
+    kind of drift a source selector makes visible. One builder, called
+    from each.
+
+    Args:
+        isin: Fund ISIN.
+        blob: The per-source holdings blob in effect.
+        source: Which of :data:`~porxpy.config.HOLDINGS_SOURCES` that is.
+        store: Every source's blob, for the availability map.
+        enrichment_meta: The enrichment decision, when the caller has
+            just made one. Defaults to the blob's own stored record.
+        top10_sum_pct: Coverage sum for the header badge. Defaults to
+            the blob's weight sum.
+
+    Returns:
+        The ``holdings_meta`` block the frontend reads.
+    """
+    from porxpy.utils import holdings_sources_available, override_get
+
+    weight_sum_pct = blob.get("weight_sum_pct")
+    if weight_sum_pct is None and blob.get("rows"):
+        weight_sum_pct = round(
+            sum(float(r.get("weight_pct") or 0.0)
+                for r in blob.get("rows") or []), 6)
+    if top10_sum_pct is None:
+        top10_sum_pct = weight_sum_pct
+    if enrichment_meta is None:
+        enrichment_meta = blob.get("enrichment") or {}
+
+    holdings_source = blob.get("source") or "none"
+    holdings_rows   = blob.get("rows") or []
+    is_manual_upload = holdings_source == "manual_upload"
+    return {
+        "provider":       blob.get("_provider")
+                          or ("manual" if is_manual_upload else "yahoo"),
+        "source":         holdings_source,   # manual_upload / yahoo_enriched / yahoo_top10 / factsheet / none
+        # v0.77.0 — the holdings tile's source selector. ``source_key``
+        # is which of the three sources is in effect, ``available`` which
+        # of them this fund has at all (so the tile can strike through the
+        # rest), and ``pinned`` the user's stored choice — empty when they
+        # have made none and precedence is deciding.
+        "source_key":     source,
+        "available":      holdings_sources_available(isin, store),
+        "pinned":         (override_get(isin, "holdings_source") or ""),
+        "is_manual":      is_manual_upload,
+        # Has the user hand-corrected rows in this source? Set by the
+        # row-edit endpoint, and the reason a Yahoo slot stops being
+        # refetched — so the tile can say why a refresh left it alone.
+        "edited":         bool(blob.get("user_edited")),
+        # Factsheet provenance — null for the other two sources. A
+        # position table that the document itself called partial says so
+        # here rather than being presented as the whole fund.
+        "extracted_at":   blob.get("extracted_at") if holdings_source == "factsheet" else None,
+        "complete":       blob.get("complete") if holdings_source == "factsheet" else None,
+        "page":           blob.get("page") if holdings_source == "factsheet" else None,
+        "row_count":      len(holdings_rows),
+        "weight_sum_pct": weight_sum_pct,
+        # Manual-upload provenance — null for Yahoo-sourced blobs.
+        "uploaded_at":    blob.get("uploaded_at") if is_manual_upload else None,
+        "filename":       blob.get("filename")    if is_manual_upload else None,
+        # v0.22.1 — upload provenance: "disk" (local file) or "url"
+        # (fetched from the internet), plus the URL / path it came from.
+        # Null for Yahoo-sourced blobs, and for manual blobs cached
+        # before 0.22.1 (which recorded only the filename).
+        "source_kind":    blob.get("source_kind")  if is_manual_upload else None,
+        "source_value":   blob.get("source_value") if is_manual_upload else None,
+        # v0.22.0 — unified "when was this holdings list last written?".
+        # ``last_updated`` is stamped by every write path (upload, Yahoo
+        # fetch, row edit, enrichment). The ``uploaded_at`` / ``fetched_at``
+        # fallbacks cover blobs cached before 0.22.0, which have only the
+        # path-specific key. Null only when there are no holdings at all.
+        "last_updated":   (blob.get("last_updated")
+                           or blob.get("uploaded_at")
+                           or blob.get("fetched_at")
+                           or None),
+        # Top-coverage sum (frontend holdings-header badge) + enrichment
+        # decision. For a manual upload, enrichment is not a concept —
+        # ``applied`` is False and ``reason`` empty.
+        "top10_sum_pct":  top10_sum_pct,
+        "enrichment":     dict(enrichment_meta or {}),
+    }
+
+
 def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
                    force_refresh: bool = False,
                    known_ticker: str | None = None,
@@ -2781,14 +3087,28 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
     # the holdings work below means enriched/top-10 holdings rows inherit
     # the overridden class via ``default_holding_asset_class`` too.
     from porxpy.utils import override_get               # local: avoid cycle
+    # Lazy migration: pins to "yahoo" are not assertions and were never
+    # meant to be stored. Clearing them here means a fund corrects itself
+    # the first time it is read, rather than needing the user to find and
+    # undo each one. See utils.purge_default_pins.
+    from porxpy.utils import purge_default_pins            # local: cycle
+    _purged = purge_default_pins(isin)
+    if _purged:
+        print(f"[Overrides] {isin}: dropped {len(_purged)} default "
+              f"(yahoo) pin(s): {', '.join(sorted(_purged))}")
+
     ac_override = override_get(isin, "primary_asset_class")
     if asset_class is None:
-        asset_class = {"class": "other", "confidence": "low", "signals": []}
+        asset_class = {"class": "other", "confidence": "low",
+                       "signals": [], "origin": "none"}
     asset_class["detected_class"] = asset_class.get("class")
     if ac_override:
         asset_class["class"]      = ac_override
         asset_class["overridden"] = True
         asset_class["confidence"] = "override"
+        # The override replaces the evidence as well as the value: what
+        # detection had inferred no longer explains what is shown.
+        asset_class["origin"]     = "user"
     else:
         asset_class["overridden"] = False
 
@@ -2816,13 +3136,18 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
     # source of truth until they re-upload or explicitly clear it. Only
     # Yahoo-sourced (or empty) slots get refetched-and-rewritten.
     # ──────────────────────────────────────────────────────────────────
-    from porxpy.utils import coerce_holdings_row   # local: avoid import cycle
+    from porxpy.utils import (coerce_holdings_row,   # local: avoid import cycle
+                              holdings_get, holdings_put,
+                              holdings_sources_available)
 
     blob = cache_read(isin, "holdings")
     holdings_entry = blob.get("holdings") or {}
-    holdings_blob  = holdings_entry.get("value") or {}
-    if not isinstance(holdings_blob, dict):
-        holdings_blob = {}
+
+    # v0.77.0 — the slot holds one blob PER SOURCE and the user picks
+    # which is in effect. ``holdings_blob`` below is that active blob, so
+    # everything downstream of here reads exactly as it did when the slot
+    # held only one.
+    holdings_blob, active_source, holdings_store = holdings_get(isin)
 
     cached_source = holdings_blob.get("source") or ""
     is_manual     = cached_source == "manual_upload"
@@ -2847,13 +3172,28 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
     # force_refresh (the ↻ Reload Fund Data button) still refetches, so
     # a fund that later gains holdings on Yahoo can be picked up on
     # demand.
-    have_cached = bool(cached_source)
+    have_cached = "yahoo" in holdings_store
 
     # Decide whether to (re)fetch from Yahoo. We refetch when:
-    #   * there's no cached result at all, OR
-    #   * force_refresh is set AND the cached blob is NOT a manual upload
-    #     (manual uploads survive a forced refresh — they're user data).
-    refetch = (not have_cached) or (force_refresh and not is_manual)
+    #   * this fund has no Yahoo holdings slot at all, OR
+    #   * force_refresh is set.
+    #
+    # v0.77.0 changed what this question means. It used to be "is the one
+    # blob stale?", and a manual upload therefore SUPPRESSED the fetch —
+    # necessarily, since a fetch would have overwritten the upload. Now
+    # each source owns its own slot, so a refresh refills Yahoo's slot and
+    # cannot touch the upload or the factsheet; the user's file is safe
+    # because it lives somewhere else, not because we declined to ask
+    # Yahoo. That is what makes "Issuer (Yahoo)" selectable again on a
+    # fund that has been uploaded to.
+    #
+    # The one thing that still suppresses a refetch is a Yahoo slot the
+    # user has hand-edited. Their corrections live in that slot and a
+    # refetch would overwrite them, which is the same protection a
+    # promoted-to-manual_upload blob used to get — see the row-edit
+    # endpoint, which sets the flag.
+    yahoo_edited = bool((holdings_store.get("yahoo") or {}).get("user_edited"))
+    refetch = (not have_cached) or (force_refresh and not yahoo_edited)
 
     # Enrichment metadata surfaced to the UI. ``applied`` reflects the
     # blob actually in effect after this block, whatever its origin.
@@ -2874,7 +3214,13 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
         rows = holdings_blob.get("rows") or []
         rows = [coerce_holdings_row(r) for r in rows]
         holdings_blob["rows"] = rows
-        hold_age = age_days(holdings_entry.get("fetched_at", ""))
+        # The active blob's own stamp, not the slot's: the slot is
+        # rewritten whenever ANY source is, so a fund whose Yahoo rows
+        # were refreshed this morning would otherwise report a
+        # two-year-old factsheet as fetched today.
+        hold_age = age_days(holdings_blob.get("last_updated")
+                            or holdings_blob.get("fetched_at")
+                            or holdings_entry.get("fetched_at", ""))
         hmeta = {
             "source":     "cache",
             "fetched_at": holdings_entry.get("fetched_at"),
@@ -2933,18 +3279,21 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
         # class isn't known, rows stay blank — and coerce_holdings_row
         # (already applied inside the row builders) leaves sub_class
         # blank to match.
-        from porxpy.utils import default_holding_asset_class, default_sub_class
+        from porxpy.utils import default_holding_asset_class
         fund_holding_ac = default_holding_asset_class(
             (asset_class or {}).get("class"))
         if fund_holding_ac:
             for r in rows:
                 if not (r.get("asset_class") or "").strip():
-                    r["asset_class"] = fund_holding_ac
-                    # coerce_holdings_row already ran inside the row
-                    # builder, so sub_class won't be re-defaulted for us
-                    # — do it here from the freshly-filled asset class.
-                    if not (r.get("sub_class") or "").strip():
-                        r["sub_class"] = default_sub_class(fund_holding_ac)
+                    # The fund's own class, which is a claim about the
+                    # fund and not about this position. It fills the
+                    # level it states and no finer: deriving a sub class
+                    # from it would put an instrument-level assertion on
+                    # a row whose source said nothing at all.
+                    # The raw column, because this IS the source for
+                    # these rows: the fund's own classification stands in
+                    # where the holding stated nothing of its own.
+                    r["asset_raw"] = fund_holding_ac
 
         weight_sum = sum(
             float(r.get("weight_pct") or 0.0) for r in rows
@@ -2965,7 +3314,8 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
         # blob is returned in memory only (consistent with the listing).
         from porxpy.utils import cache_read as _cache_read
         if commit or bool(_cache_read(isin, "holdings")):
-            meta = cache_put(isin, "holdings", holdings_blob)
+            meta = holdings_put(isin, holdings_blob, "yahoo",
+                                store=holdings_store)
             hmeta = {
                 "source":     "live",
                 "fetched_at": meta["fetched_at"],
@@ -2982,6 +3332,33 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
             }
         cached_source = blob_source
         is_manual     = False
+
+        # A refresh refills Yahoo's slot; it does not change which source
+        # the user is looking at. Re-ask the store, so a fund pinned to
+        # (or falling back to) its upload keeps showing the upload after
+        # a "Reload fund data" that happened to also refresh Yahoo.
+        active_blob, active_source, holdings_store = holdings_get(isin)
+        # An uncommitted fund persists nothing, so the store read back is
+        # empty while the page is about to show Yahoo's rows. Put the
+        # in-memory blob in so the tile's availability map describes what
+        # is actually on screen rather than reporting no source at all.
+        holdings_store.setdefault("yahoo", holdings_blob)
+        if active_source and active_source != "yahoo":
+            holdings_blob = active_blob
+            cached_source = holdings_blob.get("source") or ""
+            is_manual     = cached_source == "manual_upload"
+            hmeta = {
+                "source":     "cache",
+                "fetched_at": holdings_blob.get("last_updated")
+                              or holdings_blob.get("fetched_at"),
+                "age_days":   age_days(holdings_blob.get("last_updated")
+                                       or holdings_blob.get("fetched_at") or ""),
+                "ttl_days":   None,
+            }
+        elif not active_source:
+            # Nothing was persisted (an uncommitted fund): the in-memory
+            # Yahoo blob is what the page shows.
+            active_source = "yahoo"
 
     # ``holdings_rows`` is the single source of truth from here on.
     holdings_rows = holdings_blob.get("rows") or []
@@ -3027,16 +3404,12 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
     #   manual_upload  → "full"
     #   yahoo_enriched → "top10_enriched"
     #   yahoo_top10    → "top10_raw"  (sparse — only name/ticker/weight)
+    #   factsheet      → "factsheet"
     #   (no rows)      → "none"
+    # The mapping itself lives in config.rollup_label_of, shared with the
+    # row editor and the enrichment button.
     rollup_rows = holdings_rows
-    if holdings_source == "manual_upload":
-        breakdowns_source = "full"
-    elif holdings_source == "yahoo_enriched":
-        breakdowns_source = "top10_enriched"
-    elif holdings_source == "yahoo_top10":
-        breakdowns_source = "top10_raw"
-    else:
-        breakdowns_source = "none"
+    breakdowns_source = rollup_label_of(holdings_source)
     # Sectors always stay from Yahoo fund-level metadata (see the long
     # NOTE below) — the fund-page breakdown grid reads ``data.sectors``
     # for its Fund/ETF-level toggle and the rollup for Holdings-level.
@@ -3080,9 +3453,17 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
         "holdings":  bool(rollup_rows),
         "factsheet": bool((factsheet_get(isin) or {}).get("extraction")),
     }
+    # Facets the user has asserted their source covers completely. Read
+    # here rather than downstream because everything that consumes this
+    # payload — the fund page, the portfolio rollup, the optimiser — must
+    # see the same completed card, not each apply the assertion itself.
+    bd_completed = {
+        f: True for f in BREAKDOWN_FACETS
+        if bool(override_get(isin, f"breakdown_complete.{f}"))
+    }
     fund_breakdowns = build_fund_breakdowns(
         breakdowns, sectors or [], asset_allocation or [],
-        bd_overrides, uploaded_facets, sources_present)
+        bd_overrides, uploaded_facets, sources_present, bd_completed)
 
     # ──────────────────────────────────────────────────────────────────
     # Fund "Structure" block — {structure, replication, style}.
@@ -3116,6 +3497,22 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
     fund_structure_is_override = any(v == "user"
                                      for v in fund_structure_sources.values())
 
+    # primary_asset_class is presented alongside the structure fields and
+    # is provenanced the same way, so its origin belongs in the same map
+    # the tile and the Edit dialog already read. It was the one field in
+    # the block with no entry, so fundFieldSourceNote fell through to the
+    # pin label and captioned every classification "Yahoo" — including
+    # the ones decided by words in the fund's name, which is a reading of
+    # marketing copy presented as measured data.
+    #
+    # A user override wins here as it does for every other field: it
+    # replaces the evidence as well as the value.
+    _ac_origin = (asset_class or {}).get("origin") or ""
+    if ac_override:
+        fund_structure_sources["primary_asset_class"] = "user"
+    elif _ac_origin and _ac_origin != "none":
+        fund_structure_sources["primary_asset_class"] = _ac_origin
+
     # NOTE: ``sectors`` is intentionally NOT overridden with the
     # look-through rollup here, even when full holdings are present.
     # The frontend's fund-page breakdown grid has a Fund/ETF-level vs
@@ -3136,38 +3533,10 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
     # weight sum, manual-upload provenance (filename / date) when
     # applicable, top-coverage sum, and the enrichment decision. Replaces
     # the old split holdings_full_manual / top10_* fields.
-    is_manual_upload = holdings_source == "manual_upload"
-    holdings_meta = {
-        "provider":       holdings_blob.get("_provider")
-                          or ("manual" if is_manual_upload else "yahoo"),
-        "source":         holdings_source,   # manual_upload / yahoo_enriched / yahoo_top10 / none
-        "is_manual":      is_manual_upload,
-        "row_count":      len(holdings_rows),
-        "weight_sum_pct": weight_sum_pct,
-        # Manual-upload provenance — null for Yahoo-sourced blobs.
-        "uploaded_at":    holdings_blob.get("uploaded_at") if is_manual_upload else None,
-        "filename":       holdings_blob.get("filename")    if is_manual_upload else None,
-        # v0.22.1 — upload provenance: "disk" (local file) or "url"
-        # (fetched from the internet), plus the URL / path it came from.
-        # Null for Yahoo-sourced blobs, and for manual blobs cached
-        # before 0.22.1 (which recorded only the filename).
-        "source_kind":    holdings_blob.get("source_kind")  if is_manual_upload else None,
-        "source_value":   holdings_blob.get("source_value") if is_manual_upload else None,
-        # v0.22.0 — unified "when was this holdings list last written?".
-        # ``last_updated`` is stamped by every write path (upload, Yahoo
-        # fetch, row edit, enrichment). The ``uploaded_at`` / ``fetched_at``
-        # fallbacks cover blobs cached before 0.22.0, which have only the
-        # path-specific key. Null only when there are no holdings at all.
-        "last_updated":   (holdings_blob.get("last_updated")
-                           or holdings_blob.get("uploaded_at")
-                           or holdings_blob.get("fetched_at")
-                           or None),
-        # Top-coverage sum (frontend holdings-header badge) + enrichment
-        # decision. For a manual upload, enrichment is not a concept —
-        # ``applied`` is False and ``reason`` empty.
-        "top10_sum_pct":  top10_sum_pct,
-        "enrichment":     enrichment_meta,
-    }
+    holdings_meta = build_holdings_meta(
+        isin, holdings_blob, active_source, holdings_store,
+        enrichment_meta=enrichment_meta, top10_sum_pct=top10_sum_pct)
+    is_manual_upload = holdings_meta["is_manual"]
 
     # v0.21.0 explicit-save: a fund is "saved" when its listing-level
     # profile cache file exists on disk. This is the truth-of-state for
@@ -3194,6 +3563,16 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
         "holdings_rows":   holdings_rows,
         "holdings_source": holdings_source,   # manual_upload / yahoo_enriched / yahoo_top10 / none
         "holdings_meta":   holdings_meta,
+        # What the v0.76.0 facet migration had to drop from this fund's
+        # cache, or {} when nothing was. Carried on the payload because
+        # the alternative is a screen that shows empty holdings and no
+        # reason: the rows were stored before every facet kept the
+        # source's own wording, so re-resolving them was impossible and
+        # dropping them was the only honest option. Only the user can
+        # close that gap, by re-importing, so only the user can be told.
+        # Cleared by the next holdings or breakdown write — see
+        # utils.legacy_purge_clear.
+        "legacy_purge":    blob.get("_legacy_purge") or {},
         # Look-through facet breakdowns (sector / currency / country /
         # asset_class) rolled up from ``holdings_rows``. Empty arrays
         # when there are no holdings rows at all — the frontend uses
@@ -3225,6 +3604,19 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
         # Per-field provenance: {field: "user"|"yahoo"}. Lets the tile
         # caption each row for where its value actually came from.
         "fund_structure_sources":    fund_structure_sources,
+        # Per-field provenance for EVERY field in FIELD_GROUPS, not just
+        # the structure block. One map, read by both the fund tiles and
+        # the Edit dialog, so the two cannot caption the same field
+        # differently — they used to derive it separately and did.
+        #
+        # A source is RECORDED, never assumed. The fields endpoint used
+        # to fall back to the literal "yahoo" for anything unpinned,
+        # which captioned a name-inferred focus and a defaulted style box
+        # as Yahoo data. Either a source supplied the value or there is
+        # no value: a field absent from this map has nothing to caption.
+        "field_sources": _field_provenance(
+            profile or {}, asset_class, fund_structure,
+            fund_structure_sources, overrides_for(isin), isin),
         "fund_structure_is_override": fund_structure_is_override,
         "asset_class":     asset_class,
         "price_history":   price_history or [],

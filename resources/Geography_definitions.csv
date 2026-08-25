@@ -1,0 +1,268 @@
+﻿type,name,description,parent_name,matches,is_default,attrs
+super_region,developed,Developed Markets,,developed markets|developed world|msci world|world ex emerging|world ex-emerging|kokusai|Ontwikkelde markten|ontwikkeld|volwassen markten,FALSE,
+super_region,emerging,Emerging Markets,,emerging markets|emerging market|emerging|msci em|ftse emerging|Opkomende markten|opkomend|groeimarkten,FALSE,
+region,northAmerica,North America,developed,north america|s&p 500|sp 500|nasdaq|dow jones|russell 1000|russell 2000|canadian|Noord-Amerika,FALSE,
+region,latinAmerica,Latin America,emerging,latin america|latam|south america|brazilian|mexican|Latijns-Amerika,FALSE,
+region,unitedKingdom,United Kingdom,developed,british|ftse 100|ftse 250|ftse all-share|Verenigd Koninkrijk,FALSE,
+region,europeDeveloped,Europe (Developed),developed,eurozone|euro zone|emu|euro stoxx|stoxx 600|stoxx europe|german|dax|french|cac|swiss|dutch|italian|spanish|nordic|scandinavia|swedish|danish|Europa (ontwikkeld)|europe ex-uk|europe ex u.k.|europe excluding uk|europe excluding the uk|msci europe ex uk|ftse developed europe ex uk|developed europe ex uk|europa ex vk,FALSE,
+region,europeEmerging,Europe (Emerging),emerging,eastern europe|emerging europe|polish|turkish|greek|czech|russian|Europa (opkomend),FALSE,
+region,africaMiddleEast,Africa & Middle East,emerging,africa|african|middle east|saudi|israeli|gulf|gcc|uae|Afrika & Midden-Oosten,FALSE,
+region,japan,Japan,developed,japanese|nikkei|topix,FALSE,
+region,australasia,Australasia,developed,australian|asx|Australazië|Australazie,FALSE,
+region,asiaDeveloped,Asia (Developed),developed,asia developed|developed asia|korean|kospi|taiwanese|hang seng|Azië (ontwikkeld)|Azie (ontwikkeld),FALSE,
+region,asiaEmerging,Asia (Emerging),emerging,asia ex japan|emerging asia|chinese|csi 300|indian|nifty|sensex|Azië (opkomend)|Azie (opkomend),FALSE,
+region,antartica,Antarctica,,Antarctica,FALSE,
+focus_group,europe,Europe,,european|Europa,FALSE,
+focus_group,asia,Asia,,asian|Azië|Azie,FALSE,
+focus_group,pacific,Pacific,,asia pacific|pacific rim|asia-pacific|Pacifisch|Stille Oceaan,FALSE,
+focus_group,world,World,,acwi|msci acwi|all country|all country world|all-world|all world|ftse all-world|ftse global all cap|global equity|worldwide|whole world|Wereld|wereldwijd,FALSE,
+country,afghanistan,,africaMiddleEast,AF|4,FALSE,code=AFG;currency=AFN
+country,albania,,europeEmerging,AL|8|Albanië|Albanie,FALSE,code=ALB;currency=ALL
+country,algeria,,africaMiddleEast,DZ|12|Algerije,FALSE,code=DZA;currency=DZD
+country,american samoa,,australasia,AS|16,FALSE,code=ASM;currency=USD
+country,andorra,,europeDeveloped,AD|20,FALSE,code=AND;currency=EUR
+country,angola,,africaMiddleEast,AO|24,FALSE,code=AGO;currency=AOA
+country,anguilla,,latinAmerica,AI|660,FALSE,code=AIA;currency=XCD
+country,antarctica,,antartica,AQ|10,FALSE,code=ATA
+country,antigua and barbuda,,latinAmerica,AG|28,FALSE,code=ATG;currency=XCD
+country,argentina,,latinAmerica,AR|32|Argentinië|Argentinie,FALSE,code=ARG;currency=ARS
+country,armenia,,africaMiddleEast,AM|51,FALSE,code=ARM;currency=AMD
+country,aruba,,latinAmerica,AW|533,FALSE,code=ABW;currency=AWG
+country,australia,,australasia,AU|36|Australië|Australie,FALSE,code=AUS;currency=AUD
+country,austria,,europeDeveloped,AT|40|Oostenrijk,FALSE,code=AUT;currency=EUR
+country,azerbaijan,,africaMiddleEast,AZ|31,FALSE,code=AZE;currency=AZN
+country,bahamas,,latinAmerica,BS|44,FALSE,code=BHS;currency=BSD
+country,bahrain,,africaMiddleEast,BH|48,FALSE,code=BHR;currency=BHD
+country,bangladesh,,asiaEmerging,BD|50,FALSE,code=BGD;currency=BDT
+country,barbados,,latinAmerica,BB|52,FALSE,code=BRB;currency=BBD
+country,belarus,,europeEmerging,BY|112|Wit-Rusland,FALSE,code=BLR;currency=BYN
+country,belgium,,europeDeveloped,BE|56|België|Belgie,FALSE,code=BEL;currency=EUR
+country,belize,,latinAmerica,BZ|84,FALSE,code=BLZ;currency=BZD
+country,benin,,africaMiddleEast,BJ|204,FALSE,code=BEN;currency=XOF
+country,bermuda,,northAmerica,BM|60,FALSE,code=BMU;currency=BMD
+country,bhutan,,asiaEmerging,BT|64,FALSE,code=BTN;currency=BTN
+country,"bolivia, plurinational state of",,latinAmerica,BO|68|Bolivia,FALSE,code=BOL;currency=BOB
+country,"bonaire, sint eustatius and saba",,latinAmerica,BQ|535,FALSE,code=BES;currency=USD
+country,bosnia and herzegovina,,europeEmerging,BA|70,FALSE,code=BIH;currency=BAM
+country,botswana,,africaMiddleEast,BW|72,FALSE,code=BWA;currency=BWP
+country,bouvet island,,latinAmerica,BV|74,FALSE,code=BVT;currency=NOK
+country,brazil,,latinAmerica,BR|76|Brazilië|Brazilie,FALSE,code=BRA;currency=BRL
+country,british indian ocean territory,,africaMiddleEast,IO|86,FALSE,code=IOT;currency=USD
+country,brunei darussalam,,asiaEmerging,BN|96,FALSE,code=BRN;currency=BND
+country,bulgaria,,europeEmerging,BG|100|Bulgarije,FALSE,code=BGR;currency=BGN
+country,burkina faso,,africaMiddleEast,BF|854,FALSE,code=BFA;currency=XOF
+country,burundi,,africaMiddleEast,BI|108,FALSE,code=BDI;currency=BIF
+country,cabo verde,,africaMiddleEast,CV|132,FALSE,code=CPV;currency=CVE
+country,cambodia,,asiaEmerging,KH|116|Cambodja,FALSE,code=KHM;currency=KHR
+country,cameroon,,africaMiddleEast,CM|120,FALSE,code=CMR;currency=XAF
+country,canada,,northAmerica,CA|124,FALSE,code=CAN;currency=CAD
+country,cayman islands,,latinAmerica,KY|136,FALSE,code=CYM;currency=KYD
+country,central african republic,,africaMiddleEast,CF|140,FALSE,code=CAF;currency=XAF
+country,chad,,africaMiddleEast,TD|148,FALSE,code=TCD;currency=XAF
+country,chile,,latinAmerica,CL|152|Chili,FALSE,code=CHL;currency=CLP
+country,china,,asiaEmerging,CN|156,FALSE,code=CHN;currency=CNY
+country,christmas island,,australasia,CX|162,FALSE,code=CXR;currency=AUD
+country,cocos (keeling) islands,,australasia,CC|166,FALSE,code=CCK;currency=AUD
+country,colombia,,latinAmerica,CO|170,FALSE,code=COL;currency=COP
+country,comoros,,africaMiddleEast,KM|174,FALSE,code=COM;currency=KMF
+country,congo,,africaMiddleEast,CG|178,FALSE,code=COG;currency=CDF
+country,"congo, democratic republic of the",,africaMiddleEast,CD|180|Congo,FALSE,code=COD;currency=CDF
+country,cook islands,,australasia,CK|184,FALSE,code=COK;currency=NZD
+country,costa rica,,latinAmerica,CR|188,FALSE,code=CRI;currency=CRC
+country,croatia,,europeEmerging,HR|191|Kroatië|Kroatie,FALSE,code=HRV;currency=EUR
+country,cuba,,latinAmerica,CU|192,FALSE,code=CUB;currency=CUP
+country,curaçao,,latinAmerica,CW|531,FALSE,code=CUW;currency=ANG
+country,cyprus,,africaMiddleEast,CY|196,FALSE,code=CYP;currency=EUR
+country,czechrepublic,,europeEmerging,czechia|czech republic|CZ|203|Tsjechië|Tsjechie|Tsjechische Republiek,FALSE,code=CZE;currency=CZK
+country,côte d'ivoire,,africaMiddleEast,cote d'ivoire|ivory coast|CI|384,FALSE,code=CIV;currency=XOF
+country,denmark,,europeDeveloped,DK|208|Denemarken,FALSE,code=DNK;currency=DKK
+country,djibouti,,africaMiddleEast,DJ|262,FALSE,code=DJI;currency=DJF
+country,dominica,,latinAmerica,DM|212,FALSE,code=DMA;currency=XCD
+country,dominican republic,,latinAmerica,DO|214,FALSE,code=DOM;currency=DOP
+country,ecuador,,latinAmerica,EC|218,FALSE,code=ECU;currency=USD
+country,egypt,,africaMiddleEast,EG|818|Egypte,FALSE,code=EGY;currency=EGP
+country,el salvador,,latinAmerica,SV|222,FALSE,code=SLV;currency=USD
+country,equatorial guinea,,africaMiddleEast,GQ|226,FALSE,code=GNQ;currency=XAF
+country,eritrea,,africaMiddleEast,ER|232,FALSE,code=ERI;currency=ERN
+country,estonia,,europeDeveloped,EE|233|Estland,FALSE,code=EST;currency=EUR
+country,eswatini,,africaMiddleEast,swaziland|SZ|748,FALSE,code=SWZ;currency=SZL
+country,ethiopia,,africaMiddleEast,ET|231|Ethiopië|Ethiopie,FALSE,code=ETH;currency=ETB
+country,falkland islands (malvinas),,latinAmerica,FK|238,FALSE,code=FLK;currency=FKP
+country,faroe islands,,europeDeveloped,FO|234,FALSE,code=FRO;currency=DKK
+country,fiji,,australasia,FJ|242,FALSE,code=FJI;currency=FJD
+country,finland,,europeDeveloped,FI|246,FALSE,code=FIN;currency=EUR
+country,france,,europeDeveloped,FR|250|Frankrijk,FALSE,code=FRA;currency=EUR
+country,french guiana,,latinAmerica,GF|254,FALSE,code=GUF;currency=EUR
+country,french polynesia,,australasia,PF|258,FALSE,code=PYF;currency=XPF
+country,french southern territories,,africaMiddleEast,TF|260,FALSE,code=ATF;currency=EUR
+country,gabon,,africaMiddleEast,GA|266,FALSE,code=GAB;currency=XAF
+country,gambia,,africaMiddleEast,GM|270,FALSE,code=GMB;currency=GMD
+country,georgia,,africaMiddleEast,GE|268,FALSE,code=GEO;currency=GEL
+country,germany,,europeDeveloped,DE|276|Duitsland,FALSE,code=DEU;currency=EUR
+country,ghana,,africaMiddleEast,GH|288,FALSE,code=GHA;currency=GHS
+country,gibraltar,,europeDeveloped,GI|292,FALSE,code=GIB;currency=GIP
+country,greece,,europeDeveloped,GR|300|Griekenland,FALSE,code=GRC;currency=EUR
+country,greenland,,northAmerica,GL|304,FALSE,code=GRL;currency=DKK
+country,grenada,,latinAmerica,GD|308,FALSE,code=GRD;currency=XCD
+country,guadeloupe,,latinAmerica,GP|312,FALSE,code=GLP;currency=EUR
+country,guam,,australasia,GU|316,FALSE,code=GUM;currency=USD
+country,guatemala,,latinAmerica,GT|320,FALSE,code=GTM;currency=GTQ
+country,guernsey,,europeDeveloped,"GG|831|Guernsey, Channel Islands",FALSE,code=GGY;currency=GBP
+country,guinea,,africaMiddleEast,GN|324,FALSE,code=GIN;currency=GNF
+country,guinea-bissau,,africaMiddleEast,GW|624,FALSE,code=GNB;currency=XOF
+country,guyana,,latinAmerica,GY|328,FALSE,code=GUY;currency=GYD
+country,haiti,,latinAmerica,HT|332,FALSE,code=HTI;currency=HTG
+country,heard island and mcdonald islands,,australasia,HM|334,FALSE,code=HMD;currency=AUD
+country,holy see,,europeDeveloped,VA|336,FALSE,code=VAT;currency=EUR
+country,honduras,,latinAmerica,HN|340,FALSE,code=HND;currency=HNL
+country,hongkong,,asiaDeveloped,hong kong|hong kong sar|HK|344,FALSE,code=HKG;currency=HKD
+country,hungary,,europeEmerging,HU|348|Hongarije,FALSE,code=HUN;currency=HUF
+country,iceland,,europeDeveloped,IS|352|IJsland,FALSE,code=ISL;currency=ISK
+country,india,,asiaEmerging,IN|356,FALSE,code=IND;currency=INR
+country,indonesia,,asiaEmerging,ID|360|Indonesië|Indonesie,FALSE,code=IDN;currency=IDR
+country,"iran, islamic republic of",,africaMiddleEast,IR|364|Iran,FALSE,code=IRN;currency=IRR
+country,iraq,,africaMiddleEast,IQ|368|Irak,FALSE,code=IRQ;currency=IQD
+country,ireland,,europeDeveloped,IE|372|Ierland,FALSE,code=IRL;currency=EUR
+country,isle of man,,europeDeveloped,IM|833,FALSE,code=IMN;currency=GBP
+country,israel,,africaMiddleEast,IL|376|Israël,FALSE,code=ISR;currency=ILS
+country,italy,,europeDeveloped,IT|380|Italië|Italie,FALSE,code=ITA;currency=EUR
+country,jamaica,,latinAmerica,JM|388,FALSE,code=JAM;currency=JMD
+country,japan,,japan,JP|392,FALSE,code=JPN;currency=JPY
+country,jersey,,europeDeveloped,"JE|832|Jersey, Channel Islands",FALSE,code=JEY;currency=GBP
+country,jordan,,africaMiddleEast,JO|400|Jordanië|Jordanie,FALSE,code=JOR;currency=JOD
+country,kazakhstan,,asiaEmerging,KZ|398|Kazachstan,FALSE,code=KAZ;currency=KZT
+country,kenya,,africaMiddleEast,KE|404|Kenia,FALSE,code=KEN;currency=KES
+country,kiribati,,australasia,KI|296,FALSE,code=KIR;currency=AUD
+country,"korea, democratic people's republic of",,asiaEmerging,dprk|north korea|KP|408|Republiek Korea,FALSE,code=PRK;currency=KPW
+country,kuwait,,africaMiddleEast,KW|414|Koeweit,FALSE,code=KWT;currency=KWD
+country,kyrgyzstan,,asiaEmerging,KG|417,FALSE,code=KGZ;currency=KGS
+country,lao people's democratic republic,,asiaEmerging,LA|418,FALSE,code=LAO;currency=LAK
+country,latvia,,europeDeveloped,LV|428|Letland,FALSE,code=LVA;currency=EUR
+country,lebanon,,africaMiddleEast,LB|422|Libanon,FALSE,code=LBN;currency=LBP
+country,lesotho,,africaMiddleEast,LS|426,FALSE,code=LSO;currency=LSL
+country,liberia,,africaMiddleEast,LR|430,FALSE,code=LBR;currency=LRD
+country,libya,,africaMiddleEast,LY|434|Libië|Libie,FALSE,code=LBY;currency=LYD
+country,liechtenstein,,europeDeveloped,LI|438,FALSE,code=LIE;currency=CHF
+country,lithuania,,europeDeveloped,LT|440|Litouwen,FALSE,code=LTU;currency=EUR
+country,luxembourg,,europeDeveloped,LU|442|Luxemburg,FALSE,code=LUX;currency=EUR
+country,macao,,asiaEmerging,macau|MO|446,FALSE,code=MAC;currency=MOP
+country,madagascar,,africaMiddleEast,MG|450,FALSE,code=MDG;currency=MGA
+country,malawi,,africaMiddleEast,MW|454,FALSE,code=MWI;currency=MWK
+country,malaysia,,asiaEmerging,MY|458|Maleisië|Maleisie,FALSE,code=MYS;currency=MYR
+country,maldives,,asiaEmerging,MV|462,FALSE,code=MDV;currency=MVR
+country,mali,,africaMiddleEast,ML|466,FALSE,code=MLI;currency=XOF
+country,malta,,europeDeveloped,MT|470,FALSE,code=MLT;currency=EUR
+country,marshall islands,,australasia,MH|584,FALSE,code=MHL;currency=USD
+country,martinique,,latinAmerica,MQ|474,FALSE,code=MTQ;currency=EUR
+country,mauritania,,africaMiddleEast,MR|478,FALSE,code=MRT;currency=MRU
+country,mauritius,,africaMiddleEast,MU|480,FALSE,code=MUS;currency=MUR
+country,mayotte,,africaMiddleEast,YT|175,FALSE,code=MYT;currency=EUR
+country,mexico,,latinAmerica,MX|484,FALSE,code=MEX;currency=MXN
+country,"micronesia, federated states of",,australasia,FM|583,FALSE,code=FSM;currency=USD
+country,"moldova, republic of",,europeEmerging,MD|498,FALSE,code=MDA;currency=MDL
+country,monaco,,europeDeveloped,MC|492,FALSE,code=MCO;currency=EUR
+country,mongolia,,asiaEmerging,MN|496|Mongolië|Mongolie,FALSE,code=MNG;currency=MNT
+country,montenegro,,europeEmerging,ME|499,FALSE,code=MNE;currency=EUR
+country,montserrat,,latinAmerica,MS|500,FALSE,code=MSR;currency=XCD
+country,morocco,,africaMiddleEast,MA|504|Marokko,FALSE,code=MAR;currency=MAD
+country,mozambique,,africaMiddleEast,MZ|508,FALSE,code=MOZ;currency=MZN
+country,myanmar,,asiaEmerging,burma|MM|104,FALSE,code=MMR;currency=MMK
+country,namibia,,africaMiddleEast,NA|516,FALSE,code=NAM;currency=NAD
+country,nauru,,australasia,NR|520,FALSE,code=NRU;currency=AUD
+country,nepal,,asiaEmerging,NP|524,FALSE,code=NPL;currency=NPR
+country,netherlands,,europeDeveloped,"netherlands, kingdom of the|NL|528|Nederland",FALSE,code=NLD;currency=EUR
+country,new caledonia,,australasia,NC|540,FALSE,code=NCL;currency=XPF
+country,newzealand,,australasia,new zealand|NZ|554|Nieuw-Zeeland,FALSE,code=NZL;currency=NZD
+country,nicaragua,,latinAmerica,NI|558,FALSE,code=NIC;currency=NIO
+country,niger,,africaMiddleEast,NE|562,FALSE,code=NER;currency=XOF
+country,nigeria,,africaMiddleEast,NG|566,FALSE,code=NGA;currency=NGN
+country,niue,,australasia,NU|570,FALSE,code=NIU;currency=NZD
+country,norfolk island,,australasia,NF|574,FALSE,code=NFK;currency=AUD
+country,north macedonia,,europeEmerging,MK|807|Noord-Macedonië|Noord-Macedonie,FALSE,code=MKD;currency=MKD
+country,northern mariana islands,,australasia,MP|580,FALSE,code=MNP;currency=USD
+country,norway,,europeDeveloped,NO|578|Noorwegen,FALSE,code=NOR;currency=NOK
+country,oman,,africaMiddleEast,OM|512,FALSE,code=OMN;currency=OMR
+country,pakistan,,asiaEmerging,PK|586,FALSE,code=PAK;currency=PKR
+country,palau,,australasia,PW|585,FALSE,code=PLW;currency=USD
+country,"palestine, state of",,africaMiddleEast,PS|275,FALSE,code=PSE
+country,panama,,latinAmerica,PA|591,FALSE,code=PAN;currency=USD
+country,papua new guinea,,australasia,PG|598,FALSE,code=PNG;currency=PGK
+country,paraguay,,latinAmerica,PY|600,FALSE,code=PRY;currency=PYG
+country,peru,,latinAmerica,PE|604,FALSE,code=PER;currency=PEN
+country,philippines,,asiaEmerging,PH|608|Filipijnen,FALSE,code=PHL;currency=PHP
+country,pitcairn,,australasia,PN|612,FALSE,code=PCN;currency=NZD
+country,poland,,europeEmerging,PL|616|Polen,FALSE,code=POL;currency=PLN
+country,portugal,,europeDeveloped,PT|620,FALSE,code=PRT;currency=EUR
+country,puerto rico,,latinAmerica,PR|630,FALSE,code=PRI;currency=USD
+country,qatar,,africaMiddleEast,QA|634,FALSE,code=QAT;currency=QAR
+country,romania,,europeEmerging,RO|642|Roemenië|Roemenie,FALSE,code=ROU;currency=RON
+country,russia,,europeEmerging,russian federation|RU|643|Rusland,FALSE,code=RUS;currency=RUB
+country,rwanda,,africaMiddleEast,RW|646,FALSE,code=RWA;currency=RWF
+country,réunion,,africaMiddleEast,RE|638,FALSE,code=REU;currency=EUR
+country,saint barthélemy,,latinAmerica,BL|652,FALSE,code=BLM;currency=EUR
+country,"saint helena, ascension and tristan da cunha",,africaMiddleEast,SH|654,FALSE,code=SHN;currency=SHP
+country,saint kitts and nevis,,latinAmerica,KN|659,FALSE,code=KNA;currency=XCD
+country,saint lucia,,latinAmerica,LC|662,FALSE,code=LCA;currency=XCD
+country,saint martin (french part),,latinAmerica,MF|663,FALSE,code=MAF;currency=EUR
+country,saint pierre and miquelon,,northAmerica,PM|666,FALSE,code=SPM;currency=EUR
+country,saint vincent and the grenadines,,latinAmerica,VC|670,FALSE,code=VCT;currency=XCD
+country,samoa,,australasia,WS|882,FALSE,code=WSM;currency=WST
+country,san marino,,europeDeveloped,SM|674,FALSE,code=SMR;currency=EUR
+country,sao tome and principe,,africaMiddleEast,ST|678,FALSE,code=STP;currency=STN
+country,saudi arabia,,africaMiddleEast,SA|682|Saoedi-Arabië|Saoedi-Arabie,FALSE,code=SAU;currency=SAR
+country,senegal,,africaMiddleEast,SN|686,FALSE,code=SEN;currency=XOF
+country,serbia,,europeEmerging,RS|688|Servië|Servie,FALSE,code=SRB;currency=RSD
+country,seychelles,,africaMiddleEast,SC|690,FALSE,code=SYC;currency=SCR
+country,sierra leone,,africaMiddleEast,SL|694,FALSE,code=SLE;currency=SLE
+country,singapore,,asiaDeveloped,SG|702,FALSE,code=SGP;currency=SGD
+country,sint maarten (dutch part),,latinAmerica,SX|534,FALSE,code=SXM;currency=ANG
+country,slovakia,,europeEmerging,SK|703|Slowakije,FALSE,code=SVK;currency=EUR
+country,slovenia,,europeEmerging,SI|705|Slovenië|Slovenie,FALSE,code=SVN;currency=EUR
+country,solomon islands,,australasia,SB|90,FALSE,code=SLB;currency=SBD
+country,somalia,,africaMiddleEast,SO|706,FALSE,code=SOM;currency=SOS
+country,south georgia and the south sandwich islands,,latinAmerica,GS|239,FALSE,code=SGS
+country,south sudan,,africaMiddleEast,SS|728,FALSE,code=SSD;currency=SSP
+country,southafrica,,africaMiddleEast,south africa|ZA|710|Zuid-Afrika,FALSE,code=ZAF;currency=ZAR
+country,southkorea,,asiaDeveloped,"south korea|korea, republic of|korea|republic of korea|rok|korea (south)|KR|410|Zuid-Korea",FALSE,code=KOR;currency=KRW
+country,spain,,europeDeveloped,ES|724|Spanje,FALSE,code=ESP;currency=EUR
+country,sri lanka,,asiaEmerging,LK|144,FALSE,code=LKA;currency=LKR
+country,sudan,,africaMiddleEast,SD|729|Soedan,FALSE,code=SDN;currency=SDG
+country,suriname,,latinAmerica,SR|740,FALSE,code=SUR;currency=SRD
+country,svalbard and jan mayen,,europeDeveloped,SJ|744,FALSE,code=SJM;currency=NOK
+country,sweden,,europeDeveloped,SE|752|Zweden,FALSE,code=SWE;currency=SEK
+country,switzerland,,europeDeveloped,CH|756|Zwitserland,FALSE,code=CHE;currency=CHF
+country,syrian arab republic,,africaMiddleEast,SY|760,FALSE,code=SYR;currency=SYP
+country,taiwan,,asiaDeveloped,"taiwan, province of china|chinese taipei|TW|158",FALSE,code=TWN;currency=TWD
+country,tajikistan,,asiaEmerging,TJ|762,FALSE,code=TJK;currency=TJS
+country,"tanzania, united republic of",,africaMiddleEast,TZ|834|Tanzania,FALSE,code=TZA;currency=TZS
+country,thailand,,asiaEmerging,TH|764,FALSE,code=THA;currency=THB
+country,timor-leste,,asiaEmerging,TL|626,FALSE,code=TLS;currency=USD
+country,togo,,africaMiddleEast,TG|768,FALSE,code=TGO;currency=XOF
+country,tokelau,,australasia,TK|772,FALSE,code=TKL;currency=NZD
+country,tonga,,australasia,TO|776,FALSE,code=TON;currency=TOP
+country,trinidad and tobago,,latinAmerica,TT|780,FALSE,code=TTO;currency=TTD
+country,tunisia,,africaMiddleEast,TN|788|Tunesië|Tunesie,FALSE,code=TUN;currency=TND
+country,turkey,,africaMiddleEast,türkiye|TR|792|Turkije,FALSE,code=TUR;currency=TRY
+country,turkmenistan,,asiaEmerging,TM|795,FALSE,code=TKM;currency=TMT
+country,turks and caicos islands,,latinAmerica,TC|796,FALSE,code=TCA;currency=USD
+country,tuvalu,,australasia,TV|798,FALSE,code=TUV;currency=AUD
+country,uganda,,africaMiddleEast,UG|800,FALSE,code=UGA;currency=UGX
+country,ukraine,,europeEmerging,UA|804|Oekraïne|Oekraine,FALSE,code=UKR;currency=UAH
+country,united arab emirates,,africaMiddleEast,AE|784|Verenigde Arabische Emiraten|VAE,FALSE,code=ARE;currency=AED
+country,united states minor outlying islands,,australasia,UM|581,FALSE,code=UMI;currency=USD
+country,unitedkingdom,,unitedKingdom,united kingdom|united kingdom of great britain and northern ireland|uk|u.k.|great britain|britain|england|GB|826|Verenigd Koninkrijk,FALSE,code=GBR;currency=GBP
+country,unitedstates,,northAmerica,united states|united states of america|us|u.s.|u.s.a.|usa|america|840|Verenigde Staten|VS|Verenigde Staten van Amerika,FALSE,code=USA;currency=USD
+country,uruguay,,latinAmerica,UY|858,FALSE,code=URY;currency=UYU
+country,uzbekistan,,asiaEmerging,UZ|860,FALSE,code=UZB;currency=UZS
+country,vanuatu,,australasia,VU|548,FALSE,code=VUT;currency=VUV
+country,venezuela,,latinAmerica,"venezuela, bolivarian republic of|bolivarian republic of venezuela|VE|862",FALSE,code=VEN;currency=VES
+country,vietnam,,asiaEmerging,viet nam|VN|704,FALSE,code=VNM;currency=VND
+country,virgin islands (british),,latinAmerica,VG|92,FALSE,code=VGB;currency=USD
+country,virgin islands (u.s.),,latinAmerica,VI|850,FALSE,code=VIR;currency=USD
+country,wallis and futuna,,australasia,WF|876,FALSE,code=WLF;currency=XPF
+country,western sahara,,africaMiddleEast,EH|732,FALSE,code=ESH;currency=MAD
+country,yemen,,africaMiddleEast,YE|887,FALSE,code=YEM;currency=YER
+country,zambia,,africaMiddleEast,ZM|894,FALSE,code=ZMB;currency=ZMW
+country,zimbabwe,,africaMiddleEast,ZW|716,FALSE,code=ZWE;currency=ZWL
+country,åland islands,,europeDeveloped,AX|248,FALSE,code=ALA;currency=EUR
+country,european union,,europeDeveloped,EU,FALSE,code=EUR

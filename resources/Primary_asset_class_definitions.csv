@@ -1,0 +1,7 @@
+﻿type;name;description;parent_name;matches;is_default;attrs
+primary_asset_class;equity;Share / common stock funds and equity-like instruments;;equities|equity securities|stock|stocks|shares|aandelen|aandelenfonds|equity fund;TRUE;style_match=equity|stock|msci|s&p|russell|nasdaq|dividend|growth|value
+primary_asset_class;fixed_income;Bond and other debt funds;;fixed income|fixedincome|fixed-income|fi|bond|bonds|debt|bond fund|obligaties;;style_match=bond|treasury|gilt|aggregate|credit|fixed income|govies
+primary_asset_class;cash;Money-market and cash funds;;money market|moneymarket|money market fund|cash equivalents|deposits|liquid;;style_match=money market|t-bill|cash|ultrashort|enhanced cash
+primary_asset_class;mixed;Mixed / balanced / multi-asset allocation funds;;balanced|allocation|multi-asset|multiasset|multi asset|mixed asset|gemengd;;style_match=balanced|multi-asset|multiasset|allocation
+primary_asset_class;commodity;Commodity and commodity-linked funds;;commodities|commodity-linked|gold|precious metals|grondstoffen;;style_match=gold|silver|commodity|oil|copper|metals
+primary_asset_class;other;Anything not covered by the categories above;;others|misc|miscellaneous|unclassified;;

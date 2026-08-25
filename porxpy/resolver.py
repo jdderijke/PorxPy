@@ -762,6 +762,96 @@ def search_name_variant(name: str, ticker_prefix: str,
     return None
 
 
+# Corporate-form words that carry no identifying information. Stripped
+# from both sides before two security names are compared, so "ASML
+# Holding NV" and "ASML Holding N.V." are the same name and "Novo
+# Nordisk A/S" matches "Novo Nordisk B A/S" on its first tokens.
+_NAME_NOISE: frozenset[str] = frozenset({
+    "nv", "bv", "sa", "sas", "se", "ag", "plc", "ltd", "limited", "inc",
+    "incorporated", "corp", "corporation", "co", "company", "group",
+    "holding", "holdings", "spa", "ab", "asa", "as", "oyj", "kgaa",
+    "the", "class", "cl", "series", "ord", "ordinary", "shares", "share",
+    "reg", "registered", "sponsored", "adr", "gdr", "a", "b", "c",
+})
+
+
+def _name_tokens(name: str) -> list[str]:
+    """Comparable tokens of a security name: lowercase, no noise, no punctuation."""
+    import re as _re
+    words = _re.split(r"[^0-9a-zA-Z]+", (name or "").lower())
+    # Single characters go too: they are share-class and legal-form
+    # debris ("A/S" leaves an "s", "Class A" an "a") and matching on one
+    # letter is not evidence of anything.
+    return [w for w in words if len(w) > 1 and w not in _NAME_NOISE]
+
+
+def search_name_only(name: str, max_results: int = 8) -> str | None:
+    """Resolve a security by NAME alone, when there is no ticker to match on.
+
+    Why this exists separately from :func:`search_name_variant`: that
+    function verifies a search hit by comparing it to the ticker the file
+    already supplied, and returns nothing when there is no ticker — which
+    is exactly the case this one is for. A factsheet's position table
+    routinely prints names and nothing else ("Bundesobligation 2,1%
+    2032", "ASML Holding NV"), and until v0.77.0 such a row could not be
+    enriched at all: the caller passed an empty prefix and the match
+    could never succeed.
+
+    With no ticker to check against, the NAME is the only evidence, so the
+    match is deliberately strict — a wrong hit here would silently attach
+    another company's sector, country and currency to the position, which
+    is worse than leaving the row blank. A candidate is accepted only if
+    its own name agrees with the query on every token the query has, in
+    order, ignoring corporate-form words. "Novo Nordisk" matches "Novo
+    Nordisk A/S"; it does not match "Novo Integrated Sciences".
+
+    Args:
+        name: The security name as printed.
+        max_results: How many search hits to consider.
+
+    Returns:
+        A Yahoo ticker, or None when the search fails, returns nothing,
+        or nothing agrees closely enough with the name.
+    """
+    want = _name_tokens(name)
+    if not want:
+        return None
+
+    try:
+        import yfinance as yf
+        result = yf.Search(name, max_results=max_results)
+        quotes = result.quotes or []
+    except Exception as exc:
+        print(f"[NameSearch] yf.Search('{name}') failed: {exc}")
+        return None
+
+    for q in quotes:
+        sym = (q.get("symbol") or "").upper().strip()
+        if not sym:
+            continue
+        cand = _name_tokens(f"{q.get('longname') or ''} {q.get('shortname') or ''}")
+        if not cand:
+            continue
+        # Every query token must appear, in order, as a prefix of a
+        # candidate token: "bundesobligation" matches, "bund" would too,
+        # but a missing or reordered token rejects the hit.
+        i = 0
+        for w in want:
+            while i < len(cand) and not cand[i].startswith(w):
+                i += 1
+            if i == len(cand):
+                break
+            i += 1
+        else:
+            # ASCII arrow deliberately: this line is new in a path that
+            # now runs for every name-only holdings row, and a Windows
+            # console in cp1252 raises on the "→" the older log lines use.
+            print(f"[NameSearch] '{name}' -> {sym} "
+                  f"({q.get('longname') or q.get('shortname') or ''})")
+            return sym
+    return None
+
+
 def search_id_variant(identifier: str) -> str | None:
     """Resolve a CUSIP or ISIN to a Yahoo ticker via Yahoo's search endpoint.
 
