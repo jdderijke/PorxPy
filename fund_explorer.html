@@ -3530,15 +3530,32 @@ function clearBusyButtons(root){
   root.querySelectorAll('[data-busy="1"]').forEach(clearBtnBusy);
 }
 
-// Hide a modal and let go of any busy state inside it. `cls` is the
-// class that shows it — 'show' everywhere except the reset dialog, which
-// uses 'open'; passing it keeps that one from being the exception nobody
-// remembers.
-function hideModal(id, cls){
+// Show and hide a modal. Every dialog goes through this pair, so the
+// class that makes a .modal-bg visible is named in exactly two places
+// instead of at each of the fourteen dialogs.
+//
+// That is not tidiness. The Danger zone's confirmation dialog was opened
+// by adding 'open' — a class the stylesheet does not define, since the
+// only rule is `.modal-bg.show{display:flex}` — so all three destructive
+// buttons did nothing at all: no dialog, no error, no clue. A dialog
+// that cannot be seen is indistinguishable from a button that is not
+// wired up, which is exactly how it was reported. Naming the class once
+// is what stops the fifteenth dialog from inventing its own.
+//
+// hideModal also lets go of any busy state inside the dialog it hides
+// — see setBtnBusy.
+function showModal(id){
+  const el = typeof id === 'string' ? document.getElementById(id) : id;
+  if (!el) return null;
+  el.classList.add('show');
+  return el;
+}
+
+function hideModal(id){
   const el = typeof id === 'string' ? document.getElementById(id) : id;
   if (!el) return null;
   clearBusyButtons(el);
-  el.classList.remove(cls || 'show');
+  el.classList.remove('show');
   return el;
 }
 
@@ -10322,7 +10339,7 @@ function openBdUploadModal(facet) {
   document.getElementById('bdUploadPreviewBtn').disabled = true;
   document.getElementById('bdUploadCommitBtn').style.display = 'none';
   document.getElementById('bdUploadCommitBtn').disabled = true;
-  document.getElementById('bdUploadModal').classList.add('show');
+  showModal('bdUploadModal');
 
   // Same remembered-source prefill as the holdings and factsheet
   // dialogs — see prefillUploadSource().
@@ -11553,7 +11570,7 @@ function openHoldingEditor(rowId){
   // The reference data fetch (loadHoldingClassResources) is fire-and-
   // forget — when it lands, populateEditHoldingDatalists builds the
   // four <select>s and selects editorPendingValues' entries.
-  document.getElementById('holdingEditModal').classList.add('show');
+  showModal('holdingEditModal');
   setTimeout(() => document.getElementById('heName').focus(), 50);
 
   loadHoldingClassResources().then(() => {
@@ -11970,7 +11987,7 @@ async function openEditFundModal(fund){
   document.getElementById('editFundError').style.display = 'none';
   document.getElementById('efGroups').innerHTML =
     `<div class="mhint" style="color:var(--muted)">Loading…</div>`;
-  document.getElementById('editFundModal').classList.add('show');
+  showModal('editFundModal');
 
   // focus_detail's dropdown is built from the sector and region
   // vocabularies, which were previously loaded only by the Targets
@@ -12845,7 +12862,7 @@ function openNewPortfolioModal(){
   document.getElementById('pfName').value = '';
   document.getElementById('pfCurrency').value = 'EUR';
   renderCacheConfigList(config.default_cache_cfg);
-  document.getElementById('pfModal').classList.add('show');
+  showModal('pfModal');
   setTimeout(()=>document.getElementById('pfName').focus(), 50);
 }
 
@@ -12859,7 +12876,7 @@ function openEditPortfolioModal(){
   document.getElementById('pfName').value = p.name;
   document.getElementById('pfCurrency').value = p.base_currency || 'EUR';
   renderCacheConfigList(p.cache_config || config.default_cache_cfg);
-  document.getElementById('pfModal').classList.add('show');
+  showModal('pfModal');
 }
 
 function renderCacheConfigList(cfg){
@@ -12976,7 +12993,7 @@ function openAddToPortfolio(){
 
   document.getElementById('addModalShares').value = '';
 
-  document.getElementById('addModal').classList.add('show');
+  showModal('addModal');
 }
 
 function closeAddModal(){ hideModal('addModal'); }
@@ -13139,7 +13156,7 @@ function openUploadModal(){
   document.getElementById('uvMapError').style.display   = 'none';
   document.getElementById('uvTitle').textContent =
     `Upload holdings — ${lastFundData.profile?.shortName || lastFundData.ticker}`;
-  document.getElementById('uploadModal').classList.add('show');
+  showModal('uploadModal');
 
   // Fire and forget, both of them: the remembered column mapping (used
   // once the file has been parsed) and the remembered source, which all
@@ -13361,7 +13378,7 @@ function openFactsheetModal(){
   } else {
     ex.style.display = 'none'; del.style.display = 'none';
   }
-  document.getElementById('factsheetModal').classList.add('show');
+  showModal('factsheetModal');
 
   // Offer back the URL or path this fund's factsheet last came from.
   // Issuers re-publish a factsheet at the same address every month, so
@@ -13502,7 +13519,7 @@ function showExtractionReport(ex){
       </div>`;
     _renderPromptPanel(null);
     _renderExtractAction();
-    document.getElementById('extractReportModal').classList.add('show');
+    showModal('extractReportModal');
     return;
   }
   const fields = Object.entries(ex.fields || {});
@@ -13573,7 +13590,7 @@ function showExtractionReport(ex){
     </div>`;
   _renderPromptPanel(ex);
   _renderExtractAction();
-  document.getElementById('extractReportModal').classList.add('show');
+  showModal('extractReportModal');
 }
 
 // The action row, with the reason spelled out when it cannot run — a
@@ -13762,7 +13779,7 @@ function openFilePicker(target){
   document.getElementById('fpError').style.display = 'none';
   document.getElementById('fpSelected').textContent = '';
   document.getElementById('fpConfirmBtn').disabled = true;
-  document.getElementById('filePickerModal').classList.add('show');
+  showModal('filePickerModal');
 
   // Where to start, in priority order:
   //   1. The folder of whatever local path is already in the Source box
@@ -15262,13 +15279,13 @@ function openResetModal(scope){
   document.getElementById('resetConfirmInput').value     = '';
   document.getElementById('resetModalErr').textContent   = '';
   document.getElementById('resetConfirmBtn').disabled    = true;
-  document.getElementById('resetModal').classList.add('open');
+  showModal('resetModal');
   setTimeout(() => document.getElementById('resetConfirmInput').focus(), 50);
 }
 
 function closeResetModal(){
   pendingResetScope = null;
-  hideModal('resetModal', 'open');
+  hideModal('resetModal');
 }
 
 function onResetTokenInput(){
@@ -15500,7 +15517,7 @@ async function ufOpenDialog(){
   ufValAnchor   = null;
   await ufRefreshValues().catch(() => {});
   ufRenderDialog();
-  document.getElementById('ufDialog').classList.add('show');
+  showModal('ufDialog');
 }
 
 // ── By-value tab (v0.59.0) ────────────────────────────────────────────
@@ -15952,7 +15969,7 @@ async function bkInspect(input){
     return;
   }
   bkRenderImport();
-  document.getElementById('bkImportModal').classList.add('show');
+  showModal('bkImportModal');
 }
 
 function bkCloseImport(){
@@ -18401,7 +18418,7 @@ async function openTargetsEditor(){
   // itself, and it was the only dialog that did — which is why the same
   // "stuck on the second visit" bug was still live in the bundle-import
   // dialog. See setBtnBusy / hideModal.
-  document.getElementById('targetsEditorModal').classList.add('show');
+  showModal('targetsEditorModal');
 
   // Lazy-fetch canonical values for the four facets (regions for
   // country) the first time the editor is opened, then cache them.

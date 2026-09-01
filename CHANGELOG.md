@@ -3,6 +3,27 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.87.3] - 2026-09-01
+
+### Fixed — none of the three Danger zone buttons did anything
+
+Clear all portfolios, Clear all cache and Reset all data each opened
+their confirmation dialog by adding the class `open` to it. The only
+rule that makes a dialog visible is `.modal-bg.show{display:flex}`;
+`.open` means something on the popover component and nothing at all on a
+modal. So the dialog was built correctly, filled with the right title
+and warning, and then left at `display:none` — no dialog, no error, no
+clue, which reads exactly like three buttons that were never wired up.
+The typed-RESET gate and the endpoints behind it were fine throughout;
+nothing could reach them.
+
+It was the classic shape of a bug in this codebase: fourteen dialogs do
+the same thing and one of them says it differently. The fix removes the
+opportunity rather than the instance — `showModal` / `hideModal` are now
+the only two places that name the class, and all fifteen dialogs go
+through them. A fifteenth dialog cannot invent its own vocabulary
+without deleting a helper first.
+
 ## [0.87.2] - 2026-09-01
 
 ### Fixed — a bundle import left its button stuck, and never showed you what it imported
