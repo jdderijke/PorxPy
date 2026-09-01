@@ -4,16 +4,16 @@ super_region,emerging,Emerging Markets,,emerging markets|emerging market|emergin
 region,northAmerica,North America,developed,north america|s&p 500|sp 500|nasdaq|dow jones|russell 1000|russell 2000|canadian|Noord-Amerika,FALSE,
 region,latinAmerica,Latin America,emerging,latin america|latam|south america|brazilian|mexican|Latijns-Amerika,FALSE,
 region,unitedKingdom,United Kingdom,developed,british|ftse 100|ftse 250|ftse all-share|Verenigd Koninkrijk,FALSE,
-region,europeDeveloped,Europe (Developed),developed,eurozone|euro zone|emu|euro stoxx|stoxx 600|stoxx europe|german|dax|french|cac|swiss|dutch|italian|spanish|nordic|scandinavia|swedish|danish|Europa (ontwikkeld)|europe ex-uk|europe ex u.k.|europe excluding uk|europe excluding the uk|msci europe ex uk|ftse developed europe ex uk|developed europe ex uk|europa ex vk,FALSE,
+region,europeDeveloped,Europe (Developed),developed,eurozone|euro zone|emu|euro stoxx|stoxx 600|stoxx europe|german|dax|french|cac|swiss|dutch|italian|spanish|nordic|scandinavia|swedish|danish|Europa (ontwikkeld)|europe ex-uk|europe ex u.k.|europe excluding uk|europe excluding the uk|msci europe ex uk|ftse developed europe ex uk|developed europe ex uk|europa ex vk|Europa,FALSE,
 region,europeEmerging,Europe (Emerging),emerging,eastern europe|emerging europe|polish|turkish|greek|czech|russian|Europa (opkomend),FALSE,
 region,africaMiddleEast,Africa & Middle East,emerging,africa|african|middle east|saudi|israeli|gulf|gcc|uae|Afrika & Midden-Oosten,FALSE,
 region,japan,Japan,developed,japanese|nikkei|topix,FALSE,
 region,australasia,Australasia,developed,australian|asx|Australazië|Australazie,FALSE,
-region,asiaDeveloped,Asia (Developed),developed,asia developed|developed asia|korean|kospi|taiwanese|hang seng|Azië (ontwikkeld)|Azie (ontwikkeld),FALSE,
+region,asiaDeveloped,Asia (Developed),developed,asia developed|developed asia|korean|kospi|taiwanese|hang seng|Azië (ontwikkeld)|Azie (ontwikkeld)|Azië,FALSE,
 region,asiaEmerging,Asia (Emerging),emerging,asia ex japan|emerging asia|chinese|csi 300|indian|nifty|sensex|Azië (opkomend)|Azie (opkomend),FALSE,
 region,antartica,Antarctica,,Antarctica,FALSE,
-focus_group,europe,Europe,,european|Europa,FALSE,
-focus_group,asia,Asia,,asian|Azië|Azie,FALSE,
+focus_group,europe,Europe,,european,FALSE,
+focus_group,asia,Asia,,asian|Azie,FALSE,
 focus_group,pacific,Pacific,,asia pacific|pacific rim|asia-pacific|Pacifisch|Stille Oceaan,FALSE,
 focus_group,world,World,,acwi|msci acwi|all country|all country world|all-world|all world|ftse all-world|ftse global all cap|global equity|worldwide|whole world|Wereld|wereldwijd,FALSE,
 country,afghanistan,,africaMiddleEast,AF|4,FALSE,code=AFG;currency=AFN
@@ -118,7 +118,7 @@ country,honduras,,latinAmerica,HN|340,FALSE,code=HND;currency=HNL
 country,hongkong,,asiaDeveloped,hong kong|hong kong sar|HK|344,FALSE,code=HKG;currency=HKD
 country,hungary,,europeEmerging,HU|348|Hongarije,FALSE,code=HUN;currency=HUF
 country,iceland,,europeDeveloped,IS|352|IJsland,FALSE,code=ISL;currency=ISK
-country,india,,asiaEmerging,IN|356,FALSE,code=IND;currency=INR
+country,india,,asiaEmerging,IN|356|Indië,FALSE,code=IND;currency=INR
 country,indonesia,,asiaEmerging,ID|360|Indonesië|Indonesie,FALSE,code=IDN;currency=IDR
 country,"iran, islamic republic of",,africaMiddleEast,IR|364|Iran,FALSE,code=IRN;currency=IRR
 country,iraq,,africaMiddleEast,IQ|368|Irak,FALSE,code=IRQ;currency=IQD
@@ -251,7 +251,7 @@ country,ukraine,,europeEmerging,UA|804|Oekraïne|Oekraine,FALSE,code=UKR;currenc
 country,united arab emirates,,africaMiddleEast,AE|784|Verenigde Arabische Emiraten|VAE,FALSE,code=ARE;currency=AED
 country,united states minor outlying islands,,australasia,UM|581,FALSE,code=UMI;currency=USD
 country,unitedkingdom,,unitedKingdom,united kingdom|united kingdom of great britain and northern ireland|uk|u.k.|great britain|britain|england|GB|826|Verenigd Koninkrijk,FALSE,code=GBR;currency=GBP
-country,unitedstates,,northAmerica,united states|united states of america|us|u.s.|u.s.a.|usa|america|840|Verenigde Staten|VS|Verenigde Staten van Amerika,FALSE,code=USA;currency=USD
+country,unitedstates,,northAmerica,united states|united states of america|us|u.s.|u.s.a.|usa|america|840|Verenigde Staten|VS|Verenigde Staten van Amerika|Amerika,FALSE,code=USA;currency=USD
 country,uruguay,,latinAmerica,UY|858,FALSE,code=URY;currency=UYU
 country,uzbekistan,,asiaEmerging,UZ|860,FALSE,code=UZB;currency=UZS
 country,vanuatu,,australasia,VU|548,FALSE,code=VUT;currency=VUV

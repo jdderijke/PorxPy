@@ -44,14 +44,13 @@ from porxpy.config import (
     DEFAULT_CACHE_CONFIG,
     ENRICHABLE_FIELDS,
     UPLOAD_DIR,
+    UPLOAD_SOURCE_KINDS,
     UPLOAD_TOKEN_TTL_MIN,
 )
 from porxpy.resolver import clean_holding_ticker_input
 from porxpy.resources import (
     country_to_currency,
     country_to_mstar,
-    resolve_currency,
-    resolve_sector,
     resolve_sector_tree,
 )
 from porxpy.config import facet_raw_field
@@ -73,6 +72,7 @@ from porxpy.utils import (
     age_days, cache_put, cache_read, cache_write, coerce_holdings_row,
     default_holding_asset_class, now_iso,
     holdings_delete_source, holdings_put, holdings_store_get,
+    upload_source_get, upload_source_put,
 )
 
 
@@ -521,6 +521,25 @@ def _looks_like_url(s: str) -> bool:
     return s.startswith(("http://", "https://"))
 
 
+def classify_source(source: str) -> str:
+    """Say whether a source string names a URL or something on disk.
+
+    The same test :func:`resolve_source` makes, without fetching or
+    reading anything. It exists so the places that only need to *record*
+    where an upload came from — the remembered Source field of the three
+    upload dialogs — classify it identically to the place that goes and
+    gets it, instead of each re-deriving "is this a URL?" from the string.
+
+    Args:
+        source: User-provided source string.
+
+    Returns:
+        ``"url"`` for an http(s) URL, ``"disk"`` for anything else (a
+        path or a ``file://`` URI — both are read off the filesystem).
+    """
+    return "url" if _looks_like_url((source or "").strip()) else "disk"
+
+
 def _looks_like_file_uri(s: str) -> bool:
     """Return True if ``s`` is a ``file://`` URI."""
     return s.startswith("file://")
@@ -863,12 +882,11 @@ def _upload_commit_impl(token: str, *,
             for fields whose ``mapping`` is ``None``. Ignored for fields
             whose mapping picks a real column. Per-field semantics:
 
-            * ``country``: run through :func:`country_to_mstar` like the
-              mapped column, with the raw value retained as-is on miss.
-            * ``currency``: uppercased.
-            * ``sector`` / ``asset_class``: stored verbatim (asset_class
-              is expected to be one of the canonical enum values; the
-              UI restricts it).
+            * the four facets: stored verbatim in that facet's
+              ``<facet>_raw`` column, exactly as a mapped column is, and
+              resolved by ``normalise_facets`` on every read.
+            * the bond fields: stored verbatim in their own columns and
+              type-coerced by ``coerce_holdings_row``.
             * any other key: silently ignored.
 
         enrich_fields: list of optional fields (subset of ``{"sector",
@@ -1071,157 +1089,82 @@ def _upload_commit_impl(token: str, *,
     # ──────────────────────────────────────────────────────────────────
     # Pass 3 — Yahoo enrichment for fields the user explicitly requested.
     #
-    # Only fields that were UNMAPPED (mapping is None) AND listed in
-    # ``enrich_fields`` are eligible. Bypassed for rows without a ticker
-    # — Yahoo can't help us identify cash residuals or swap collateral.
-    # Per-row override semantics: enrichment wins over a previously-set
-    # default, but is itself a no-op if Yahoo has nothing for that field
-    # on that ticker. Backed by the same per-symbol cache the top-10
-    # enrichment uses, so repeat uploads of the same file are fast.
-    # ──────────────────────────────────────────────────────────────────
-    enrich_fields = list(enrich_fields or [])
-    # v0.72.0: a mapped column no longer disqualifies a field. An issuer
-    # file that carries a sector column with holes in it is the ordinary
+    # Delegated in full to extractors.enrich_holdings_rows, which is the
+    # same loop the fund page's "Enrich through Yahoo" button runs. The
+    # two are the same operation on the same rows and must not disagree
+    # about which rows are worth a lookup, which column an answer lands
+    # in, or how coarse an asset answer to accept — and until v0.86.0
+    # they disagreed about all three, because this pass was a private
+    # copy. Its writes went to the LEVEL columns (row["sector"] and
+    # friends), which coerce_holdings_row blanks at the bottom of this
+    # very function, so upload-time enrichment filled nothing at all.
+    #
+    # Precedence (file > enrichment > default) is unchanged and now holds
+    # by construction: the shared loop is blank-only against the same
+    # <facet>_raw column pass 2 writes the file's wording into, so a
+    # mapped column that actually said something is never overwritten,
+    # and a mapped column with holes in it still gets them filled.
+    #
+    # v0.72.0: a mapped column does not disqualify a field. An issuer
+    # file carrying a sector column with holes in it is the ordinary
     # case, and refusing to enrich it meant the only way to fill those
     # holes was to leave the column unmapped and throw away the rows
-    # that DID have a value. Writes below are blank-only, so the file
-    # still wins wherever it actually said something — the documented
-    # precedence (file > enrichment > default) is unchanged.
-    enrich_fields = [f for f in enrich_fields if f in _ENRICHABLE_FIELDS]
-    enriched_counts: dict[str, int] = {f: 0 for f in enrich_fields}
-    enrich_skipped_no_ticker = 0
-    enrich_skipped_over_cap  = 0
-    # Tickers Yahoo didn't recognise (cache returned no useful data).
-    # Useful diagnostic — typically a sign that the variant probe
-    # in get_symbol_info_cached couldn't find a Yahoo form that
-    # matched, or the issuer used a local code we don't generate
-    # candidates for. Surfaced as a count plus a sample of up to 20
-    # tickers so the user can spot the pattern.
-    enrich_unrecognised: list[str] = []
+    # that DID have a value.
+    # ──────────────────────────────────────────────────────────────────
+    enrich_fields = [f for f in (enrich_fields or []) if f in _ENRICHABLE_FIELDS]
+    enrich_stats: dict[str, Any] = {}
 
     if enrich_fields:
         # Lazy import to avoid pulling extractors → utils → ... at module
         # load time when upload.py is imported by the route registration.
-        from porxpy.extractors import get_symbol_info_cached, _isin_from_info, _cusip_from_isin
-        from porxpy.utils import alias_get
+        from porxpy.extractors import enrich_holdings_rows
 
         # Cancel checkpoint #1: early exit if the user already hit
         # Cancel between commit-fire and reaching the loop. Cheap.
         if is_cancelled(token):
             raise UploadCancelled(token)
 
+        # Cancel checkpoint #2 lives inside the shared loop, at the top
+        # of every row. The per-row work (a Yahoo network call on a cold
+        # cache) dominates the commit's total time, so that is where the
+        # cancel needs to land; worst-case latency between the Cancel
+        # click and the actual stop is one in-flight network call.
+        # Raising from this callback keeps UploadCancelled — and the
+        # token it names — out of the shared loop entirely.
+        def _cancel_check() -> None:
+            if is_cancelled(token):
+                raise UploadCancelled(token)
+
         # Progress to the terminal. A per-holding Yahoo lookup costs
         # ~0.01s cached and ~1s when it misses and runs the full
         # fallback chain (variant probe, ISIN search, name search), so a
         # few hundred unrecognised rows is legitimately minutes of work.
         # With nothing printed, that is indistinguishable from a hang —
-        # which is exactly how it was reported. Cheap to emit, and the
-        # only signal the user has while the dialog waits.
+        # which is exactly how it was reported.
         _n_total = min(len(out_rows), _ENRICH_ROW_CAP)
-        _t_start = time.time()
         _step = 25 if _n_total > 100 else 10
+
+        def _progress(i: int, total: int, elapsed: float) -> None:
+            if not i or i % _step or i >= total:
+                return
+            rate = i / elapsed if elapsed > 0 else 0
+            eta  = (total - i) / rate if rate > 0 else 0
+            print(f"[Upload]   {i}/{total} rows "
+                  f"({elapsed:.0f}s elapsed, ~{eta:.0f}s left)")
+
+        _t_start = time.time()
         print(f"[Upload] enrichment starting: {_n_total} row(s), "
               f"fields={', '.join(enrich_fields)}")
-        for i, row in enumerate(out_rows):
-            if i and i % _step == 0 and i < _n_total:
-                _el = time.time() - _t_start
-                _rate = i / _el if _el > 0 else 0
-                _eta = (_n_total - i) / _rate if _rate > 0 else 0
-                print(f"[Upload]   {i}/{_n_total} rows "
-                      f"({_el:.0f}s elapsed, ~{_eta:.0f}s left)")
-            # Cancel checkpoint #2: top of every iteration. The per-row
-            # work (a Yahoo network call on cold cache) dominates the
-            # commit's total time, so this is where the cancel needs
-            # to land. Worst-case latency between Cancel click and
-            # actual stop is one in-flight network call.
-            if is_cancelled(token):
-                raise UploadCancelled(token)
-            if i >= _ENRICH_ROW_CAP:
-                enrich_skipped_over_cap += 1
-                continue
-            sym = (row.get("ticker") or "").strip()
-            row_isin  = row.get("isin")  or None
-            row_cusip = row.get("cusip") or None
-            row_name  = row.get("name")  or None
-            # Name-only rows are tried too, as on the fund tile's
-            # "Enrich through Yahoo" button (v0.77.0) — the two are the
-            # same operation on the same rows and must not disagree about
-            # which of them are worth a lookup.
-            if not sym and not row_isin and not row_cusip and not row_name:
-                enrich_skipped_no_ticker += 1
-                continue
-            try:
-                info = get_symbol_info_cached(
-                    sym,
-                    isin=row_isin,
-                    cusip=row_cusip,
-                    name=row_name,
-                    retry_negative=True,
-                )
-            except Exception as exc:
-                print(f"[upload-enrich] {sym} error: {exc}")
-                continue
-            if not isinstance(info, dict):
-                continue
-            # Track Yahoo coverage. _found is set by get_symbol_info_cached;
-            # falsy means Yahoo had no useful data for this ticker (and the
-            # negative result has already been alias-cached so the next
-            # upload won't re-probe).
-            if not info.get("_found"):
-                enrich_unrecognised.append(sym)
-                continue   # nothing to enrich from
-
-              # Backfill ticker / ISIN / CUSIP on the row.
-            #
-            # _resolved_ticker is injected by get_symbol_info_cached at
-            # every successful return site — it is the canonical Yahoo
-            # ticker regardless of which path resolved it (variant rewrite,
-            # ISIN country prefix, id-search, name search, or straight hit).
-            resolved_ticker = (info.get("_resolved_ticker") or "").strip() or None
-
-            # Ticker — always write the canonical Yahoo form. Fills a
-            # blank ticker (id-search path) and corrects a rewritten one.
-            if resolved_ticker and resolved_ticker != (row.get("ticker") or ""):
-                row["ticker"] = resolved_ticker
-
-            # ISIN — fetch from Yahoo info cache; no extra HTTP call.
-            # Only fills blank — never overwrites a file-mapped ISIN.
-            if resolved_ticker and not (row.get("isin") or "").strip():
-                fetched_isin = _isin_from_info(resolved_ticker)
-                if fetched_isin:
-                    row["isin"] = fetched_isin
-
-            # CUSIP — derived from ISIN when it's a US ISIN (chars 2–10).
-            # Only fills blank — if the file supplied a CUSIP we trust it.
-            if not (row.get("cusip") or "").strip():
-                isin_for_cusip = (row.get("isin") or "").strip().upper()
-                if isin_for_cusip:
-                    derived_cusip = _cusip_from_isin(isin_for_cusip)
-                    if derived_cusip:
-                        row["cusip"] = derived_cusip
-            for f in enrich_fields:
-                # Asset is one facet: take the FINEST answer Yahoo gives,
-                # since the resolver derives the coarser levels from it
-                # but can never derive a finer one.
-                v = (info.get("sub_class") or info.get("asset_class"))                     if f == "asset_class" else info.get(f)
-                if not v:
-                    continue
-                cur = row.get(f)
-                if not (cur is None or (isinstance(cur, str) and not cur.strip())):
-                    continue        # the file said something; it wins
-                if f == "country":
-                    row["country"] = country_to_mstar(v) or v
-                elif f == "currency":
-                    row["currency"] = str(v).upper().strip()
-                else:
-                    row[f] = v
-                enriched_counts[f] = enriched_counts.get(f, 0) + 1
-
-    if enrich_fields:
+        out_rows, enrich_stats = enrich_holdings_rows(
+            out_rows, enrich_fields,
+            row_cap=_ENRICH_ROW_CAP,
+            on_progress=_progress,
+            should_cancel=_cancel_check,
+        )
         print(f"[Upload] enrichment done in {time.time() - _t_start:.0f}s: "
-              f"filled={dict(enriched_counts)} "
-              f"unrecognised={len(enrich_unrecognised)} "
-              f"no_ticker={enrich_skipped_no_ticker}")
+              f"filled={dict(enrich_stats.get('rows_filled') or {})} "
+              f"unrecognised={enrich_stats.get('rows_yahoo_not_found', 0)} "
+              f"no_id={enrich_stats.get('rows_skipped_no_identifier', 0)}")
 
     # ──────────────────────────────────────────────────────────────────
     # Pass 4 — default-fill for unmapped fields the user supplied a
@@ -1248,40 +1191,49 @@ def _upload_commit_impl(token: str, *,
         raw = (defaults.get(f) or "").strip()
         if not raw:
             continue
-        if f == "currency":
-            resolved = resolve_currency(raw)
-            default_apply[f] = resolved if resolved else raw.upper()
-        elif f == "country":
-            mstar = country_to_mstar(raw)
-            default_apply[f] = mstar or raw
-        elif f == "sector":
-            resolved = resolve_sector(raw)
-            default_apply[f] = resolved if resolved else raw.lower()
-        elif f == "asset_class":
-            # Default asset class is one of the holding enum values
-            # (the upload dialog restricts the dropdown to them), but
-            # normalise defensively in case a non-JSON caller sends
-            # something else.
-            # Passed through for normalise_facets, as the mapped column
-            # above is — pre-normalising coarsened it to the default
-            # level before the tree ever saw the stated grain.
-            default_apply[f] = raw.strip().lower()
-        else:
-            # Includes the four bond fields — store the raw user value;
-            # coerce_holdings_row normalises numerics and dates later.
-            default_apply[f] = raw
+        # Every value passes through verbatim, facets included. What the
+        # user typed is the source's wording for these rows, and
+        # normalise_facets resolves it on every read — which is what lets
+        # an alias added to a resource CSV next month repair rows filled
+        # by a default today.
+        #
+        # Until v0.86.0 the three tree facets each resolved here first
+        # (resolve_currency / country_to_mstar / resolve_sector) and
+        # stored the canonical. That made this a second resolution
+        # authority beside normalise_facets, with its own per-facet
+        # fallbacks — the divergence FACET_TREE.md §17 recorded as
+        # "upload.py still pre-resolves sector" — and it coarsened the
+        # sector default to the tree's middle level before the tree saw
+        # the stated grain. asset_class already passed through, for
+        # exactly this reason; the other three now match it.
+        #
+        # Bond fields (duration, maturity, coupon, effective_date) are
+        # not facets and keep their own columns; coerce_holdings_row
+        # normalises their numerics and dates later.
+        default_apply[f] = raw
 
+    # A facet default is a SOURCE for the row — the user asserting a
+    # value the file did not carry — so it lands in that facet's raw
+    # column and normalise_facets derives the levels from it, exactly as
+    # a mapped column and an enrichment answer do. Writing the level
+    # column instead (which this loop did until v0.86.0) is undone by
+    # coerce_holdings_row at the bottom of this function, so every
+    # default the user typed into the upload dialog was discarded.
+    # The bond fields keep their own columns: they are not facets, have
+    # no raw column and no tree to derive.
     if default_apply:
         for row in out_rows:
             for f, val in default_apply.items():
-                cur = row.get(f)
+                facet = FACET_SOURCE_FIELDS.get(f)
+                target = facet_raw_field(facet) if facet else f
+                cur = row.get(target)
                 # "Empty" means missing entirely OR a string that's
                 # blank/whitespace. Any other truthy value (a number,
                 # a non-blank string) is left alone — file mapping or
                 # enrichment already populated it.
                 is_empty = cur is None or (isinstance(cur, str) and not cur.strip())
                 if is_empty:
-                    row[f] = val
+                    row[target] = val
                     row.setdefault("_defaulted", []).append(f)
 
     # ──────────────────────────────────────────────────────────────────
@@ -1314,11 +1266,18 @@ def _upload_commit_impl(token: str, *,
 
     fund_ac_fallback_count = 0
     if fund_holding_ac:
+        asset_raw = facet_raw_field("asset_class")
         for row in out_rows:
-            cur = row.get("asset_class")
+            # Same rule as the default pass above: the fallback is this
+            # row's asset SOURCE, so it goes in the raw column. Writing
+            # row["asset_class"] left the fallback to be blanked by the
+            # coercion below, which is why an upload of a file with no
+            # asset column produced holdings with no asset class at all
+            # even for funds whose own class was known.
+            cur = row.get(asset_raw)
             is_empty = cur is None or (isinstance(cur, str) and not cur.strip())
             if is_empty:
-                row["asset_class"] = fund_holding_ac
+                row[asset_raw] = fund_holding_ac
                 row.setdefault("_defaulted", []).append("asset_class")
                 fund_ac_fallback_count += 1
 
@@ -1405,10 +1364,13 @@ def _upload_commit_impl(token: str, *,
             except (TypeError, ValueError):
                 norm_mapping[k] = None
 
+    # Where the file came from is NOT in here any more (v0.87.0). It is
+    # the same question the factsheet and breakdown-CSV dialogs ask, so
+    # it moved to the shared fund-level ``upload_sources`` store below
+    # and all three dialogs prefill from one implementation. What stays
+    # is what genuinely is per-listing: the column layout of the
+    # spreadsheet this listing's export produces.
     prefs_blob = {
-        "source_kind":   payload.get("source_kind"),
-        "source_value":  payload.get("source_value"),
-        "filename":      payload.get("filename"),
         "mapping":       norm_mapping,
         "header_row":    int(header_row) if isinstance(header_row, int) else 0,
         "decimal":       decimal,
@@ -1418,6 +1380,14 @@ def _upload_commit_impl(token: str, *,
         "saved_at":      now_iso(),
     }
     cache_put(ticker, "upload_prefs", prefs_blob)
+
+    # The other half of the memory: the location of the file, remembered
+    # against the FUND so the next "Upload holdings" — from either
+    # listing of it — opens with the issuer URL already in the field.
+    upload_source_put(isin, "holdings",
+                      payload.get("source_value") or "",
+                      source_kind=payload.get("source_kind") or "",
+                      filename=payload.get("filename") or "")
 
     # Cleanup
     _delete_token(token)
@@ -1435,7 +1405,12 @@ def _upload_commit_impl(token: str, *,
     for r in out_rows:
         for facet in (r.get("_unmatched_facets") or []):
             uf_by_facet[facet] = uf_by_facet.get(facet, 0) + 1
-            raw = (r.get(facet) or "").strip()
+            # The sample is the text that FAILED to resolve, which lives
+            # in the raw column. It was read from the level column until
+            # v0.86.0 — the one column normalise_facets guarantees is
+            # blank for an unmatched facet — so the dialog always showed
+            # a count with no examples of what to fix.
+            raw = (r.get(facet_raw_field(facet)) or "").strip()
             if raw:
                 bucket = uf_samples.setdefault(facet, [])
                 if raw not in bucket and len(bucket) < 5:
@@ -1457,17 +1432,30 @@ def _upload_commit_impl(token: str, *,
             "by_facet": uf_by_facet,
             "samples":  uf_samples,
         },
+        # Straight off the shared enrichment loop's stats, renamed only
+        # where this payload's key differs. "skipped_no_identifier"
+        # replaces "skipped_no_ticker": a row with only a name is
+        # enrichable, so a ticker stopped being what a skip means.
         "enrichment": {
-            "fields":              enrich_fields,
-            "rows_filled":         enriched_counts,
-            "skipped_no_ticker":   enrich_skipped_no_ticker,
-            "skipped_over_cap":    enrich_skipped_over_cap,
-            "row_cap":             _ENRICH_ROW_CAP,
-            "unrecognised_count":  len(enrich_unrecognised),
+            "fields":               enrich_stats.get("fields") or [],
+            "rows_filled":          enrich_stats.get("rows_filled") or {},
+            "skipped_no_identifier": enrich_stats.get(
+                "rows_skipped_no_identifier", 0),
+            "skipped_over_cap":     enrich_stats.get(
+                "rows_skipped_over_cap", 0),
+            "row_cap":              _ENRICH_ROW_CAP,
+            "unrecognised_count":   enrich_stats.get(
+                "rows_yahoo_not_found", 0),
             # First N as a sample so the user can spot a pattern
             # (e.g. all the unrecognised tickers come from one
             # exchange we don't normalise yet).
-            "unrecognised_sample": sorted(set(enrich_unrecognised))[:20],
+            "unrecognised_sample":  sorted(
+                set(enrich_stats.get("unrecognised") or []))[:20],
+            # Yahoo was unreachable rather than ignorant. Surfaced so a
+            # network failure during a commit does not read as "none of
+            # your holdings exist".
+            "lookup_failed":        enrich_stats.get("rows_lookup_failed", 0),
+            "lookup_error":         enrich_stats.get("lookup_error") or "",
         },
         "defaults_applied":   sorted(default_apply.keys()),
         # Rows whose asset_class was blank after file/enrich/user-default
@@ -1537,10 +1525,13 @@ def get_upload_prefs(ticker: str) -> dict | None:
     """Return the saved upload-dialog prefs for ``ticker``, or ``None``.
 
     Used by ``GET /api/upload/prefs`` so the upload modal can prefill
-    the source field, mapping, defaults, etc. on a re-upload. Upload
-    prefs are a per-LISTING UI memory (different listings of one fund
-    may have different column layouts in their source spreadsheets),
-    so they stay ticker-keyed under the 0.12.0 split.
+    the column mapping, defaults, etc. on a re-upload. Upload prefs are
+    a per-LISTING UI memory (different listings of one fund may have
+    different column layouts in their source spreadsheets), so they stay
+    ticker-keyed under the 0.12.0 split. The *source* of the file is not
+    a layout and is not per-listing: since v0.87.0 it lives in the
+    fund-level ``upload_sources`` store that all three upload dialogs
+    share — see :func:`remembered_upload_source`.
 
     The TTL on ``upload_prefs`` is 3650 days (effectively forever) so
     a hit here is the same as "user has uploaded this fund before".
@@ -1553,6 +1544,48 @@ def get_upload_prefs(ticker: str) -> dict | None:
     if not isinstance(val, dict):
         return None
     return val
+
+
+def remembered_upload_source(kind: str, isin: str,
+                             ticker: str = "") -> dict | None:
+    """The source to prefill one upload dialog's Source field with.
+
+    The single reader behind ``GET /api/upload/source``, serving all
+    three dialogs — holdings, factsheet and breakdown CSV — from one
+    store so none of them can grow its own idea of what "remembered"
+    means.
+
+    Args:
+        kind: One of :data:`~porxpy.config.UPLOAD_SOURCE_KINDS`.
+        isin: Fund ISIN. Without one there is no fund file to read, and
+            the dialog simply opens with an empty field.
+        ticker: The listing the dialog was opened from. Only used for
+            the one-time promotion described below.
+
+    Returns:
+        ``{"source_kind", "source_value", "filename", "saved_at"}``, or
+        None when this fund has no remembered source of that kind.
+    """
+    if kind not in UPLOAD_SOURCE_KINDS:
+        raise ValueError(f"kind must be one of {tuple(UPLOAD_SOURCE_KINDS)}")
+
+    rec = upload_source_get(isin, kind)
+    if rec or kind != "holdings" or not ticker:
+        return rec
+
+    # Holdings uploads committed before v0.87.0 recorded their source
+    # inside upload_prefs. Promote that record into the shared store the
+    # first time the dialog asks for it, rather than reading two places
+    # forever: the fund keeps the URL it already had, and the next
+    # commit writes only the new store. Nothing is promoted twice —
+    # a hit above short-circuits this.
+    prefs = get_upload_prefs(ticker) or {}
+    legacy = (prefs.get("source_value") or "").strip()
+    if not legacy:
+        return None
+    return upload_source_put(isin, "holdings", legacy,
+                             source_kind=prefs.get("source_kind") or "",
+                             filename=prefs.get("filename") or "")
 
 
 def clear_upload_prefs(ticker: str) -> bool:
@@ -1954,6 +1987,8 @@ def commit_breakdown_upload(
     inline_accepted: dict | None,
     facet_map: dict | None,
     key_map: dict | None,
+    source: str = "",
+    filename: str = "",
 ) -> dict:
     """Commit a breakdown CSV upload to the ``uploaded_breakdowns`` cache.
 
@@ -1981,6 +2016,15 @@ def commit_breakdown_upload(
         key_map: ``{facet: {raw_key: canonical_key}}``. Every
             ``(facet, raw)`` in the preview's ``unresolved_keys`` MUST
             be mapped to a canonical value for that facet.
+        source: The URL or path the CSV was read from, remembered on
+            success so the dialog re-opens with it. Carried on the
+            commit rather than the preview because a preview the user
+            abandons is not a source they chose — same rule as the
+            holdings upload, which stashes it on the token and only
+            writes it once the commit lands.
+        filename: What to call that source in the UI — for a dropped
+            file, the name the user dropped rather than the scratch
+            copy the server actually read.
 
     Returns:
         ::
@@ -2213,6 +2257,10 @@ def commit_breakdown_upload(
         }
 
     persisted = uploaded_breakdowns_put(isin, facets_out)
+
+    # Remember where it came from, for the next time this dialog opens.
+    upload_source_put(isin, "breakdown_csv", source or "",
+                      filename=filename or "")
 
     return {
         "isin":    isin,

@@ -1,6 +1,6 @@
 # FACET_TREE.md — the four facet trees
 
-*Current as of v0.77.0.*
+*Current as of v0.86.3.*
 
 Sections 1–5 describe how the facet trees behave **today**, across all
 four facets. Sections 6–16 are the v0.70.0 design record that produced
@@ -406,6 +406,73 @@ refused rather than writing nowhere.
 
 ---
 
+## 13b. Picking a node (v0.82.0, corrected in v0.82.1)
+
+Every dialog that picks a canonical node — the holdings editor's four
+facets, the Resolve popover, the upload defaults — draws the vocabulary
+as the tree it is, replacing one flat `<select>` of every node at every
+level. The flat list prefixed each entry with its level (`sub-japan`,
+`region-japan`), which named the level without naming the branch, so a
+country and the region containing it read as two spellings of one thing.
+
+The component (`facetTreeHtml` / `ftBodyHtml` in `fund_explorer.html`)
+takes its structure from the backend and derives none of it:
+`facet_alias_targets` returns `parent` per node — the key one level
+coarser, `None` for a root — alongside the `path` it already returned.
+`parent` is computable from `path` plus the level order, and is stated
+anyway for the reason §6 gives: one authority over the shape of a tree.
+Currency's single level comes back as 162 roots, and the same renderer
+draws it as a flat checklist without branching on arity.
+
+The interaction rules, and why each is what it is:
+
+| rule | reason |
+|---|---|
+| clicking a node expands it, never selects | browsing and choosing must be different gestures, or a value gets written by looking |
+| only the checkbox selects; re-ticking clears | one explicit act per assertion |
+| ticking a node ticks its **ancestors** | a claim about a sub-node is a claim about the branch containing it |
+| ancestor ticks are outlined, the asserted tick is filled | storage keeps the whole tree **plus the stated level** (§9); drawing derived and asserted alike would hide the half that carries meaning |
+| nothing **below** the ticked node is ever ticked | see below |
+
+That last rule is worth stating plainly, because the resource files carry
+an `is_default` column that looks like it should apply. It does not.
+`is_default` is an **import-side** rule — it decides where a holding
+lands when the source file under-specifies its facet. It says nothing
+about what a *user* asserted through the interface, so the picker does
+not read it. A user who wants the finer node ticks the finer node.
+
+Note also that `is_default` is a third mechanism, distinct from the
+single-child descent `resolve_facet_tree` uses to fill `path`. What a
+node *resolves to* is a backend question, answered in the resolution
+hint under the picker; what the user *ticked* is the assertion. Keeping
+those two ideas apart is what keeps the checkmarks honest.
+
+### What the picker opens on (v0.82.1)
+
+The picker presets on the **current** node — the deepest level carrying a
+value — and never on the node the import matched. These are routinely
+different: the import resolves source text to one node, then places the
+row deeper by its own rules (`is_default` among them). Where the
+resolution made contact is provenance; the deeper node is what the row
+is, and it is what the holdings table already displays, so it is what the
+picker must open on and offer to save.
+
+`facetDeepestInChain` walks the chain finest-first and takes the first
+populated entry. A row leaves a level blank where its tree does not
+reach, so "first populated" is exactly "deepest in force". `unknown` and
+`n/a` are skipped — neither is a node to open on. An unmatched row falls
+back to its stated-node column, which holds the raw source text the
+Resolve dialog exists to fix.
+
+Provenance is still reported where the question is genuinely about the
+match: the holdings cell tooltip says "Stated as X at Y level".
+
+Not converted: the cash positions table, which edits facets in table
+cells where a drop panel would open inside a scrolling row. Stated in a
+comment at that site so the asymmetry reads as a decision.
+
+---
+
 ## 14. What is done (staged, verified by running)
 
 Backend only. Verified: app boots, validator clean, 36 nodes served
@@ -642,12 +709,6 @@ where the rule *storage holds the whole tree* is not literally true, and
 anything reading the rollup directly rather than through the block
 builder will find sector shallower than its siblings.
 
-**`upload.py` still pre-resolves sector.** It reduces sector to its
-middle level before handing the row on. The coerce at the end of the
-fold corrects it, so nothing is stored wrong, but it is a second
-implementation of a rule that already lives in the fold, and the two can
-drift.
-
 ### Asset
 
 **`cashAssetOptions` filters by node NAME.** The vocabulary endpoint
@@ -660,6 +721,26 @@ Serving the parent chain and filtering on the branch is the honest fix.
 Nothing outstanding. The flat facet is the one that works exactly as
 specified, which is mostly a statement about how much less there is to
 get wrong when a facet has one level.
+
+It is also the only facet with a **derived source** (v0.86.0):
+`from_country` converts the fund's finished country card, country by
+country, through `Geography_definitions.csv`'s per-country `currency`
+attribute. The registry is `config.DERIVED_BREAKDOWN_SOURCES`; the
+conversion is `breakdowns.derive_facet_items`. It reads the country card
+at its **country** level only — a region names no single currency — and
+passes residuals through unchanged, so an unknown fifth of the country
+card is an unknown fifth of the derived currency card. A completeness
+assertion on the country card propagates to the derived card and is
+reported there as `completed_from: "country"`; the reverse does not
+happen and must not be added by symmetry, since nothing about the
+country card is computed from currency.
+
+The selector shows the button on the currency card alone. A card's block
+carries `sources_applicable` (which sources exist for this facet, from
+`config.sources_for_facet`) beside `available` (which of them this fund
+has); the first decides whether a button is drawn, the second whether it
+is live. Keeping them apart is what stops a derived source appearing,
+struck through, on the three cards it can never mean anything on.
 
 ### Cross-cutting
 

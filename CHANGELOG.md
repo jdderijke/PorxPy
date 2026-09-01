@@ -3,6 +3,1208 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.87.1] - 2026-09-01
+
+### Fund bundles no longer carry the exporter's filesystem paths
+
+A fund bundle is meant to be handed to someone else, and it ships whole
+cache files. Three of the things in those files record where an upload
+came from — the holdings blob, the new `upload_sources` store, and
+pre-0.87.0 `upload_prefs` blobs still on disk — and where an upload came
+from is often `C:\Users\<you>\Downloads\…`. That path is inert on the
+recipient's machine and carries the exporter's username and folder
+layout out of their install for nothing in return.
+
+`export_funds` now blanks every non-URL `source_value` on the way into
+the zip. An http(s) URL is kept: an issuer's holdings schedule or
+factsheet is public, and it is the most useful single thing in a curated
+bundle, because it is how the recipient refreshes what they were given.
+`source_kind` and `filename` are kept too, so the holdings tile still
+reads `LOCAL:<filename>` and says the list was supplied rather than
+fetched — only the location goes.
+
+The scrub is written against the `source_value` key rather than against
+those three known paths through the blob, so a fourth store adopting the
+same convention is covered when it is written. Nothing on disk is
+touched; only what leaves in the file. On the current cache this removes
+47 paths and keeps 7 issuer URLs.
+
+## [0.87.0] - 2026-09-01
+
+### Every upload dialog now offers back the source you gave it last time
+
+Uploading a fund's holdings already remembered where the file came from
+and re-opened with it in the Source field. Uploading a **factsheet** or a
+**facet CSV** for the same fund did not, and both are exactly the case
+where remembering pays: an issuer publishes next month's factsheet at the
+address it published this month's, so replacing one meant going back to
+the browser history for a URL PorxPy had already been given.
+
+All three dialogs now share one memory and one prefill:
+
+* A new fund-level cache category, `upload_sources`, holds one record per
+  upload kind — `holdings`, `factsheet`, `breakdown_csv` — each
+  `{source_kind, source_value, filename, saved_at}`. The kinds are
+  declared once in `config.UPLOAD_SOURCE_KINDS` and the store
+  (`utils.upload_source_get` / `upload_source_put`) takes the kind as a
+  parameter, so a fourth upload dialog would need no new mechanism.
+* `GET /api/upload/source?ticker=…&kind=…` is the single reader, and
+  `prefillUploadSource(kind, inputId, hintId)` the single frontend
+  caller. Each dialog also shows the same `↩ last source: URL:… · saved …`
+  line under the field that the holdings dialog had, so the three
+  describe a source identically rather than one calling it a "file".
+* The record is written **on commit**, never on preview: a preview the
+  user abandons is not a source they chose. A multipart factsheet POST
+  records nothing, because a browser file input names bytes, not a place
+  to fetch them from again.
+
+It is a fund-level memory (ISIN-keyed), unlike the column mapping, which
+stays per-listing. Two listings of one fund can have differently laid-out
+spreadsheets, but they cannot have differently located documents — a
+factsheet is shared by every listing of the fund, so the URL should be
+too. As a result the holdings source moved out of `upload_prefs`, which
+now holds only what genuinely is per-listing (mapping, header row,
+decimal, weight unit, defaults, enrich fields). A source recorded there
+by an older build is promoted into the new store the first time a dialog
+asks for it, so nothing that was remembered is lost.
+
+The cache screen's label for `upload_prefs` was corrected with it: it
+read "Holding upload URL's", which is now the other category's job.
+
+## [0.86.3] - 2026-08-27
+
+### Documentation — README.md and OPTIMIZER.md audited against the code
+
+Both were checked claim by claim rather than re-stamped, and both are now
+current at 0.86.3. Every doc in the repo now carries a version stamp.
+
+**README.md** was two releases behind and had no stamp of its own — only
+a version inside a sample terminal banner, which is the one place a
+reader would not think to look for it. Corrections:
+
+* the release line said 0.84.0;
+* `yf_session.py` was missing from the code layout entirely, despite the
+  README carrying a whole section on the transport faults it exists to
+  fix;
+* the listings-cache line named price history and profile but not the
+  remembered upload column mapping, which also lives there;
+* the TTL list gave one figure for FX, which has two — 6 hours for spot
+  and 24 for history.
+
+Everything else it asserts was verified and left alone: the module list
+otherwise matches `porxpy/`, the seven portfolio sub-tabs match the
+frontend, the per-category TTLs match `DEFAULT_CACHE_CONFIG`, and the
+source-keyed `holdings` / `uploaded_breakdowns` description matches the
+accessors.
+
+**OPTIMIZER.md** was stamped v0.77.0 against code at 0.86.2. The solver
+itself had not drifted — the numerics, the greedy-plus-swap structure,
+the capped-simplex bisection and the frozen-position algebra all still
+match the module — but four things had gone stale around it:
+
+* §7b did not say that "higher-scoring" is relative to a **selectable**
+  scoring model (v0.79.0), which matters because the same fund is a 95
+  under one preset and a 12 under another, and `score_preset: none`
+  skips the pass altogether;
+* §10 listed eleven returned keys and the function returns seventeen;
+* §11 quoted a ~4e-5 screening-noise figure that belonged to an older
+  `SCREEN_ITER` of 60. Measured at the current 150 it is ~2e-6, for
+  about a 3x speed-up over the exact solve — and the constant's own
+  comment in `optimizer.py` was still describing the 60 setting too,
+  which is now corrected from measurement rather than from memory;
+* §12's coverage-complete note predated derived sources: since 0.86.0 a
+  currency card sourced from country inherits the country card's
+  assertion, so one tick can complete two of the facets the solver
+  reads.
+
+Both §13 known issues were re-confirmed rather than assumed — the
+metadata-facet blindness by running `candidate_exposures` with a
+`market_cap` target and getting an empty exposure back, the level-weight
+multiplication by reading the full facet weight still applied once per
+`(facet, level)` block. Both remain open.
+
+`CLAUDE.md`'s two size figures were also stale (`fund_explorer.html` is
+19k lines, not 16k; `app.py` 6.8k, not 5.9k).
+
+### Added to the wishlist
+
+"Which fields does enrichment fill" has two answers depending on the
+screen — Settings for the automatic pass and the fund-page button, the
+dialog's own toggles for an upload. Recorded with the narrow improvement
+that is actually wanted (seed the dialog from Settings on a first
+upload) rather than as a defect, since the per-file choice is deliberate.
+
+## [0.86.2] - 2026-08-27
+
+### Changed — Enrich through Yahoo acts on the ticked rows, and nothing else
+
+The button treated an empty selection as "enrich the whole list", which
+was how it behaved before selection existed. That makes one control mean
+two different things depending on a state elsewhere on the screen, and
+the expensive reading is the one you get by pressing it without noticing
+the ticks had been cleared — on a fund of a few thousand holdings,
+minutes of per-holding network calls nobody asked for.
+
+It is now disabled until at least one row is ticked, with a tooltip
+saying so, and its label carries the count once there is a selection.
+The header tick box still selects everything visible, so "all of them"
+remains one click — a deliberate action rather than a default.
+
+The endpoint keeps its own default (no `row_ids` means every row), which
+is the sane behaviour for an HTTP call with no screen attached. The fund
+page simply never relies on it.
+
+### Documentation
+
+`IMPORT_GUIDE.md` was five releases behind and is now current at 0.86.1:
+the Enrich section covers the tick-box requirement, the negative-cache
+retry and the pinned-facet rule; the upload dialog's Yahoo toggles no
+longer claim to need an identifier column; the breakdown-source table
+gains "From country" with the reasons it is currency-only; and the
+coverage-complete section gains the inherited assertion.
+
+`CLAUDE.md` gains the derived-source registry in its sweep list and
+`enrich_holdings_rows` in the module table, so the next change to either
+is asked the consistency question at the point it is made.
+
+## [0.86.1] - 2026-08-27
+
+### Fixed — "From country" appeared, struck through, on all four cards
+
+The derived currency source shipped in 0.86.0 was listed as a button on
+every breakdown card and greyed out on the three that cannot use it.
+That reads as a promise: a disabled source button everywhere else in this
+app means "you could have this" — upload a factsheet, load some holdings
+— and it is worth showing precisely because something would fill it.
+Nothing will ever make a sector split derivable from geography, and the
+same for asset class and for country itself.
+
+The card block now carries `sources_applicable` beside `available`, and
+the two answer the different questions they were being asked to share:
+
+* `sources_applicable` — does this SOURCE exist for this FACET at all?
+  The selector draws a button only for these.
+* `available` — does THIS FUND have it? Applicable but absent is where a
+  struck-through button belongs.
+
+`config.sources_for_facet()` is the one place that answers the first, and
+all three consumers now read it: the override vocabulary that validates a
+stored pin, the endpoint that accepts a new one, and the block the
+selector is drawn from. The frontend tests no facet name — a second
+derived pair would still be a backend change only.
+
+## [0.86.0] - 2026-08-27
+
+### Fixed — holdings enrichment was two copies of one loop, and both were broken
+
+The fund page's "Enrich through Yahoo" button did nothing on rows the
+user had just corrected by hand, and the enrichment offered during a
+holdings upload filled nothing at all. Both are the same defect: the
+upload's pass 3 was a private copy of the fund page's enrichment loop,
+and the two had drifted in every way two copies can.
+
+**The copy wrote to the wrong columns.** `_apply_lookup_to_row` — the
+shared writer — puts every facet value in that facet's `<facet>_raw`
+column, because the raw is what a source SAID and `normalise_facets`
+re-derives every level from it on the next read. The upload's copy wrote
+`row["sector"]`, `row["country"]`, `row["currency"]` and
+`row["asset_class"]`, the LEVEL columns, which `coerce_holdings_row`
+blanks at the bottom of the same commit. So the dialog reported
+"sector: 8 filled" and stored none of them. Its blank-only check read
+those same level columns, which are empty at that point in the commit,
+so the documented precedence (file > enrichment > default) was not
+actually being enforced either — it only looked correct because the
+write it guarded was discarded anyway.
+
+**The same mistake sat in the two passes after it.** Pass 4 applied the
+per-field defaults the user typed into the upload dialog, and pass 5
+fell back to the fund's own asset class for rows still blank. Both wrote
+level columns and both were discarded by the same coercion. A file with
+no asset column produced holdings with no asset class at all, even for a
+fund whose class was known — and the "default-filled 3 field(s)" line in
+the result was true of the attempt and false of the outcome.
+
+**The negative alias cache blocked the button.** `get_symbol_info_cached`
+records "Yahoo has never heard of this" against the raw input so a
+re-upload does not re-probe it. The upload passed `retry_negative=True`
+to clear a stale one; the fund-page button did not. So the exact
+sequence the button exists for — upload, watch Yahoo fail on some rows,
+correct those rows by hand, press Enrich — hit the negative recorded
+minutes earlier during the upload and returned "not found" without a
+network call. Nothing happened, and nothing said why. The retry is now
+the default for both callers, since both act on rows whose identifiers
+may have changed since the negative was recorded.
+
+**Only the copy honoured the finest-asset rule.** Asset is one facet at
+several grains and the enrichment is supposed to take the finest answer
+Yahoo gives — its `sub_class` where present, else its `asset_class` —
+because the definitions file derives coarser levels from a finer value
+and never the reverse. That rule is stated in `config.ENRICHABLE_FIELDS`
+and was implemented only in the upload's copy, so the fund-page button
+and the top-10 build coarsened every asset answer they were given.
+
+Both callers now run `extractors.enrich_holdings_rows`, one loop with
+the per-caller differences as parameters: which rows, a row cap, a
+progress callback, and a cancel callback that raises the caller's own
+exception (the upload keeps `UploadCancelled` and its token; the loop
+knows nothing about either). `enrich_existing_holdings` is gone, renamed
+into it.
+
+### Fixed — upload enrichment refused the rows that need it most
+
+The upload dialog's Yahoo buttons were disabled until a Ticker, CUSIP or
+ISIN column was mapped, which locked out exactly the files that need
+enrichment: an issuer position table of names and weights and nothing
+else. The resolver has fallen back to a name search since v0.77.0 and
+the upload's commit has passed the name since then too — only the
+control still said otherwise. Name is a required mapping, so there is
+nothing left to gate on; where no identifier column is mapped the
+tooltip now says matching will be by name alone, which is slower and
+less certain, rather than refusing.
+
+### Fixed — the upload dialog's unmatched-value samples were always empty
+
+The commit's "X values need review" summary read its example spellings
+from the level column, which is the one column `normalise_facets`
+guarantees to be blank for a facet that did not resolve. The count was
+right and the examples were never there. Read from `<facet>_raw` now.
+
+### Added — enrich only the rows you ticked
+
+The holdings table's tick boxes now drive the Enrich button: with a
+selection, only those rows are sent to Yahoo, and the button says so
+("Enrich 12 selected through Yahoo"). With nothing ticked it still
+enriches the whole list, as before. On a fund of a few thousand
+holdings, fixing four rows was four thousand lookups.
+
+The result line also says why nothing was filled when nothing was: rows
+Yahoo did not recognise, lookups that could not complete, and rows with
+nothing to look up now read differently instead of all reporting "no
+blanks needed filling".
+
+### Added — the currency card can be derived from the country card
+
+Plenty of issuers publish a geographic split and no currency split at
+all. The currency card gains a fifth source, **From country**, which
+converts the fund's own country card country by country to each
+country's primary currency (`Geography_definitions.csv`'s per-country
+`currency` attribute).
+
+It is a real source, not a view: the choice is the same ISIN-keyed
+`breakdown_source.currency` override the other four use, so the
+portfolio X-ray, the target deviations and the optimiser all read the
+derived numbers exactly as they read any other card's.
+
+It follows the card it reads, in one direction only:
+
+* residual weight passes through unchanged — an `unknown` fifth of the
+  country card is an `unknown` fifth of the currency card, and `n/a`
+  stays `n/a`;
+* a country with no currency on file becomes `unknown` and is named in
+  the card's unresolved list, which is a row in the geography CSV away
+  from being fixed;
+* marking the **country** card coverage-complete completes the derived
+  currency card too — the country split IS the currency split here, so
+  requiring both ticks would let the user state two contradictory things
+  about one set of numbers. The derived card reports
+  `completed_from: "country"` and shows the assertion as inherited, with
+  the control to withdraw it left on the country card where it lives;
+* marking the **currency** card complete says nothing about country,
+  which is not derived from anything.
+
+The conversion reads the country card at its **country** level only: a
+region names no single currency, so deriving from one would invent a
+split rather than convert one.
+
+The pair is a registry (`config.DERIVED_BREAKDOWN_SOURCES`) rather than
+a test for "currency", and the frontend lists the button for every card
+and lets the backend's `available` map strike it through where no
+derivation exists — the same mechanism that disables "Upload" on a facet
+no CSV covered. The reverse direction is deliberately absent and should
+not be added for symmetry: a currency does not name a country, so
+country-from-currency would invent detail rather than convert it.
+
+### Changed — upload defaults no longer pre-resolve
+
+The per-field default values typed into the upload dialog were each
+resolved here first (`resolve_currency` / `country_to_mstar` /
+`resolve_sector`) and the canonical stored, which made this a second
+resolution authority beside `normalise_facets` — the divergence
+FACET_TREE.md §17 recorded as "upload.py still pre-resolves sector", and
+the reason a sector default was coarsened to the tree's middle level
+before the tree saw the grain it was given. All four facets now pass the
+user's text through to the raw column, as `asset_class` already did and
+as a mapped column always has, so an alias added to a resource CSV next
+month repairs rows filled by a default today.
+
+## [0.85.6] - 2026-08-27
+
+### Fixed — fund bundles carried factsheets out and threw them away coming back in
+
+Exporting a pre-loaded fund set put every stored factsheet document and
+its sidecar into the zip, and importing that zip wrote none of them. The
+report said `factsheets: 0`, which is true and explains nothing, so the
+loss looked like the export having omitted them.
+
+Export and import each derived "which ISIN is this factsheet for" from
+the file name, and derived it differently: export took `Path.stem`
+(`IE00B4L5Y983`), import took `Path.name` (`IE00B4L5Y983.pdf`) and
+upper-cased it into `IE00B4L5Y983.PDF`. That is never a member of the
+accepted-ISIN set, so the skip branch fired for every factsheet in every
+bundle. Factsheets are stored as `<ISIN>.<ext>` with no underscore
+(`utils._factsheet_paths`), so the `_`-split that was meant to tolerate a
+suffix never trimmed the extension the way the export side's `stem` did.
+
+Both sides now call one `_factsheet_isin()` helper, so the two cannot
+answer the same question differently again — the failure here was two
+copies of a derivation, not a typo in one of them.
+
+Nothing needs re-exporting: existing bundles already contain the
+factsheets and will now import them.
+
+Uploaded holdings, uploaded per-facet breakdowns, remembered upload
+column mappings and the `breakdown_source` / `breakdown_complete` /
+`holdings_source` pins were unaffected throughout — they ride inside the
+fund and listing cache blobs, which are written and read wholesale.
+
+## [0.85.5] - 2026-08-26
+
+### Fixed — the holdings row editor discarded every facet edit and said nothing
+
+Double-clicking a holdings row, changing Asset, Sector, Country or
+Currency and pressing Save wrote nothing. The row did not move, and
+reopening the editor showed the old value again.
+
+`normalise_facets` reads `<facet>_node` **only** when `<facet>_pinned` is
+set; otherwise it re-resolves the facet from the untouched
+`<facet>_raw` — which is the whole point of the raw column, and the
+reason a later alias in a resource CSV heals every past row with no
+migration. The PATCH endpoint wrote the node and cleared the level
+column, but never set the pin. So `coerce_holdings_row`, on that same
+request, re-derived the facet straight back to what the source had said.
+The endpoint then answered **200 carrying the pre-edit row**, the
+frontend spliced that unchanged row into the table exactly as designed,
+and the edit disappeared with nothing anywhere reporting a failure.
+
+It survived this long because it appears to work on any row the Resolve
+dialog has already pinned: those rows are pinned, so the node is
+honoured, so an edit takes. Which row you happen to try decides whether
+you see the bug.
+
+The endpoint now calls `_pin_facet` — the same writer the Resolve
+dialog's by-row tab uses — so the two surfaces that edit a row's facet
+make the identical claim about it instead of one of them making none.
+`_pin_facet` derives the level columns itself, so the hand-cleared
+`<facet>_level` it replaces is gone.
+
+**Currency was never handled at all.** The loop this replaces named three
+column stems literally, `("asset", "sector", "country")`. Currency stores
+its node under its own column name, so it fell straight through the gate
+and no currency edit had ever been applied. The replacement walks
+`BREAKDOWN_FACETS` and asks `facet_node_field()`, the one place that
+knows which column each facet uses — so a facet cannot be missed by
+being spelled differently.
+
+**A facet is now sent only when the user moved that picker.** The server
+pins whatever arrives, and a pin permanently stops the row re-resolving
+from its source text. Sending all four on every save would mean
+correcting a holding's *name* silently pinned its asset, sector, country
+and currency too, and cost that row the ability to be fixed by a later
+alias. The editor records what the pickers opened on and sends the
+difference.
+
+**The save could also die silently before sending anything.**
+`saveHoldingEditor` read `document.getElementById('heAsset').value` and
+its three siblings *before* its `try` block. Those four inputs are not in
+the modal's markup — `ftMount` creates them, and
+`populateEditHoldingDatalists` skips any facet whose vocabulary has not
+loaded yet. Reading `.value` off the resulting `null` threw a TypeError
+that escaped the function entirely: no request, no error, the dialog
+simply did not react. The reads are guarded now, and an unmounted picker
+is reported rather than saved around.
+
+Verified end to end in a browser against a real uploaded holdings list:
+each of the four facets changed through the tree picker, saved, and still
+present on reopening — then restored through the same path.
+
+## [0.85.4] - 2026-08-26
+
+### Fixed — the Resolve dialog lost your place and your focus on Apply
+
+v0.85.3 fixed the scroll jump on the fund page's holdings table and
+stopped there. The same loss was still live in the Resolve / unmatched
+values dialog, which is the other place the identical control is used —
+so this entry is the sweep that should have come with it.
+
+**The by-row tab threw you back to the top.** `ufRenderTable` carries the
+scroll position across its *own* re-renders — a keystroke in a column
+filter, a click on a sort header — by reading it off the scroller already
+sitting in `#ufTableWrap`. But Apply goes through `ufRenderDialog`, which
+replaces the whole shell first, so the wrap `ufRenderTable` then finds is
+brand new and reports zero. That is why typing in a filter kept your
+place and pressing Apply did not.
+
+The by-value tab had solved this for itself, inline, in its own branch of
+the same function. Its carry is now the shared `ufCarryScroll(root, sel,
+render)` and the by-row branch uses it too — one implementation, both
+axes, rather than one tab's private fix and the other's omission.
+
+**Focus was destroyed and never handed back.** Applying rebuilds the list
+under the popover, which removes both the popover and the button that
+opened it; focus fell to `<body>`, leaving the keyboard with nowhere to
+be. Most visible on the no-value entry, where the row you just cleared is
+gone from under the cursor as well.
+
+The popover now remembers the control it was opened from — by id, because
+the element itself does not survive the rebuild but its replacement
+carries the same id — and returns focus there whenever it closes:
+applied, cancelled, or clicked away. All three triggers were given stable
+ids (`fhedit-<facet>` on the fund page, `ufedit-<column>` in the by-row
+tab, `ufValBulkEdit` in the by-value tab), because all three open the one
+shared popover and all three lost focus the same way.
+
+Every `focus()` on these paths now passes `preventScroll`. The fund page
+is at that same moment restoring a scroll position across its own reload,
+and a focus that scrolls its target into view would undo it — one fix
+must not re-break the other.
+
+## [0.85.3] - 2026-08-26
+
+### Fixed — reloading a fund threw you back to the top of the page
+
+Editing a facet on a holdings row and pressing Apply returned the reader
+to the fund's name, however far down the table they had been working.
+
+`reloadCurrentFund()` opens with `clearFundView()`, which hides every
+fund panel so no stale tile shows during the fetch. That collapses the
+document to the empty-state placeholder, and the browser clamps the
+scroll to the top there and then — by the time the fund is drawn again
+the position is gone. Nothing put it back.
+
+The snapshot now happens before the collapse and is restored once the
+page has its height back, through the same `_snapshotScroll` /
+`_restoreScroll` helpers the portfolio tab and the two lists already use.
+It sits inside `reloadCurrentFund` rather than at the call site, because
+all eleven callers collapse the page for the same reason and would each
+have needed the same three lines: the Resolve dialog's by-row tab (the
+sibling control to the fund page's), the Edit-fund save, removing
+uploaded holdings, reverting to Yahoo, and the resource reload.
+
+One restore is not enough, which is the part worth recording.
+`renderLoadedFund` returns before the page is its full height again — the
+group tiles wait on the field taxonomy, the header's quality block on its
+own fetch — so a restore fired then is clamped against a document that is
+still short: a 1400px offset came back as 29, measured. The new
+`_restoreScrollSettling` retries each frame until the offset actually
+takes, then stops, with a deadline for the case where it never can (a
+fund whose holdings were just removed is legitimately shorter than it
+was, and this must not spin for the life of the page). Landing exits
+immediately, so the normal case costs two or three frames and cannot
+fight a user who scrolls afterwards.
+
+Verified in a real browser: a 1400px window offset and a 300px scroll
+inside the holdings table both survive the reload.
+
+## [0.85.2] - 2026-08-26
+
+### Fixed — the fund-data dot kept reporting a rating input you had just supplied
+
+Pinning a field to a source in the Edit-fund dialog writes it to
+`overrides.json`, and the scoring pass reads that store as a view over
+the cached profile — so a TER pinned to the factsheet is a TER the fund
+genuinely has, and the backend has been reporting it as present all
+along. What the screen showed was the session-cached `/api/quality`
+answer from before the save: the dot still said "missing ter", the score
+still had no cost component, and re-reading the fund did not help,
+because that path reads the same cached map.
+
+`saveEditFundModal()` was simply not on the list of sites that call
+`invalidateFundDerived()` — v0.85.0 patched the per-holding editor
+(`saveHoldingEditor`), which is a different save path, and left the
+fund-field dialog alone. Its comment there described the fund-field
+dialog's effects, which is how the two came to be confused; it now
+describes what a by-row edit actually changes.
+
+Sweeping the rest of the same set found five more paths that mutate what
+the two passes read and never told them:
+
+- **Refetching stale pinned fields** (`/fields/refresh`) — same store, so
+  a refreshed TER or size is a changed rating input.
+- **Factsheet extraction** — fills rating inputs and facet items at once,
+  so it moves both halves of the indicator.
+- **Storing and removing a factsheet** — the server clears that source's
+  supplied breakdowns either way (`_clear_supplied_source`), so every
+  card pinned to the factsheet loses its numbers until the new document
+  is read.
+- **Bundle import** — imported funds join the universe, so peer groups
+  resize for the funds already in it.
+- **Saving Settings** — the weight model and the size floor are inputs to
+  the quality pass as well as the score pass. This one refetched the
+  scores by hand and left the dots on the previous model; it now goes
+  through the same lever as everything else.
+
+## [0.85.1] - 2026-08-26
+
+### Fixed — the portfolio funds table had a Holdings header but no Holdings cell
+
+The fund rows built their `holdingsCell` and then never emitted it: when
+the Quality column went in at v0.84.0 the new cell took the Holdings
+slot instead of being added beside it. The row was therefore eleven cells
+under a twelve-column header, so the dots sat under **Holdings**, the
+asset class under **Quality**, and everything after it one place left —
+while the cash rows, which kept their Holdings cell, lined up correctly.
+
+The v0.85.0 pass fixed the header, the `<colgroup>` and the placeholder
+rows of this table but read the fund row as complete, which is how a
+missing cell hid behind a corrected header. All three row templates in
+the table — fund, cash and needs-re-fetch — now come to twelve, and the
+pre-loaded list's row to eleven, checked against their own headers rather
+than by eye.
+
+## [0.85.0] - 2026-08-26
+
+### Fixed — the quality dots, the score column and the peer list now follow what you change
+
+Three passes hang off the whole fund universe rather than off one fund —
+the five-dot quality indicator (`/api/quality`), the best-in-class scores
+and the peer groups they carry (`/api/scores`), and the portfolio rollup
+(`/view`). Each is fetched once and kept for the session, because each
+walks every cached listing. Only the portfolio rollup was ever
+invalidated when something changed.
+
+So switching a breakdown card's source, ticking "coverage complete",
+editing a fund's focus or focus detail, uploading or matching holdings,
+resolving an unmatched value, and adding or deleting a cached fund all
+left the dots showing their pre-change colours, the score column showing
+its pre-change numbers and the peer list showing its pre-change members —
+with nothing on screen saying they were stale. The stored change was
+correct throughout; only the summaries of it were old, which is the worst
+version of this bug to have, because the screen looks like the control
+did not work.
+
+The three caches go stale under exactly the same conditions, so they now
+share one `invalidateFundDerived()` that drops all of them and repaints
+whichever of the four surfaces is on screen — the fund page header, the
+fund page's Score tile and peer toggles, the pre-loaded list and the
+portfolio funds table. Every mutation site calls it in place of the lone
+`lastLoadedPid = ''` it used to carry. One function rather than four lines
+repeated at fifteen call sites: a site that remembered three of the four
+is precisely the drift this replaces.
+
+Two consequences worth naming. **Ticking "coverage complete" now moves
+that facet's dot**, which it always should have: the backend already
+drops the unknown slice and scales the rest up, so the card reads 100% —
+but *hollow*, because the coverage is declared by you rather than counted
+from holdings. And **peer groups are a property of the universe**, so
+adding or deleting a fund now repaints the fund-data dot and the peer
+score of everything that was ranked against it, not only of the row that
+changed. Re-walking the peer group empties the chart's peer toggles, so
+the lines that were drawn and that the new group still contains are put
+back — a source flip should not silently clear a comparison you set up.
+
+### Fixed — the pre-loaded list's filter row sat one column to the left
+
+The list has eleven columns; its filter row had ten `<th>`. Everything
+from Quality rightwards was therefore shifted: the score-model picker sat
+under **Quality**, the portfolio filter under **Peers**, and the
+optimiser-opt-in filter under **Portfolios**. Only the holdings filter,
+which sits before the gap, was under its own heading.
+
+The same omission was in both tables' `<colgroup>` — the Quality column
+was added in v0.84.0 without a `<col>` — so every declared width from
+Quality rightwards described the column to its left. Both are now
+complete, and the portfolio funds table's placeholder rows (`No funds
+yet`, `needs re-fetch`, the error row) span twelve columns rather than
+the eleven they were written for.
+
+### Fixed — the data tables squeezed their columns instead of scrolling
+
+`.dtwrap` scrolled vertically only, and `.dtable` is `table-layout:fixed`
+at `width:100%`. That combination honours the `<colgroup>` widths only
+while they fit; once their sum exceeds the wrapper the browser shrinks
+every column proportionally, and the Name column — the flex one, with the
+longest content in it — is what the reader watches collapse.
+
+The wrapper now scrolls on both axes, and each table states a `--dtmin`
+floor: the sum of its fixed widths plus a usable minimum for Name. It
+lives on the table so the three tables that share this styling share one
+mechanism, each stating only its own number, rather than a `min-width`
+rule per table drifting from the `<colgroup>` it is supposed to match.
+
+### Added — the dot system explains itself
+
+The indicator encodes three separate things — position, colour and fill —
+and none is guessable. In particular, nothing on screen said that a
+hollow green is a different claim from a solid one, which is the
+distinction the whole indicator exists to make.
+
+One `QUALITY_TIP` constant now carries the explanation, and every surface
+that draws a dot hangs it off the dot: each individual dot's tooltip
+gives its own reading first (`Sector — 82% at sector · counted from
+holdings`) and the full scale after, both column headers carry it via
+`applyQualityHeaderTips()`, and the fund page — the one surface with room,
+and the one where you act on a dot — prints a two-line version under its
+labelled block. Written once rather than five near-copies, for the usual
+reason: five copies are five places the explanation can drift from what
+the dots do.
+
+The "coverage complete" checkbox says what it does to the dot, since that
+is the control whose effect on the indicator was least visible: the facet
+then reads 100% but hollow.
+
+## [0.84.0] - 2026-08-25
+
+### Added — a five-dot data-quality indicator on every fund
+
+Fund data, asset, sector, country, currency — one dot each, in that fixed
+order, on the pre-loaded list, the portfolio funds table and the fund page
+header. Position carries which dimension a dot is about and colour carries
+only how good it is, so nothing has to be read as a length. The column
+sorts by the WORST dot first, with the average breaking ties: sorting a
+quality column should surface what is broken, not what is average.
+
+**The four facet dots** read each facet's coverage at its
+`FACET_DEFAULT_LEVEL`, straight from `build_fund_breakdowns` — the same
+number the breakdown card shows, so the dot cannot disagree with the card
+it summarises. `unknown` counts against coverage and `n/a` counts as
+answered, which `level_coverage` already got right: a cash sleeve has no
+sector and never will, and scoring that as a gap left cash-heavy funds
+permanently short with nothing anyone could do about it.
+
+**Solid means measured, hollow means reported.** A solid dot was counted
+from actual positions; a hollow one was published by the issuer, or rests
+on the user's `breakdown_complete` assertion that a partial source covers
+the whole fund. Both can read 100% and they are not the same claim, so the
+difference is a second bit rather than being averaged into the colour.
+
+**The fund-data dot is not a completeness measure**, and that is the part
+worth explaining. The obvious design — count the populated fields — was
+built and discarded after measuring the real universe: all 51 funds had a
+primary asset class, 45 had a TER, 48 had a size, and 24 still could not be
+rated. The blocker is peer-group size, a property of the universe rather
+than of the fund, so a completeness bar would have shown those 24 green
+while answering the question wrongly. It now reports readiness in three
+states with three different remedies — `missing` (a rating input absent),
+`alone` (inputs present, fewer than `MIN_PEER_GROUP` peers), `rated`.
+Across the current cache that is 8 / 20 / 23.
+
+`GET /api/quality` computes it for the whole cached universe, cache-only
+and read-only for the same reason `_score_universe_cached` is: this runs
+on a list render, and a pass that could trigger a Yahoo fetch would turn
+opening a tab into one round-trip per fund. It reuses the scoring pass for
+the readiness verdict, so the indicator and the score column cannot
+disagree about the same fund, and feeds `build_fund_breakdowns` — a pure
+function — from the cached blobs, so it produces exactly what the fund page
+would. Measured at 1.6s over 51 funds, fetched once per session and painted
+when it lands, the way the score chips already are.
+
+All three surfaces render from one pair of functions (`qualityDotsHtml`
+for the lists, `qualityRowsHtml` for the header, which adds labels and
+nothing else), so the compact form is genuinely a summary of the detailed
+one rather than a second opinion about the same fund.
+
+## [0.83.2] - 2026-08-25
+
+### Fixed — the upload preview's facet columns were blank, not missing
+
+`POST /api/upload/normalise_sample` returned `value: ""` with
+`unmatched: false` for every facet, so the mapping preview painted empty
+cells over the file's own text and the facet columns looked as though the
+feature had been removed.
+
+`normalise_facets` speaks the row COLUMN PACK: it reads each facet's
+source text from `<facet>_raw` and writes the resolved node to
+`<facet>_node`. The endpoint was handing it `{facet: raw}` and reading the
+same keys back. That could not announce itself, because every facet name
+is also one of that facet's own level names — `sector` is a level of
+sector, `country` of country, `currency` and `asset_class` likewise. So
+`normalise_facets` saw no `<facet>_raw`, took the row as having no source
+text, and ran its blanking pass over the derived columns — overwriting
+precisely the keys the endpoint then read. Empty value, `unmatched` false,
+no error anywhere.
+
+The endpoint now builds its probe with `facet_raw_field` and reads results
+back through `facet_node_field`. Verified end to end: "Technology" →
+`technology`, "United States" → `unitedstates`, "Aandelen" →
+`regular stock`, and "Wibble Nonsense" / "Atlantis" / "XYZ" come back
+empty and flagged unmatched, which is what turns those cells red.
+
+`sub_class` is dropped from the facet list at both ends. It is a level of
+asset_class, not a facet, and no mapping column has produced it since
+v0.72.0.
+
+The client swallows failures from this endpoint deliberately — the
+mapping still works without the preview — so this stayed silent. Worth
+knowing when the preview looks wrong again: the endpoint is the place to
+check first, and it answers to a plain curl.
+
+## [0.83.1] - 2026-08-25
+
+### Fixed — only the list scrolls in Resolve unmatched values, on both tabs
+
+0.82.3 gave the dialog one scroll region, but put it on `.modal-b` — so
+the help text, the facet chips and the summary line scrolled away with
+the list, and each tab's table still carried its own `max-height:60vh`
+scroller inside that. Two scrollbars again, on both tabs; the By row tab
+is where it showed first.
+
+The scroll region is now the table box itself, on both tabs, sized by an
+unbroken flex chain rather than a viewport cap: the modal is a
+fixed-height column, the header (title + tabs), the help text, the
+summary line and the footer are all `flex:0 0 auto`, and the table box
+takes exactly what is left. A `vh` cap could not do this — it makes a box
+that is shorter or taller than the space available, and taller is the
+second scrollbar.
+
+Every ancestor in that chain carries `min-height:0`. Without it a flex
+item refuses to shrink below its content, which pushes the footer — and
+the Cancel button with it — off the bottom of the dialog.
+
+Verified by rendering the dialog with 120 rows and a table wider than the
+dialog: `.modal`, `.modal-b`, `#ufDialogBody` and `#ufTableWrap` all
+report no overflow, `[data-ufscroll]` scrolls both axes, and the footer
+sits inside the viewport.
+
+Scroll-position preservation across a re-render is unchanged and still
+reads both axes off that one element — which is now true again, having
+briefly not been.
+
+## [0.83.0] - 2026-08-25
+
+### Changed — the Resolve popover offers two scopes and two buttons, not three scopes
+
+"Leave untouched" was a third radio in the scope group whose entire
+effect was to disable Apply. That is what Cancel already does, so one
+outcome was offered twice in two different shapes — and a user reading
+the group had to work out that one of its three options was not a scope
+at all.
+
+The radio's real job was making the OPENING state inert, so that a stray
+Apply on a freshly-opened popover could not write anything. No radio
+being selected does that just as well, so the group is now the two
+choices that actually differ — pin these rows, or change all rows in all
+funds — and the buttons are Cancel and Apply. Apply stays disabled until
+a scope is chosen, with the note saying so rather than announcing
+"Nothing will change."
+
+The fallback when a chosen scope becomes unavailable follows the same
+change: it clears the selection instead of selecting the no-op scope. The
+rule it exists to protect is unchanged — a scope that becomes
+unavailable never silently re-aims to the other one, because turning a
+pin into a vocabulary write is exactly the surprise this dialog was
+restructured to prevent.
+
+`ufPopoverApply` now checks the two scopes directly and returns unless
+one of them is both checked and enabled. It never inferred permission
+from the button's disabled attribute, and it still does not.
+
+## [0.82.9] - 2026-08-25
+
+### Fixed — "no value" now says why it can do nothing, instead of doing nothing quietly
+
+Choosing "no value (clear this facet)" for a value with no holdings rows
+behind it left both scopes unselectable and the note reading "Nothing
+will change." — a control that appeared broken with no reason given.
+
+The mechanism is deliberate on both sides, which is why neither scope was
+obviously at fault. "No value" is a per-ROW pin: it records "this row has
+no country" on the rows themselves. It is not expressible as an alias,
+because an alias is a claim about a WORD and "this word means nothing" is
+not a meaning this vocabulary carries — so `clear` disables the alias
+scope. And the row scope is disabled when none of the ticked values are
+carried by holdings rows, which is the case for anything that came from
+Yahoo, a factsheet or an uploaded CSV. Both off, the popover falls back
+to "leave untouched", exactly as designed for a scope that becomes
+unavailable — and the fallback message described the fallback rather than
+the cause.
+
+The note now names the dead end: what "no value" writes, why these values
+have nothing to write it on, why an alias cannot express it either, and
+what the two real options are — map it to a node, or leave it, since a
+value that matches nothing already counts as unknown everywhere it is
+used.
+
+No behaviour changed: "no value" still works from the By row tab, and
+from By value whenever a ticked value is carried by holdings rows.
+
+## [0.82.8] - 2026-08-25
+
+### Fixed — the oversized picker was a class-name collision, not a size
+
+The tree picker rendered 180px tall in the Resolve popover while the
+identical control was 20px in the holdings editor. Measured in a real
+engine, the trigger's label carried `padding:80px 32px` and
+`text-align:center` — 80 + 14 + 80 is exactly the 180.
+
+The cause: `ftPaint` marks the trigger label `set` or `empty` depending on
+whether a node is chosen, and the app already has a global
+`.empty{text-align:center;padding:5rem 2rem}` for empty-state blocks. The
+holdings editor opens on a value, so its label was `set` and unaffected;
+the Resolve popover opens with nothing chosen, so its label was `empty`
+and inherited an empty-state block's padding. Same component, same
+stylesheet, one class name shared with something else.
+
+`.derived` was a second, quieter instance of the same thing — a `.74rem`
+type rule landing on the ancestor tick. Compound selectors hid both:
+`.ftree-box.derived` outranks `.derived`, but only for the properties it
+actually declares, so the font size still leaked through.
+
+Every modifier class in the component is now prefixed `ft-` (`ft-empty`,
+`ft-set`, `ft-sel`, `ft-anc`, `ft-on`, `ft-derived`, `ft-up`, `ft-open`,
+`ft-none`, `ft-legacy`, `ft-extra`). Verified by rendering both mount
+contexts headlessly: the trigger is 20px in each, rows 16px, filter 20px.
+
+This is also why the three preceding rounds of compaction changed nothing
+visible — the height was never coming from the rules being edited.
+
+## [0.82.7] - 2026-08-25
+
+### Fixed — the tree filter box was being styled as a form field
+
+Inside the holdings editor the picker is mounted in a `.field`, and
+`.field input` — specificity (0,1,1) — outranks a bare `.ftree-search`
+(0,1,0). So the filter box took the editor's form-field styling: 40px
+tall, .88rem type, .6rem of padding, an 8px radius. Next to rows set at
+.64rem it dominated the panel, which is most of what "the tree picker is
+oversized" was pointing at.
+
+The rule is now `.ftree-panel .ftree-search`, which is (0,2,0) and wins
+wherever the picker is mounted, with `height:auto` stated explicitly
+because the inherited rule pins a fixed 40px that padding cannot undo.
+
+This is why compacting the other dimensions changed nothing visible: the
+element actually setting the panel's height was never being styled by the
+rules being edited.
+
+## [0.82.6] - 2026-08-25
+
+### Fixed — a tree that cannot be drawn says so, instead of looking oversized
+
+The `japan` self-loop fixed in 0.82.3 threw partway through painting the
+picker, which skipped the sizing and placement step and left the panel
+unsized and unplaced. On screen that read as an enormous empty control
+rather than as the crash it was, and it sent two rounds of work at the
+stylesheet.
+
+The body render is now guarded: a vocabulary that cannot be walked draws
+a red "could not draw this vocabulary" line, logs the facet and the error
+to the console, and lets the rest of the control paint normally. A crash
+should look like a crash.
+
+## [0.82.5] - 2026-08-25
+
+### Fixed — the tree picker trigger is the width of its field
+
+A `<button>` shrink-wraps its label, and the trigger set no width, so it
+was as wide as whatever placeholder it happened to carry and a different
+width at every mount. The `<select>` it replaced took `width:100%` from
+`.field select`. Set explicitly now, with `box-sizing:border-box`.
+
+## [0.82.4] - 2026-08-25
+
+### Changed — the tree picker is compact, at every mount
+
+The picker was built at card density rather than control density, so it
+read as oversized wherever it appeared — not only in the Resolve dialog,
+where it was first noticed. It replaced a `<select>`, and it should sit in
+a form at roughly the weight of one.
+
+Every dimension came down together, so the proportions hold: the trigger
+to 2px/5px padding at .65rem, rows to 1px/4px at .64rem with a 1.35 line
+height, the checkbox to 11px, the panel to 280px wide with 4px of padding
+and a 190px body, the indent step from 14px to 11px. `FT_PANEL_MAX_H`
+tracks the stylesheet's body height, as it must — the two describe the
+same box, one before measurement and one after.
+
+## [0.82.3] - 2026-08-25
+
+### Fixed — the country tree crashed on `japan`
+
+A facet node's identity is (level, key), never the key alone — and the
+tree picker's index was keyed by the bare key. The country vocabulary
+contains `japan` twice, once as a country and once as a region. So the
+two collapsed into one entry, and the country node's parent (`japan`, the
+region) resolved to that same entry: a node that was its own child. The
+walker recursed until it threw, which took out the whole country picker,
+not just that branch — and because `ftPaint` throws before it reaches
+`ftPosition`, the panel was left unsized and unplaced as well.
+
+The index is now keyed by `level  key`, and a parent is resolved at
+the level exactly one step coarser — which is where the backend puts it —
+rather than by name. A `seen` guard in the walker and in the ancestor
+walk means a future vocabulary quirk degrades instead of hanging the page.
+
+What gets STORED is still the bare key, unchanged. Where a key lives at
+two levels that value is genuinely ambiguous, and the deepest is chosen,
+matching how the rest of the app reads a facet.
+
+### Fixed — the tree filter now narrows the list
+
+Typing kept a match's whole subtree, so a query matching a coarse node
+("d" matching `developed`) pulled every country under it back into view
+and the list never appeared to filter. A match now keeps itself and its
+ancestors only — the ancestors purely so the branch can be drawn.
+Filtering removes things.
+
+### Fixed — Resolve unmatched values has one scroll region
+
+The dialog scrolled at `max-height:90vh` while the table inside it
+scrolled again at `.dtwrap`'s 560px, so two scrollbars moved
+independently. Worse, the footer sat inside the scrolling modal, so the
+Close button could be scrolled off the bottom.
+
+The modal is now a flex column that does not itself scroll. The title and
+the tab bar are pinned at the top (the tabs moved into the header for
+this), Close is pinned at the bottom, and the only scrolling box is the
+list between them. The inner wrappers give up their own max-height inside
+this dialog, keeping their border — the frame is what the list reads as;
+only the scrolling belonged to the parent.
+
+### Fixed — the edit popover no longer opens past the bottom of the screen
+
+Its placement clamped against a hard-coded 360px guess at its own height.
+The popover has grown well past that, so a click low on the page put its
+Close and Apply buttons below the viewport — and being `position:fixed`,
+there was nothing to scroll to reach them.
+
+`ufFitPopover` now measures the height it actually rendered at: below the
+click when that fits, above it when it does not, and pinned to the top
+margin with its own body scrolling when it fits neither way.
+
+## [0.82.2] - 2026-08-25
+
+### Fixed — the facet picker is one size, wherever it is mounted
+
+The "should mean" picker in the Resolve unmatched values dialog opened
+far larger than the identical control in the holdings editor, from the
+same component.
+
+Two things made the size follow the container rather than the control.
+The panel was `left:0;right:0`, so it stretched to whatever it was
+mounted in — a dialog field in one case, a popover in the other. And
+`ftPosition` treated its height limit as a target rather than a cap: it
+grew the body to fill the room under the trigger, and the Resolve popover
+sits mid-screen with plenty of room, while the holdings editor's fields
+sit low in a tall modal with very little. Same facet, same component, two
+and a half times the height.
+
+The panel is now a fixed size in both: `width:max(100%,260px)` capped at
+320px, and one `FT_PANEL_MAX_H` for the body. `ftPosition` only ever
+shrinks below that cap when the space really is tighter, which is what it
+was added for — keeping a panel on screen, not filling the screen.
+
+The label above it uses the modal's own `.mfl` class instead of an inline
+colour, so the two read as the same control. No resolution hint was added
+underneath to match the modal's: this dialog already prints the chain in
+the "currently" box above, and repeating it below the picker would say
+the same thing twice in a popover whose size was the complaint.
+
+## [0.82.1] - 2026-08-25
+
+### Fixed — facet pickers open on the current node, not the matched one
+
+A facet value has two nodes behind it, and both the tree picker and the
+holdings editor were opening on the wrong one. The **matched** node is
+where the import resolved the source text to. The **current** node is
+where the row actually sits afterwards, once the import path has placed
+it deeper — `is_default` in the resource files, and the other rules that
+run on import. Where the import made contact is provenance; it is not the
+value, and it is not what the table shows.
+
+The Resolve popover preset itself with `chain.find(e => e.matched)` and
+the holdings editor seeded from the stated-node column, so both offered a
+coarser value than the row actually holds — and offered to save it.
+
+Both now resolve to the deepest level carrying a value, through one
+shared `facetDeepestInChain` / `facetCurrentNode` pair rather than two
+expressions of the same idea. The chain is finest-first and a row leaves
+a level blank where its tree does not reach, so the first populated entry
+is the node in force; `unknown` and `n/a` are guarded against, since
+neither is a node a picker should open on. An unmatched row still falls
+back to its stated-node column, which is where its raw source text lives
+— the Resolve dialog cannot fix what it cannot show.
+
+The editor's old comment argued the opposite case: that seeding from a
+derived column would offer a grain the source never asserted. That had
+the wrong subject. The deeper node is not a display choice the picker
+invented, it is what the import already stored; showing the match is the
+substitution that comment was trying to avoid.
+
+Provenance is still reported where it belongs — the holdings cell tooltip
+continues to say "Stated as X at Y level", which is a question about the
+match and is answered by it.
+
+### Fixed — a tree panel no longer opens past the bottom of the screen
+
+The panel body always scrolled, so no node was ever unreachable, but the
+panel itself is anchored under its trigger — and a trigger low in a
+dialog has very little room beneath it, so the panel opened off the
+viewport.
+
+`ftPosition` now measures the trigger against the viewport when a panel
+opens, when its contents change, and when a resize or scroll moves it.
+The body's height comes from the room actually available rather than a
+fixed 300px, and the panel flips above its trigger when there is more
+space there. Opening downwards stays the default, since that is what a
+dropdown is expected to do; the flip is for the case where down does not
+fit. Viewport coordinates are the right frame here because the modal
+scrolls inside a fixed backdrop, so "off the screen" is a viewport
+question, not a dialog one.
+
+## [0.82.0] - 2026-08-25
+
+### Changed — peer lists name a fund, not a code
+
+A peer row led with an identifier column: the ISIN, or a bare ticker when
+the listing had no ISIN. So the same list named some members one way and
+some another, which is what made a ticker turn up "sometimes". Both
+surfaces that render peers — the popover on the fund page and on the
+pre-loaded list, and the peer legend under the price chart — now show the
+fund NAME and its TRADING CURRENCY, and no code at all.
+
+The currency earns the column the identifier gave up. It is what actually
+distinguishes two rows that otherwise read identically: one real peer
+group here contains two listings of iShares Core MSCI World and two of
+iShares Global Water, alike in name and differing in the currency they
+trade in. It is also the more useful subtitle under the chart, where peer
+series are drawn at their own price and the currency says why two lines
+sit on different scales — and it matches the portfolio price legend,
+which has shown the currency there all along while the peer legend showed
+a ticker.
+
+The ticker and ISIN moved to the hover title on both surfaces. They are
+what a click acts on and what the caches are keyed by, so they stay
+reachable — just not worth a column. Chart tooltips are named the same
+way, instead of by bare ticker.
+
+`score_universe` now carries `currency` alongside `name` and `isin`, for
+the reason those two are already there: a consumer listing a peer group
+should be able to name its members without a second lookup. It is
+canonicalised through `normalise_currency`, so a pence-quoted listing
+reads GBP like everywhere else; the `/funds/<t>/peers` endpoint was
+uppercasing instead, which turned GBp into GBP by accident and would not
+have handled any other sub-unit.
+
+### Added — facet nodes are chosen from a tree, not a flat dropdown
+
+Every dialog that picks a canonical facet node offered one flat
+`<select>` of the whole vocabulary: 66 sector nodes, 250 countries, with
+a `level-name` prefix as the only clue to where a node sat. The prefix
+named the level without naming the branch, so `sub-japan` and
+`region-japan` read as two spellings of one thing rather than as a
+country inside a region.
+
+The vocabulary is a tree — that is what `FACET_LEVELS` describes — so the
+picker now draws it as one, in the holdings editor (all four facets), the
+Resolve popover, and the upload defaults. Behaviour, as specified:
+
+* **clicking a node expands it, and does nothing else.** Browsing and
+  choosing are separate gestures, so exploring the tree can never write a
+  value by accident.
+* **the checkbox is the only thing that selects.** Ticking what is
+  already ticked clears it.
+* **ticking a node ticks its ancestors**, because a claim about a
+  sub-node is necessarily a claim about the branch containing it. The
+  ancestor ticks are drawn outlined rather than filled: only one node is
+  the assertion, and invariant 1 keeps the whole tree *plus the stated
+  level*, so a picker that drew derived and asserted ticks identically
+  would hide the half that carries meaning.
+* **nothing below the ticked node is ever ticked.** `is_default` in the
+  resource files is an import-side rule for placing holdings whose source
+  under-specifies them; it says nothing about what a user asserted, so
+  this picker does not read it.
+
+A filter box replaces the type-to-search a `<select>` gave for free, and
+matching branches open automatically — a match three levels down is
+useless if it still has to be found.
+
+`facet_alias_targets` now returns `parent` per node, the key one level
+coarser or `None` for a root. It is derivable from the existing `path`
+plus the level order, and it is stated for the same reason `path` is: a
+browser that worked out parentage itself would be a second authority on
+the shape of a tree this module owns, and the two would agree only until
+a facet gained a level. Currency has one level, so it comes back as 162
+roots and the same component renders it as a flat checklist with no
+special case.
+
+`facetNodeOptions` and `ufFacetOptionsHtml` are removed. They have no
+callers left, and a second builder for the same list is how two pickers
+come to disagree about what a node is called. The behaviours they owned
+travel with the tree: the level tag on every node, and the red
+"not in the definitions file" row for a stored value the vocabulary no
+longer contains.
+
+The cash positions table still uses flat selects, stated in a comment at
+that site: it edits facets in table cells, where a drop panel opens
+inside a scrolling row. The component already takes the `filterFn` that
+the cash asset list needs.
+
+## [0.81.0] - 2026-08-25
+
+### Fixed — a portfolio view no longer ships two blocks nothing on that screen reads
+
+`GET /api/portfolios/<pid>/view` attached each fund's whole
+`load_fund_data` blob under `funds[].data`, and two keys in there
+dominated the response while answering nothing the screen asks.
+`price_history` was 61.3% of a 27-entry view and had no reader at all;
+`holdings_rows` was 35.3% and was read only for its `.length`.
+
+Neither was idle by accident — each has its own endpoint, because each
+screen needs an answer the raw block cannot give. The History chart
+calls `/price_history`, which re-derives per-fund daily *values* in the
+base currency with FX applied and carry-forward alignment; raw OHLCV
+cannot answer that, and the chart never assembled it client-side. The
+aggregated holdings table calls `/holdings_rollup`. Valuation for the
+view itself is finished server-side in `_build_enriched_funds` before
+anything is serialised, so the price series was already spent by the
+time it was attached. Opening a fund's own page does not use the
+attached copy either: `viewFundFromPortfolio` re-fetches `/api/fund` by
+identity, as do all five sites that render a loaded fund.
+
+The consequence was not only waste. With debug indentation the response
+reached ~15.7MB and the development server did not deliver all of it —
+`Content-Length: 15707874` against 15698590 bytes received — so the JSON
+arrived truncated and unparseable and that portfolio's view failed to
+load. It read as an intermittent fault because smaller portfolios were
+unaffected.
+
+Both keys are now dropped from the `/view` response only, by
+`_slim_fund_data_for_view`, which copies rather than mutates so a
+transport-level trim cannot change what any other consumer of those
+blobs sees. `/holdings_rollup` shares the same `_build_enriched_funds`
+and still aggregates `holdings_rows`; `/api/fund` still carries both in
+full, because the fund page reads both. The 27-entry view went from
+15,707,874 bytes (truncated) to 273,504 delivered whole.
+
+`price_history` was dropped outright rather than kept as a trimmed
+date-and-close series. Both screens that want prices already read the
+cache server-side through their own endpoints, so an inline series would
+have been ~1.9MB with no reader, and re-adding it later is a smaller
+change than carrying it now.
+
+The frontend's two `hs.top_count || (f.data?.holdings_rows || []).length`
+fallbacks are gone with it. They were already dead: `top_count` and
+`holdings_rows` both derive from the same cached rows so the two could
+never disagree, and the synthetic cash entry, which has no
+`holdings_status` at all, never reaches a branch that renders the count.
+Left in place they would have silently become "always 0" and read as
+intentional.
+
+### Fixed — debug mode no longer doubles the size of every JSON response
+
+`create_app()` left the JSON provider's `compact` unset, so Flask decided
+by debug mode and indented every response when `debug=True` — which is
+how `main.py` runs. Measured at 2.14x on one portfolio view, and it is
+what pushed the largest responses into the range where the development
+server truncated them.
+
+`compact` is now set to `True` on `_SafeJSONProvider`, the NaN-scrubbing
+provider this app installs, rather than on `app.json`. That placement is
+the fix: `create_app` replaces the provider instance outright with
+`app.json = _SafeJSONProvider(app)`, so setting `app.json.compact`
+before that line is silently discarded and the responses stay indented.
+On the class it cannot be undone by the order of the two statements.
+
 ## [0.80.0] - 2026-08-24
 
 ### Changed — a target total is what the targets commit, not the levels added up

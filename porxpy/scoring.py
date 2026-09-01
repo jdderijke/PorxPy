@@ -347,6 +347,13 @@ def score_universe(funds: list[dict],
             # is.
             "name":        f.get("name") or tk,
             "isin":        f.get("isin") or "",
+            # The trading currency, for the same reason as name: a peer
+            # list names its members by what they ARE, and two share
+            # classes of one fund differ by the currency they trade in
+            # and by little else a reader can see. Canonicalised by the
+            # caller (GBp -> GBP), so every surface showing a currency
+            # shows the same code.
+            "currency":    f.get("currency") or "",
             "score_all":   score_all,
             "score_peer":  score_peer,
             "peer_key":    key,

@@ -1,6 +1,6 @@
 # IMPORT_GUIDE.md — importing funds and ETFs
 
-*Current as of v0.78.0.*
+*Current as of v0.87.1.*
 
 Everything between typing an ISIN into an empty box and having a fully
 described fund — holdings, breakdowns, structure fields, a peer group
@@ -200,7 +200,10 @@ by looking at what you typed: the hint beside the input label reads
 `detected: ISIN` or `detected: Yahoo ticker` as you type, and the form
 reshapes itself accordingly.
 
-Fund bundles deliberately carry no portfolios — that is a separate bundle
+Fund bundles carry the URL a fund's holdings or factsheet was fetched
+from, so the recipient can refresh what they were handed, but not local
+file paths — those are inert on anyone else's machine. Fund bundles also
+deliberately carry no portfolios — that is a separate bundle
 type, so you can take someone else's fund research without also taking
 their holdings.
 
@@ -439,6 +442,10 @@ document to the fund and, optionally, have it read.
 2. Give it a source: paste a URL, paste a local path, click
    **📁 Browse…** to pick from disk, or drop the file onto the panel.
    PDF, image (a photo of a printed sheet is fine) and HTML are accepted.
+   If you have uploaded a factsheet for this fund before, the field opens
+   with that source already in it — an issuer publishes next month's
+   sheet at the same address as this month's, so replacing it is usually
+   a matter of clicking **Replace**.
 3. Set the **Factsheet date** — the date printed on the sheet itself, not
    today. This is the field most worth filling in: age is measured from
    it, and a sheet can be three years old on the day you upload it.
@@ -540,13 +547,31 @@ an empty table.
 
 ### The cheap step first: Enrich through Yahoo
 
-**↻ Enrich through Yahoo** looks up each holding individually and fills
-in **blank** facets only — it never overwrites a cell that has a value.
-It works on whichever source the tile is showing, and writes back into
-that source. Which fields it may fill is your choice, set in
+**↻ Enrich through Yahoo** looks up holdings individually and fills in
+**blank** facets only — it never overwrites a cell that has a value, nor
+a facet you have set by hand on a row (those are pinned, and the pin
+wins). It works on whichever source the tile is showing, and writes back
+into that source. Which fields it may fill is your choice, set in
 **Settings → enrichment**; the five available are name, country,
 currency, asset class and sector. The status line afterwards reports
-exactly what was filled, per field.
+exactly what was filled, per field — and when nothing was, why: rows
+Yahoo did not recognise, lookups that could not complete, and rows with
+nothing to look up all read differently.
+
+**It acts on the rows you tick, and only those.** The button is disabled
+until something is ticked, and its label says how many
+("Enrich 12 selected through Yahoo"). Tick boxes are the leftmost column
+of the holdings table; the header box selects everything currently
+visible, so "all of them" is one click, and shift-click extends a range.
+An empty selection is never read as "all" — on a fund of a few thousand
+holdings that would be minutes of per-holding network calls nobody
+asked for.
+
+It is also worth pressing **again** after you have corrected a row by
+hand. A ticker Yahoo failed to recognise is remembered so a re-upload
+does not re-probe it, but this button clears that memory before it
+looks — so adding an ISIN to a row and pressing Enrich really does try
+again.
 
 A row is looked up by whatever identifies it: ticker, ISIN, CUSIP, or —
 since v0.77.0 — its **name alone**, which is what a factsheet's position
@@ -571,7 +596,11 @@ file onto the panel. A dropped file is copied into PorxPy's scratch
 folder — a path or a URL keeps working indefinitely, a dropped copy only
 until that folder is cleared, which is a good reason to prefer the first
 two. Whatever you enter is remembered *per fund*, so next time the dialog
-opens pre-filled. Click **Parse file →**.
+opens pre-filled, with a line underneath naming where that came from and
+when. All three upload dialogs — this one, the factsheet (section 10) and
+the facet CSV (section 12) — remember their source the same way, because
+an issuer re-publishes a document at the address it published the last
+one at. Click **Parse file →**.
 
 **View 2 — mapping the columns.** Four file-level controls sit at the
 top: **Sheet** (XLSX only), **Header row**, **Decimal notation** (auto /
@@ -601,9 +630,14 @@ confirming rather than choosing.
 
 For the four facet fields, when the dropdown is on `(none)` you get two
 extra options: type a **default value** applied to every row, or click
-**📥 Yahoo** to fetch that field per holding. Yahoo wins where it has
-data; the default fills the remaining gaps. The Yahoo path needs a
-Ticker, CUSIP or ISIN column to look rows up by.
+**📥 Yahoo** to fetch that field per holding. Precedence is
+file > Yahoo > default: a mapped column that actually says something is
+never overwritten, Yahoo fills its holes, and the default fills whatever
+is left. The Yahoo path looks a row up by its Ticker, CUSIP or ISIN
+where the file has one and by its **name** where it does not, so a
+position table of names and weights can be enriched too — slower and
+less certain than an identifier column, and the tooltip says so when
+that is what you are relying on.
 
 A live preview of the first five mapped rows sits below, with a running
 weight sum. Click **Save holdings** to commit.
@@ -652,11 +686,12 @@ a factsheet gives you a country split and a sector split and nothing
 else. Rather than inventing 1,400 rows to produce four percentages, you
 can upload the percentages directly.
 
-### Where the four sources live
+### Where the sources live
 
 Each of the four breakdown cards on the fund page has its own source
-selector. All four options are always shown; ones the fund does not have
-are struck through and inert.
+selector. Every source that *applies to that facet* is shown; ones the
+fund does not happen to have are struck through and inert, because
+uploading a factsheet or a CSV is exactly what would fill them.
 
 | Source | The numbers are… | Available when |
 |---|---|---|
@@ -664,6 +699,21 @@ are struck through and inert.
 | **Issuer (factsheet)** | The issuer's numbers, read off the uploaded factsheet | an extraction has been run |
 | **Holdings** | Computed by rolling up this fund's own holdings | holdings rows exist |
 | **Upload** | A CSV you supplied | a CSV covering that facet exists |
+| **From country** | The fund's own country card, converted country by country to each country's primary currency | **currency card only**, when the country card identifies something |
+
+**From country** is for the many funds whose issuer publishes a
+geographic split and no currency split at all. It appears on the currency
+card and nowhere else — a sector or asset split derived from geography
+would mean nothing, so it is not a source those cards lack, it is not one
+of their sources. The conversion reads the country card at **country**
+level: a region names no single currency.
+
+It follows the card it converts. An `unknown` slice on the country card
+is an `unknown` slice here; `n/a` stays `n/a`; and a country with no
+currency on file lands in `unknown` and is named in the card's unresolved
+list — which is one row in `Geography_definitions.csv` away from being
+fixed. The reverse is not offered: a currency does not name a country, so
+country-from-currency would invent detail rather than convert it.
 
 > **A source is not a view.** Choosing a source persists as a fund-level
 > override keyed by ISIN. Every portfolio that holds this fund, and the
@@ -698,6 +748,13 @@ cannot see looks like the part you can.
 - A card with nothing identified at all does not offer the checkbox.
   There is no shape to spread the gap over, and inventing one is the one
   thing this must not do.
+- **A derived card inherits the assertion.** Ticking it on the *country*
+  card completes the currency card that is derived from it too — the
+  country split IS the currency split there, so two separate ticks could
+  only ever contradict each other. The currency card then shows
+  `coverage complete (from country)`, ticked and greyed, with the control
+  that withdraws it left on the country card. Ticking it on the currency
+  card says nothing about country, which is not derived from anything.
 
 Untick to go back to reporting only what is actually there.
 
@@ -1091,14 +1148,15 @@ than per fund.
    group and therefore every score you will look at afterwards. Set each
    field's source to Factsheet, justETF, or your own value as
    appropriate.
-6. **Get holdings in.** Try **↻ Enrich through Yahoo** first — it is one
-   click and free. If the fund deserves a real X-ray, upload the issuer's
-   full list.
+6. **Get holdings in.** Try **↻ Enrich through Yahoo** first — tick the
+   header box to select every row, and it is two clicks and free. If the
+   fund deserves a real X-ray, upload the issuer's full list.
 7. **Or upload facet CSVs** if you have published percentages but no
    holdings, and adopt them on every card the file covers.
 8. **Point each breakdown card at its best source.** Holdings for a fund
    with a full list; Issuer (factsheet) where the extraction was good;
-   Issuer (Yahoo) otherwise.
+   Issuer (Yahoo) otherwise. On the currency card, **From country** where
+   the country card is good and no currency split exists anywhere.
 9. **Clear the amber banner.** Open **Resolve unmatched values**, work the
    *By value* tab from the top — the heaviest values first — and use
    *By row* for blanks and one-off corrections.

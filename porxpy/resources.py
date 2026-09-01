@@ -2623,11 +2623,29 @@ def facet_alias_targets(facet: str) -> list[dict]:
     """
     out = _facet_alias_nodes(facet)
     from porxpy.breakdowns import NA_KEY, UNKNOWN_KEY
+    levels = list(FACET_ALIAS_LEVELS.get(facet, ()))
     for row in out:
         tree = resolve_facet_tree(facet, row["key"])
         row["path"] = {lv: v for lv, v in tree.items()
                        if lv not in ("level", "matched")
                        and v not in (UNKNOWN_KEY, NA_KEY)}
+        # ``parent`` (v0.82.0) — the node one level COARSER, or None for a
+        # root. It is derivable from ``path`` plus the level order, but it
+        # is stated here for the same reason ``path`` is: the tree picker
+        # draws the vocabulary as a tree, and a browser that worked out
+        # parentage for itself would be a second authority on the shape of
+        # a tree this module already owns. The two would agree until a
+        # facet gained a level or a node was reparented.
+        #
+        # ``levels`` is finest-first, so the parent sits at the NEXT index.
+        # Nodes whose tree does not reach that level (``antartica`` has no
+        # super-region, ``n/a`` has no path at all) get None and are drawn
+        # as roots at their own level, which is what they are.
+        try:
+            nxt = levels[levels.index(row["level"]) + 1]
+        except (ValueError, IndexError):
+            nxt = None
+        row["parent"] = row["path"].get(nxt) if nxt else None
     return out
 
 

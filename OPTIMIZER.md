@@ -1,6 +1,8 @@
 # The PorxPy Optimizer — how it works
 
-*Applies to `porxpy/optimizer.py` as of v0.77.0.*
+*Applies to `porxpy/optimizer.py` as of v0.86.3. Audited against the
+module at that version: every claim below was re-checked, and the two
+open issues in §13 were re-confirmed by running them.*
 
 ---
 
@@ -336,6 +338,15 @@ in the design, it finds the higher-scoring funds in that fund's peer group
 and works out what substituting each would actually cost: swap it in,
 re-solve the weights, measure the new deviation.
 
+"Higher-scoring" is relative to the **scoring model in force**, which has
+been selectable since v0.79.0. The run sends a `score_preset`, and the
+endpoint feeds the optimiser the same score blocks the fund list is
+showing — a model that disagreed with the visible one would make the
+optimiser's choices unexplainable. Sending `none` skips this pass
+entirely and the design is chosen on fit alone. The same fund can be a
+95 under Cost driven and a 12 under Returns driven, so the alternatives
+table is an answer to "better under this model", not "better".
+
 ```
   EXPENSIVE   score 12   ·  peer group equity|none|
      keep EXPENSIVE
@@ -500,11 +511,16 @@ target.
   whether more funds would help or the exposure simply is not available in
   your universe.
 - **`swaps`**, **`frozen`** — exchanges the fit refinement applied, and
-  what was left untouched.
+  what was left untouched. `frozen` is `{share, base, tickers}`.
 - **`alternatives`** — per chosen fund, the better-scoring peers and what
   each substitution would cost.
 - **`substitutions`** — the substitutions the caller requested and that
   were applied.
+- **`ok`**, **`selected`**, **`total_base`**, **`cash_weight`**,
+  **`cash_after`**, **`max_dev`** — the run's status flag, the chosen
+  tickers, the portfolio total, cash as a fraction and as an amount after
+  the trades, and the single worst deviation across all facets (the
+  headline figure; per-facet detail is in `facets`).
 
 Nothing is applied. The trade list goes to the same `apply_trades`
 primitive the manual Buy/Sell dialog uses, atomically, only when you press
@@ -518,8 +534,10 @@ On a 35-fund, three-facet problem the whole run takes roughly 2 seconds.
 Three things get it there:
 
 - **Screening precision.** The hundreds of throwaway fits that rank
-  candidates run at 150 solver iterations rather than 500. The chosen set
-  is always re-solved exactly, so nothing reported inherits the screening
+  candidates run at 150 solver iterations rather than 500
+  (`SCREEN_ITER`). Measured on 12x9 problems, that lands within ~2e-6 of
+  the converged residual for about a 3x speed-up. The chosen set is
+  always re-solved exactly, so nothing reported inherits the screening
   tolerance.
 - **Warm starts.** Each trial differs from the incumbent by one column, so
   the previous solution is the starting point.
@@ -528,8 +546,10 @@ Three things get it there:
 One caution learned the hard way: incumbent and challenger must be scored
 at the *same* precision. Comparing a screening-precision challenger against
 an exact-precision incumbent makes genuine improvements smaller than the
-screening noise (~4e-5) read as "no improvement", stopping the search
-early and returning a worse portfolio.
+screening noise read as "no improvement", stopping the search early and
+returning a worse portfolio. `SCREEN_ITER` was 60 when that was found,
+where the noise floor is ~1e-4; at the current 150 it is ~2e-6, so the
+trap is narrower but the rule is unchanged.
 
 ---
 
@@ -565,6 +585,9 @@ early and returning a worse portfolio.
   knowledge of it — the block simply arrives complete. The cost is that a
   design can then be exact about an *assumption*, which is why nothing
   asserts it automatically and the card's badge reads `100% ASSUMED`.
+  Since v0.86.0 a currency card sourced **from country** inherits the
+  country card's assertion, so one tick there can complete two of the
+  facets the solver reads — same caveat, twice over.
 - **No transaction costs, no tax, no minimum lot sizes.** Fractional shares
   are assumed throughout.
 
@@ -575,6 +598,12 @@ early and returning a worse portfolio.
 Defects specific to the optimiser, as opposed to the deliberate
 boundaries in §12. Each is something that should be fixed rather than
 something someone chose.
+
+Both were re-confirmed against the code at v0.86.3 — the first by
+running `candidate_exposures` with a `market_cap` target and getting
+`{'market_cap': {}}` back, the second by reading the full facet weight
+still being applied once per `(facet, level)` block in
+`_add_target_rows`.
 
 ### The metadata facets are targetable, but the optimiser is blind to them
 

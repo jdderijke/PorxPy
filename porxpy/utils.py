@@ -76,6 +76,7 @@ from porxpy.config import (
     SYMBOL_INFO_CACHE_NAME,
     SYMBOL_ALIAS_CACHE_NAME,
     SYMBOL_INFO_TTL_DAYS,
+    UPLOAD_SOURCE_KINDS,
 )
 
 
@@ -3131,6 +3132,106 @@ def uploaded_breakdowns_delete(isin: str, facet: str | None = None,
         blob["uploaded_breakdowns"] = {"fetched_at": now_iso(), "value": val}
     cache_write(isin_u, "uploaded_breakdowns", blob)
     return True
+
+
+# ── upload_sources ──────────────────────────────────────────────────────────
+# "Where did the last upload of each kind come from?", one record per
+# member of UPLOAD_SOURCE_KINDS, keyed by ISIN. This is the memory behind
+# the Source field of the three upload dialogs (holdings, factsheet,
+# breakdown CSV): re-opening any of them offers back the URL or path the
+# user gave last time, so re-importing an issuer document that has been
+# updated is one click rather than a trip to the browser history.
+#
+# It is deliberately NOT provenance. What the data in effect came from is
+# already recorded with the data itself — source_kind/source_value on the
+# holdings blob, and the factsheet's own sidecar — and that record must
+# not move when the user merely opens a dialog. This store answers the
+# different question of what to type into an empty field.
+#
+# Kept as one store taking the kind as a parameter, rather than three
+# per-dialog memories, because the three dialogs ask an identical
+# question and must not drift apart in what they remember.
+
+def upload_source_get(isin: str, kind: str | None = None) -> dict | None:
+    """The remembered upload source for ``isin``.
+
+    Args:
+        isin: Fund ISIN.
+        kind: One of :data:`~porxpy.config.UPLOAD_SOURCE_KINDS` to get
+            that dialog's record, or None for every kind as
+            ``{kind: record}``.
+
+    Returns:
+        ``{"source_kind", "source_value", "filename", "saved_at"}`` for a
+        named kind (None when nothing is remembered), or the whole
+        ``{kind: record}`` map when ``kind`` is None (possibly empty).
+    """
+    key = (isin or "").strip().upper()
+    if not key:
+        return None if kind else {}
+    blob  = cache_read(key, "upload_sources")
+    entry = blob.get("upload_sources")
+    val   = entry.get("value") if isinstance(entry, dict) else None
+    val   = val if isinstance(val, dict) else {}
+    val   = {k: v for k, v in val.items()
+             if k in UPLOAD_SOURCE_KINDS and isinstance(v, dict)}
+    if kind is None:
+        return val
+    return val.get(kind) or None
+
+
+def upload_source_put(isin: str, kind: str, source_value: str,
+                      source_kind: str = "", filename: str = "") -> dict | None:
+    """Remember where an upload came from, for the next time that dialog opens.
+
+    Args:
+        isin: Fund ISIN. A listing with no ISIN yet simply remembers
+            nothing — there is no fund file to write to.
+        kind: One of :data:`~porxpy.config.UPLOAD_SOURCE_KINDS`.
+        source_value: The source string the user gave (URL, path, or the
+            scratch path a dropped file was stashed at).
+        source_kind: ``"url"`` or ``"disk"``. Derived from
+            ``source_value`` when omitted, so callers that never had to
+            classify it do not have to start.
+        filename: What to show the user as the document's name — for a
+            drop, the file they dropped rather than the scratch copy.
+
+    Returns:
+        The stored record, or None when nothing was stored (no ISIN, an
+        unknown kind, or an empty source).
+
+    Raises:
+        ValueError: ``kind`` is not a known upload kind. A typo here
+            would otherwise write a record nothing ever reads back.
+    """
+    key = (isin or "").strip().upper()
+    if kind not in UPLOAD_SOURCE_KINDS:
+        raise ValueError(f"kind must be one of {tuple(UPLOAD_SOURCE_KINDS)}")
+    value = (source_value or "").strip()
+    if not key or not value:
+        return None
+
+    # Local import: upload.py imports this module, so the classifier can
+    # only be reached on call. It is the same one resolve_source uses, so
+    # what we remember about a source and what the fetcher does with it
+    # can never disagree.
+    if not source_kind:
+        from porxpy.upload import classify_source
+        source_kind = classify_source(value)
+
+    record = {
+        "source_kind":  source_kind,
+        "source_value": value,
+        "filename":     (filename or "").strip(),
+        "saved_at":     now_iso(),
+    }
+    current = upload_source_get(key) or {}
+    current[kind] = record
+
+    blob = cache_read(key, "upload_sources")
+    blob["upload_sources"] = {"fetched_at": now_iso(), "value": current}
+    cache_write(key, "upload_sources", blob)
+    return record
 
 
 # ── fund_structure ──────────────────────────────────────────────────────────

@@ -77,6 +77,51 @@ _BULKY_CATEGORIES: frozenset[str] = frozenset({"price_history"})
 # is either a key field or the alias column.
 _RESOURCE_KEY_FIELDS = ("type", "name")
 
+# A ``source_value`` is only worth exporting when it names somewhere the
+# importer can also reach. An http(s) URL does — an issuer's holdings
+# schedule or factsheet is public, and it is the most useful single thing
+# in a curated bundle, because it is how the importer refreshes what they
+# were given. A filesystem path does not: it is inert on any other
+# machine, and it carries the exporter's username and directory layout
+# out of their install with it.
+#
+# Three stores hold one, all under this same key name — the holdings blob
+# (where the position list came from), ``upload_sources`` (what each
+# upload dialog offers back), and pre-0.87.0 ``upload_prefs`` blobs still
+# on disk. The scrub is therefore written against the key rather than
+# against those three paths, so a fourth store adopting the convention is
+# covered on the day it is written rather than the day someone remembers.
+_SHAREABLE_SOURCE_PREFIXES = ("http://", "https://")
+
+
+def _scrub_local_sources(blob: Any) -> Any:
+    """Blank every non-URL ``source_value`` in a cache blob, in place.
+
+    ``source_kind`` and ``filename`` are deliberately kept: they are what
+    the holdings tile renders as ``LOCAL:<filename>``, which still tells
+    the importer this list was supplied from a file rather than fetched
+    from Yahoo. Only the location goes, because only the location is
+    both useless to them and personal to the exporter.
+
+    Args:
+        blob: A parsed cache blob (or any part of one). Mutated in place
+            — callers pass the freshly-parsed copy they are about to
+            write into the zip, never anything shared.
+
+    Returns:
+        The same object, for use as an expression.
+    """
+    if isinstance(blob, dict):
+        val = blob.get("source_value")
+        if isinstance(val, str) and val.strip()                 and not val.strip().lower().startswith(_SHAREABLE_SOURCE_PREFIXES):
+            blob["source_value"] = ""
+        for v in blob.values():
+            _scrub_local_sources(v)
+    elif isinstance(blob, list):
+        for v in blob:
+            _scrub_local_sources(v)
+    return blob
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -88,6 +133,30 @@ def _read_json(fp: Path) -> Any:
             return json.load(f)
     except Exception:
         return None
+
+
+def _factsheet_isin(filename: str) -> str:
+    """The ISIN a factsheet file belongs to, from its file name.
+
+    Factsheets are stored as ``<ISIN>.<ext>`` plus an ``<ISIN>.json``
+    sidecar (see ``utils._factsheet_paths``). The ``_``-split tolerates a
+    hand-placed file carrying a suffix after the ISIN.
+
+    Exists as one function because export and import both have to answer
+    this question and must answer it identically. They did not: export
+    took ``Path.stem`` and import took ``Path.name``, so import compared
+    ``IE00B4L5Y983.PDF`` against a set of bare ISINs, matched nothing,
+    and silently dropped every factsheet out of every fund bundle
+    (fixed in 0.85.6).
+
+    Args:
+        filename: A factsheet file name or archive member name, with or
+            without its extension.
+
+    Returns:
+        The upper-cased ISIN, or ``""`` when the name yields none.
+    """
+    return Path(filename).stem.split("_")[0].strip().upper()
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +178,12 @@ def export_funds(isins: list[str] | None = None,
 
     Returns:
         The zip as bytes.
+
+    Note:
+        Remembered upload locations are scrubbed of filesystem paths on
+        the way out — see :func:`_scrub_local_sources`. A bundle is meant
+        to be handed to someone else, and a path from the exporter's
+        machine is inert on theirs.
     """
     from porxpy.resources import _RESOURCE_FILES
 
@@ -138,7 +213,8 @@ def export_funds(isins: list[str] | None = None,
                     blob = {k: v for k, v in blob.items()
                             if k not in _BULKY_CATEGORIES}
                 z.writestr(f"funds/{isin}.json",
-                           json.dumps(blob, indent=1, ensure_ascii=False))
+                           json.dumps(_scrub_local_sources(blob),
+                                      indent=1, ensure_ascii=False))
                 exported_isins.add(isin)
                 manifest["funds"].append(
                     {"isin": isin,
@@ -171,7 +247,8 @@ def export_funds(isins: list[str] | None = None,
                     blob = {k: v for k, v in blob.items()
                             if k not in _BULKY_CATEGORIES}
                 z.writestr(f"listings/{fp.stem.upper()}.json",
-                           json.dumps(blob, indent=1, ensure_ascii=False))
+                           json.dumps(_scrub_local_sources(blob),
+                                      indent=1, ensure_ascii=False))
                 manifest["listings"].append({"ticker": fp.stem.upper(),
                                              "isin": isin})
                 # Fill the fund's display name from its profile, which
@@ -204,8 +281,8 @@ def export_funds(isins: list[str] | None = None,
             for fp in sorted(FACTSHEETS_DIR.iterdir()):
                 if not fp.is_file():
                     continue
-                stem = fp.stem.split("_")[0].upper()
-                if exported_isins and stem not in exported_isins:
+                isin = _factsheet_isin(fp.name)
+                if exported_isins and isin not in exported_isins:
                     continue
                 z.write(fp, f"factsheets/{fp.name}")
                 manifest["factsheets"] += 1
@@ -577,7 +654,7 @@ def apply_bundle(data: bytes, fund_actions: dict[str, str] | None = None,
         FACTSHEETS_DIR.mkdir(parents=True, exist_ok=True)
         for arc in sorted(n for n in names if n.startswith("factsheets/")):
             fname = Path(arc).name
-            if accepted and fname.split("_")[0].upper() not in accepted:
+            if accepted and _factsheet_isin(fname) not in accepted:
                 continue
             (FACTSHEETS_DIR / fname).write_bytes(z.read(arc))
             report["factsheets"] += 1

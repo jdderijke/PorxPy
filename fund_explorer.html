@@ -213,21 +213,23 @@
   .crpop-item .crpop-v{color:var(--muted);font-size:.66rem;flex-shrink:0;}
   .crpop-item.stale .crpop-v{color:var(--amber);}
   /* A peer row is three fixed columns rather than the flex key/value of
-     the other popovers: identifier, name, score. A peer list is read
-     down the score column to see the ranking, and flex made every score
-     start at a different x. The widths are shared by both surfaces that
-     render peers, so the two lists line up the same way. */
+     the other popovers: name, trading currency, score. A peer list is
+     read down the score column to see the ranking, and flex made every
+     score start at a different x. The widths are shared by both surfaces
+     that render peers, so the two lists line up the same way.
+     The identifier column was dropped in v0.82.0 — see _peerItemHtml. */
   .crpop-menu.wide{min-width:340px;max-width:460px;}
-  .peer-item{display:grid;grid-template-columns:104px minmax(0,1fr) 32px;
+  .peer-item{display:grid;grid-template-columns:minmax(0,1fr) 42px 32px;
     align-items:baseline;gap:10px;padding:5px 8px;font-family:var(--mono);
     font-size:.7rem;border-radius:4px;}
   .peer-item:hover{background:rgba(79,142,247,.06);}
   .peer-item.clk{cursor:pointer;}
   .peer-item.clk:hover{background:var(--surface2);}
-  .peer-item .peer-id{color:var(--muted);font-size:.66rem;
+  .peer-item .peer-cur{color:var(--muted);font-size:.66rem;text-align:right;
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  .peer-item.self .peer-id{color:var(--accent);}
+  .peer-item.self .peer-cur{color:var(--accent);}
   .peer-item .peer-nm{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .peer-item.self .peer-nm{color:var(--accent);}
   .peer-item .peer-sc{color:var(--text);text-align:right;font-variant-numeric:tabular-nums;}
   /* The score-model picker sits above the peer list it re-ranks. */
   .crpop-hdr{display:flex;align-items:center;justify-content:space-between;gap:8px;
@@ -236,6 +238,177 @@
   .crpop-hdr select{font-family:var(--mono);font-size:.64rem;background:var(--surface2);
     color:var(--text);border:1px solid var(--border2);border-radius:4px;padding:3px 5px;max-width:200px;}
   .crempty{padding:2rem;text-align:center;color:var(--muted);font-family:var(--mono);font-size:.75rem;}
+
+  /* ── Data-quality dots (v0.84.0) ───────────────────────────────────
+     Five slots in a fixed order — fund data, asset, sector, country,
+     currency — so POSITION carries which dimension a dot is about and
+     colour carries only how good it is. Nothing here encodes a length,
+     which is the point: a reader compares colours down a column without
+     having to judge five bar lengths against each other.
+
+     Solid vs hollow is the second bit, and it is not decoration. A solid
+     dot means the number was counted from actual positions; a hollow one
+     means the issuer reported it, or the user asserted their partial
+     source covers the whole fund. Both can read 100%, and they are not
+     the same claim. */
+  .qdots{display:inline-flex;align-items:center;gap:3px;line-height:1;}
+  .qdot{width:8px;height:8px;border-radius:50%;box-sizing:border-box;
+    border:1.5px solid transparent;flex-shrink:0;}
+  .qdot.q-green {background:#4ade80;}
+  .qdot.q-yellow{background:#facc15;}
+  .qdot.q-orange{background:#fb923c;}
+  .qdot.q-red   {background:#f87171;}
+  .qdot.q-none  {background:transparent;border-color:var(--border2);}
+  /* Hollow = reported or asserted, not measured. The colour moves to the
+     ring so the reading is unchanged; only the fill is spent. */
+  .qdot.q-ring{background:transparent !important;}
+  .qdot.q-ring.q-green {border-color:#4ade80;}
+  .qdot.q-ring.q-yellow{border-color:#facc15;}
+  .qdot.q-ring.q-orange{border-color:#fb923c;}
+  .qdot.q-ring.q-red   {border-color:#f87171;}
+  /* The fund page has room for names beside the dots; the lists do not.
+     Same component, same order, one extra column of labels. */
+  .qrow{display:grid;grid-template-columns:74px 1fr auto;align-items:center;
+    gap:8px;padding:2px 0;font-family:var(--mono);font-size:.64rem;}
+  .qrow .qlbl{color:var(--muted);}
+  .qrow .qval{color:var(--text);}
+  .qrow .qsrc{color:var(--muted);font-size:.58rem;}
+  /* Fund page only: a title and a visible two-line legend. The lists
+     have no room and keep the same text as a tooltip instead. */
+  .qhdr{font-family:var(--mono);font-size:.6rem;letter-spacing:.1em;
+    text-transform:uppercase;color:var(--muted);opacity:.75;
+    margin-bottom:3px;cursor:help;}
+  .qlegend{font-family:var(--mono);font-size:.56rem;line-height:1.6;
+    color:var(--muted);opacity:.7;margin-top:5px;
+    padding-top:4px;border-top:1px solid var(--border);}
+
+  /* ── Facet tree picker (v0.82.0) ───────────────────────────────────
+     Replaces the flat <select> everywhere a canonical facet node is
+     chosen. The three selection states are deliberately distinct:
+       .sel  the node the user ticked — the level actually asserted
+       .anc  an ancestor, ticked because it contains the selection
+       -     everything else
+     Drawing .sel and .anc the same way would hide which level the stored
+     value claims, which is the half of the tree that carries meaning. */
+  /* Modifier classes are namespaced `ft-*` (v0.82.8). Bare ones collided
+     with the app's own global utilities: `.empty` is an empty-state block
+     at `padding:5rem 2rem;text-align:center`, and the trigger label wears
+     an "no value selected" modifier — so in the Resolve popover, where no
+     node is preset, the label picked up 80px of vertical padding and the
+     control rendered 180px tall. `.derived` was a second, quieter one
+     (a .74rem type rule landing on the ancestor tick). Compound selectors
+     hid both: `.ftree-box.derived` outranks `.derived`, but only for the
+     properties it actually declares. */
+  .ftree{position:relative;width:100%;}
+  /* width/box-sizing explicitly: a <button> shrink-wraps its label, so
+     without these the trigger was as wide as its longest placeholder and
+     a different width in every mount. The <select> it replaced was
+     width:100% via `.field select`. */
+  .ftree-trig{display:flex;align-items:center;justify-content:space-between;gap:8px;
+    width:100%;box-sizing:border-box;
+    width:100%;background:var(--surface2);color:var(--text);
+    border:1px solid var(--border2);border-radius:3px;padding:2px 5px;
+    font-family:var(--mono);font-size:.65rem;line-height:1.35;
+    cursor:pointer;text-align:left;min-height:0;}
+  .ftree-trig:hover{border-color:var(--accent);}
+  .ftree-trig-lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .ftree-trig-lbl.ft-empty{color:var(--muted);}
+  .ftree-trig-lbl.ft-set{color:var(--accent);}
+  .ftree-caret{color:var(--muted);flex-shrink:0;font-size:.52rem;}
+  /* Fixed dimensions, not container-derived: the same picker is mounted in
+     a wide dialog field and in a narrow popover, and a panel that took its
+     width from the container was a different control in each. left:0 with a
+     max-width keeps it anchored to the trigger and the same size either
+     way. Height is capped by FT_PANEL_MAX_H for the same reason — see
+     ftPosition, which only ever shrinks it below that. */
+  .ftree-panel{position:absolute;z-index:60;left:0;top:calc(100% + 2px);
+    background:var(--surface);border:1px solid var(--border2);border-radius:4px;
+    box-shadow:0 6px 18px rgba(0,0,0,.45);padding:4px;
+    width:max(100%, 220px);max-width:280px;box-sizing:border-box;}
+  /* Scoped under .ftree-panel deliberately. The picker is mounted inside
+     `.field` in the holdings editor, and `.field input` — specificity
+     (0,1,1) — outranks a bare `.ftree-search` (0,1,0), so the filter box
+     was inheriting that field styling: 40px tall, .88rem, .6rem padding,
+     which is a form field's weight, not a dropdown's. `.ftree-panel
+     .ftree-search` is (0,2,0) and wins wherever the picker is mounted.
+     `height:auto` is explicit because the inherited rule sets a fixed
+     40px that padding alone cannot undo. */
+  .ftree-panel .ftree-search{width:100%;box-sizing:border-box;margin-bottom:4px;
+    background:var(--surface2);color:var(--text);border:1px solid var(--border2);
+    border-radius:3px;padding:2px 5px;font-family:var(--mono);font-size:.63rem;
+    line-height:1.35;height:auto;min-height:0;outline:none;}
+  .ftree-panel .ftree-search:focus{border-color:var(--accent);}
+  /* The body always scrolls; ftPosition sets the real height from the room
+     actually left on screen, so a panel low in a dialog opens shorter (or
+     upwards) instead of running past the bottom of the viewport. The value
+     here is only the pre-measurement fallback. */
+  .ftree-body{max-height:190px;overflow-y:auto;overscroll-behavior:contain;}
+
+  /* ── Resolve unmatched values: one scroll region (v0.82.3) ─────────
+     The dialog and the table inside it used to scroll independently, and
+     the footer scrolled with the dialog so Close could end up off the
+     bottom of the screen. The modal is now a flex column that does NOT
+     scroll: header (title + tabs) and footer (Close) are pinned, and the
+     only scrolling box is .modal-b holding the list.
+
+     The inner wrappers must give up their own max-height here or there
+     are two scrollers again. They keep their border — the frame is what
+     the list reads as, and only the scrolling belongs to the parent. */
+  #ufDialog .modal{display:flex;flex-direction:column;overflow:hidden;}
+  #ufDialog .modal-h,
+  #ufDialog .modal-f{flex:0 0 auto;}
+  /* Nothing between the header and the footer scrolls except the list.
+     The chain has to be unbroken: every ancestor of the scroll box is a
+     flex column that grows, and every one of them needs min-height:0 or
+     it refuses to shrink below its content and pushes the footer — and
+     the Cancel button with it — off the bottom. That min-height default
+     of `auto` on a flex item is the whole reason this needs stating. */
+  #ufDialog .modal-b{flex:1 1 auto;min-height:0;overflow:hidden;
+    display:flex;flex-direction:column;}
+  #ufDialog #ufDialogBody,
+  #ufDialog #ufValuesBody{flex:1 1 auto;min-height:0;
+    display:flex;flex-direction:column;}
+  #ufDialog #ufTableWrap{flex:1 1 auto;min-height:0;
+    display:flex;flex-direction:column;}
+  /* The help text, the facet chips and the summary line keep their own
+     height and stay put; only the box below them moves. */
+  #ufDialog #ufHelpValues,
+  #ufDialog #ufHelpRows{flex:0 0 auto;}
+  #ufDialog [data-ufscroll],
+  #ufDialog [data-ufvalscroll]{flex:1 1 auto;min-height:0;}
+  #ufDialog .dtwrap,
+  #ufDialog .hfullwrap{max-height:none;overflow:visible;}
+  /* Opened upwards when there is more room above than below. */
+  .ftree-panel.ft-up{top:auto;bottom:calc(100% + 3px);}
+  .ftree-empty{padding:8px;text-align:center;color:var(--muted);
+    font-family:var(--mono);font-size:.63rem;}
+  .ftree-row{display:flex;align-items:center;gap:5px;padding:1px 4px;
+    font-family:var(--mono);font-size:.64rem;border-radius:2px;line-height:1.35;}
+  .ftree-row:hover{background:rgba(79,142,247,.07);}
+  .ftree-row.ft-sel{background:rgba(79,142,247,.14);}
+  .ftree-hit{cursor:pointer;flex-shrink:0;width:9px;display:inline-block;}
+  .ftree-car{color:var(--muted);font-size:.5rem;display:inline-block;
+    transition:transform .12s ease;}
+  .ftree-car.ft-open{transform:rotate(90deg);}
+  .ftree-car.ft-none{visibility:hidden;}
+  /* The box is the only thing that selects, so it gets the pointer and a
+     hover that says so; the row itself expands. */
+  .ftree-box{flex-shrink:0;width:11px;height:11px;line-height:10px;text-align:center;
+    border:1px solid var(--border2);border-radius:2px;cursor:pointer;
+    font-size:.52rem;color:transparent;background:var(--surface2);}
+  .ftree-box:hover{border-color:var(--accent);}
+  .ftree-box.ft-on{background:var(--accent);border-color:var(--accent);color:#fff;}
+  /* An ancestor tick is real but derived — outlined, not filled, so the
+     asserted node is the only solid mark in the branch. */
+  .ftree-box.ft-derived{border-color:var(--accent);color:var(--accent);
+    background:transparent;}
+  .ftree-nm{cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    color:var(--text);}
+  .ftree-row.ft-sel .ftree-nm{color:var(--accent);}
+  .ftree-row.ft-anc .ftree-nm{color:var(--text);}
+  .ftree-lv{color:var(--muted);font-size:.55rem;margin-left:5px;letter-spacing:.03em;}
+  .ftree-row.ft-legacy .ftree-nm{color:var(--red);}
+  .ftree-row.ft-extra .ftree-nm{color:var(--muted);font-style:italic;}
 
   .abadge{display:none;align-items:center;gap:6px;background:rgba(251,191,36,.1);
     border:1px solid rgba(251,191,36,.3);border-radius:6px;padding:6px 10px;margin-top:10px;
@@ -889,8 +1062,21 @@
      per-column filter row, hover highlight). The wrapper is scrollable so the
      header can be sticky; tables MUST set table-layout:fixed and use <colgroup>
      so column widths are enforced (browsers ignore <th width> in auto layout). */
-  .dtwrap{max-height:560px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;}
-  .dtable{width:100%;border-collapse:collapse;table-layout:fixed;font-size:.78rem;}
+  /* Scrolls on BOTH axes (v0.85.0). table-layout:fixed honours the
+     <colgroup> widths only while they fit; once the sum exceeds the
+     wrapper the browser shrinks every column proportionally, and the
+     flex Name column — the one with the longest content — is what the
+     reader notices collapsing. Scrolling horizontally instead keeps the
+     declared widths true at any window size.
+
+     --dtmin is the floor: the sum of the fixed <col> widths plus a
+     usable minimum for the flex column. It lives on the table so the
+     three tables that share this styling share one mechanism and each
+     one only states its own number; leaving it unset keeps the old
+     shrink-to-fit behaviour for the small inline tables. */
+  .dtwrap{max-height:560px;overflow:auto;border:1px solid var(--border);border-radius:8px;}
+  .dtable{width:100%;min-width:var(--dtmin,0);border-collapse:collapse;
+    table-layout:fixed;font-size:.78rem;}
   .dtable thead tr.htitles th{position:sticky;top:0;background:var(--surface);z-index:3;
     padding:10px 10px 8px;cursor:pointer;user-select:none;white-space:nowrap;
     text-align:left;font-family:var(--mono);font-size:.64rem;color:var(--muted);
@@ -1135,6 +1321,10 @@
       </div>
       <div class="fmeta" id="fmeta"></div>
       <div class="actag" id="actag" style="display:none"></div>
+      <!-- The same five dots the two lists show, plus the labels they have
+           no room for. One component, one order, one colour scale — the
+           compact form is a summary of this, not a second opinion. -->
+      <div id="fquality" style="display:none;margin-top:8px;max-width:380px"></div>
       <div class="rnote" id="rnote"></div>
     </div>
 
@@ -1255,8 +1445,8 @@
     <div class="hcard" id="hcard" style="display:none">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <div class="ct" id="hTitle" style="flex:1">// holdings <span id="holdingsSrc" class="src"></span></div>
-        <button class="btn btn-s btn-sm" id="hEnrichBtn" onclick="enrichHoldings()"
-                title="Fill blank facets (country, currency, sector, …) from per-symbol Yahoo lookups. Never overwrites non-blank cells. Which fields get filled is configured in Settings."
+        <button class="btn btn-s btn-sm" id="hEnrichBtn" onclick="enrichHoldings()" disabled
+                title="Tick the rows you want enriched first — this button acts on the selection, never on the whole list."
                 style="flex-shrink:0">
           ↻ Enrich through Yahoo
         </button>
@@ -1634,13 +1824,16 @@
           <button class="hfclear" id="pfClear" onclick="clearPortfolioFundsFilters()" style="display:none">× Clear filters</button>
         </div>
         <div class="dtwrap">
-          <table class="dtable" id="pfundsTable">
+          <!-- --dtmin = the fixed <col> widths below (1042px) + 240px of
+               Name. See .dtable in the stylesheet. -->
+          <table class="dtable" id="pfundsTable" style="--dtmin:1282px">
             <colgroup>
               <col style="width:92px">   <!-- Ticker -->
               <col style="width:118px">  <!-- ISIN -->
               <col style="width:54px">   <!-- Currency -->
               <col>                       <!-- Name (flex) -->
               <col style="width:96px">   <!-- Holdings -->
+              <col style="width:80px">   <!-- Quality (five dots) -->
               <col style="width:112px">  <!-- Asset class -->
               <col style="width:100px">  <!-- Shares -->
               <col style="width:132px">  <!-- Value -->
@@ -1655,6 +1848,8 @@
                 <th data-key="currency"    onclick="onPortfolioFundsSort('currency')">Cur<span class="sortarr" data-arr="currency"></span></th>
                 <th data-key="name"        onclick="onPortfolioFundsSort('name')">Name<span class="sortarr" data-arr="name"></span></th>
                 <th data-key="holdings"    onclick="onPortfolioFundsSort('holdings')">Holdings<span class="sortarr" data-arr="holdings"></span></th>
+                <!-- title set by applyQualityHeaderTips() from QUALITY_TIP -->
+                <th data-key="quality"     onclick="onPortfolioFundsSort('quality')">Quality<span class="sortarr" data-arr="quality"></span></th>
                 <th data-key="asset_class" onclick="onPortfolioFundsSort('asset_class')">Asset class<span class="sortarr" data-arr="asset_class"></span></th>
                 <th data-key="shares"      class="r" onclick="onPortfolioFundsSort('shares')">Shares<span class="sortarr" data-arr="shares"></span></th>
                 <th data-key="value"       class="r" onclick="onPortfolioFundsSort('value')">Value<span class="sortarr" data-arr="value"></span></th>
@@ -1674,6 +1869,7 @@
                   <option value="enriched">ENRICHED only</option>
                   <option value="top">TOP only (no enrich)</option>
                 </select></th>
+                <th></th>
                 <th><select id="pfAssetClass" onchange="onPortfolioFundsFilterChange()"></select></th>
                 <th></th>
                 <th></th>
@@ -1715,7 +1911,9 @@
             date at the Interest rate).
           </div>
           <div class="dtwrap">
-            <table class="dtable" id="pcTable">
+            <!-- --dtmin = the fixed <col> widths below (898px) + the
+                 340px Name minimum. See .dtable in the stylesheet. -->
+            <table class="dtable" id="pcTable" style="--dtmin:1238px">
               <colgroup>
                 <!-- v0.14.7: Sector column removed (cash sector is
                      auto-set to "cash and/or derivatives"); Name
@@ -2443,26 +2641,26 @@
              fills the rest of the tree in. Two coupled dropdowns used
              to make the user state a class and a sub class separately,
              which meant stating a grain the source never had. -->
-        <select id="heAsset"></select>
+        <div id="heAssetMount"></div>
         <div class="he-resolve" id="heAssetResolve"></div>
       </div>
     </div>
     <div class="fgrp single">
       <div class="field">
         <label class="mfl">Sector <span style="color:var(--muted)">(Morningstar)</span></label>
-        <select id="heSector"></select>
+        <div id="heSectorMount"></div>
         <div class="he-resolve" id="heSectorResolve"></div>
       </div>
     </div>
     <div class="fgrp" style="grid-template-columns:repeat(2, 1fr)">
       <div class="field">
         <label class="mfl">Country</label>
-        <select id="heCountry"></select>
+        <div id="heCountryMount"></div>
         <div class="he-resolve" id="heCountryResolve"></div>
       </div>
       <div class="field">
         <label class="mfl">Currency <span style="color:var(--muted)">(ISO 4217)</span></label>
-        <select id="heCurrency"></select>
+        <div id="heCurrencyMount"></div>
         <div class="he-resolve" id="heCurrencyResolve"></div>
       </div>
     </div>
@@ -2579,6 +2777,10 @@
         <div class="dropzone-hint">…or drop the file here.</div>
       </div>
     </div>
+    <!-- Same "where did this come from last time" line as the holdings
+         and breakdown-CSV dialogs — see prefillUploadSource(). -->
+    <div class="mhint" id="fsSourceLastUsed"
+         style="display:none;margin-top:-.4rem;color:var(--muted);font-family:var(--mono);font-size:.7rem"></div>
     <div class="fgrp" style="grid-template-columns:180px 1fr;align-items:end">
       <div class="field">
         <label class="mfl">Factsheet date</label>
@@ -2660,12 +2862,20 @@
 </div>
 
 <div class="modal-bg" id="ufDialog">
-  <div class="modal" style="max-width:1200px;width:95vw;max-height:90vh;overflow-y:auto">
+  <!-- One scroll region, not two (v0.82.3). The modal used to be
+       `max-height:90vh;overflow-y:auto` while the table inside it had its
+       own `.dtwrap` scroller at 560px, so the dialog and the list scrolled
+       independently — and the footer, being inside the scrolling modal,
+       carried the Close button off the bottom of the screen.
+
+       Now the modal is a fixed-height flex column that does not scroll:
+       the heading and the tab bar are pinned at the top, the footer is
+       pinned at the bottom, and the single scrolling region is the
+       list between them. See the #ufDialog rules in the stylesheet. -->
+  <div class="modal" style="max-width:1200px;width:95vw;max-height:90vh">
     <div class="modal-h">
       <h3>Resolve unmatched values</h3>
-    </div>
-    <div class="modal-b">
-      <div style="display:flex;gap:6px;margin:0 0 .8rem;
+      <div style="display:flex;gap:6px;margin:.7rem 0 0;
                   border-bottom:1px solid var(--line)">
         <button type="button" class="btn btn-s" id="ufTabValues"
                 style="font-size:.66rem;padding:4px 12px;border-radius:4px 4px 0 0"
@@ -2680,7 +2890,8 @@
           By row <span id="ufTabRowsCount"></span>
         </button>
       </div>
-
+    </div>
+    <div class="modal-b">
       <p id="ufHelpValues"
          style="font-family:var(--mono);font-size:.7rem;color:var(--muted);
                 line-height:1.5;margin:0 0 .8rem">
@@ -2789,6 +3000,9 @@
             </div>
           </div>
         </div>
+        <!-- See the factsheet dialog's twin of this line. -->
+        <div class="mhint" id="bdSourceLastUsed"
+             style="display:none;margin-top:.4rem;color:var(--muted);font-family:var(--mono);font-size:.7rem"></div>
         <div id="bdUploadHint" style="font-family:var(--mono);font-size:.65rem;
               color:var(--muted);margin-top:.4rem;line-height:1.5">
           Example header row: <code>facet,key,weight</code>.
@@ -3299,6 +3513,36 @@ function _restoreScroll(snap){
   if (snap.win[1]) window.scrollTo(snap.win[0], snap.win[1]);
 }
 
+// Restore across the frames a render takes to regain its height.
+//
+// _restoreScroll on its own assumes the page is already as tall as it
+// was — true for the list re-renders, which swap one table for another
+// of roughly the same size. It is NOT true of the fund reload: that one
+// hides every panel first, so the document collapses to the empty-state
+// placeholder and comes back over several frames as the group tiles, the
+// chart and the holdings table are laid out. A single restore against
+// the short page is clamped by the browser (measured: a 1400px offset
+// came back as 29), and nothing tries again once the height returns.
+//
+// So retry each frame until the offset actually takes, then stop. The
+// deadline is the guard for the case where it never can — a fund whose
+// holdings were just removed is legitimately shorter than it was, and
+// this must not spin for the life of the page. Landing exits at once, so
+// in the normal case it costs two or three frames and cannot fight a
+// user who scrolls after that.
+function _restoreScrollSettling(snap, deadlineMs = 1500){
+  const want = snap.win[1];
+  const t0   = (window.performance || Date).now();
+  const tick = () => {
+    _restoreScroll(snap);
+    const landed = !want || Math.abs(window.scrollY - want) < 2;
+    if (!landed && (window.performance || Date).now() - t0 < deadlineMs){
+      requestAnimationFrame(tick);
+    }
+  };
+  tick();
+}
+
 // Wraps a render — sync or async. An async render restores once it
 // settles, including on failure: an error message that also throws the
 // user back to the top of the page is two problems, not one.
@@ -3331,6 +3575,13 @@ async function refreshCacheList(skipFetch=false){
     const data = await r.json();
     cacheListData = data.cached || [];
     preserveScroll(renderCachePanel);
+    // Quality lands separately and repaints when it does. It is the
+    // slowest of the three passes (it builds every fund's breakdown
+    // cards), and none of the rest of the list needs to wait on it —
+    // the dots simply arrive, the way the score chips already do.
+    fetchQuality()
+      .then(() => preserveScroll(renderCachePanel))
+      .catch(e => console.warn('quality:', e));
   } catch (e) {
     console.warn('cache list error:', e);
     cacheListData = [];
@@ -3373,13 +3624,16 @@ function renderCachePanel(){
       <button class="hfclear" id="cfClear" onclick="clearCacheFilters()" style="display:none">× Clear filters</button>
     </div>
     <div class="dtwrap">
-      <table class="dtable" id="cacheTable">
+      <!-- --dtmin = the fixed <col> widths below (920px) + 240px of Name.
+           See .dtable in the stylesheet. -->
+      <table class="dtable" id="cacheTable" style="--dtmin:1160px">
         <colgroup>
           <col style="width:96px">   <!-- Ticker -->
           <col style="width:120px">  <!-- ISIN -->
           <col style="width:62px">   <!-- Currency -->
           <col>                       <!-- Name (flex) -->
           <col style="width:110px">  <!-- Holdings -->
+          <col style="width:80px">   <!-- Quality (five dots) -->
           <col style="width:104px">  <!-- Score (all / peer) -->
           <col style="width:96px">   <!-- Peers -->
           <col style="width:150px">  <!-- Portfolios -->
@@ -3393,6 +3647,8 @@ function renderCachePanel(){
             <th data-key="currency" onclick="onCacheSort('currency')">Cur<span class="sortarr" data-arr="currency"></span></th>
             <th data-key="name"     onclick="onCacheSort('name')">Name<span class="sortarr" data-arr="name"></span></th>
             <th data-key="holdings" onclick="onCacheSort('holdings')">Holdings<span class="sortarr" data-arr="holdings"></span></th>
+            <!-- title set by applyQualityHeaderTips() from QUALITY_TIP -->
+            <th data-key="quality" onclick="onCacheSort('quality')">Quality<span class="sortarr" data-arr="quality"></span></th>
             <th data-key="score" onclick="onCacheSort('score')"
                 title="Best-in-class score, 0–100. Left: rank against every saved fund. Right: rank within this fund's peer group (same asset class and focus) — the number the optimiser uses. '—' means the peer group is too small to rank within. Weights come from the model chosen below.">score<span class="sortarr" data-arr="score"></span></th>
             <th class="nosort"
@@ -3413,9 +3669,10 @@ function renderCachePanel(){
               <option value="enriched"${cacheFilterState.holdings==='enriched' ? ' selected' : ''}>ENRICHED only</option>
               <option value="top"${cacheFilterState.holdings==='top'  ? ' selected' : ''}>TOP only (no enrich)</option>
             </select></th>
+            <th></th><!-- Quality: sortable, not filterable -->
             <th><select id="cfScorePreset" onchange="onCacheScorePresetChange()"
                         title="Which weight model the scores are computed with"></select></th>
-            <th></th>
+            <th></th><!-- Peers -->
             <th><select id="cfPortfolio" onchange="onCacheFilterChange()">
               <option value="">All</option>
               <option value="__none__"${cacheFilterState.portfolio==='__none__' ? ' selected' : ''}>(not in any)</option>
@@ -3435,8 +3692,9 @@ function renderCachePanel(){
 
   if (!sorted.length){
     list.innerHTML = header;
+    applyQualityHeaderTips();
     document.getElementById('cacheBody').innerHTML =
-      `<tr><td colspan="10" style="padding:18px;text-align:center;color:var(--muted);
+      `<tr><td colspan="11" style="padding:18px;text-align:center;color:var(--muted);
               font-family:var(--mono);font-size:.72rem">
         No funds match the current filters.</td></tr>`;
     updateCacheHeaderIndicators();
@@ -3508,6 +3766,7 @@ function renderCachePanel(){
       <td class="tk" style="text-align:center">${curCell}</td>
       <td class="wrap" style="color:var(--text)" title="${escapeAttr(c.name||'')}">${escapeHtml(c.name || '—')}</td>
       <td>${holdingsCell}</td>
+      <td>${qualityDotsHtml((cacheQuality || {})[(c.ticker || '').toUpperCase()])}</td>
       <td title="${scoreTitleFor(c)}">${scoreCellHtml(c)}</td>
       <td onclick="event.stopPropagation()">${peersTrigger}</td>
       <td onclick="event.stopPropagation()">${portfoliosTrigger}</td>
@@ -3527,6 +3786,7 @@ function renderCachePanel(){
   }).join('');
 
   list.innerHTML = header;
+  applyQualityHeaderTips();
   document.getElementById('cacheBody').innerHTML = rows;
   updateCacheHeaderIndicators();
   updateCacheCounter(sorted.length, cacheListData.length);
@@ -3611,6 +3871,12 @@ function sortCacheList(rows){
         const v = b && b.score_peer != null ? b.score_peer : null;
         return v == null ? -1 : v;
       }
+      // Worst dot first, average breaking ties — see qualitySortKey. A
+      // fund not yet in the quality pass sorts last ascending, the same
+      // way an unrankable fund does, and for the same reason: "not
+      // measured" is not "measured badly".
+      case 'quality':
+        return qualitySortKey((cacheQuality || {})[(c.ticker || '').toUpperCase()]);
       default: return '';
     }
   };
@@ -3735,6 +4001,291 @@ function scorePresetOptionsHtml(selected){
 }
 
 // Fetch scores for the current preset, plus the preset list on first call.
+// ── Data quality: five dots per fund (v0.84.0) ────────────────────────
+// Fetched once per session and shared by all three surfaces, so the
+// pre-loaded list, the portfolio funds table and the fund page header
+// cannot disagree about the same fund. Same shape as cacheScores, and
+// loaded the same lazily — the pass costs about 1.6s over 51 funds, which
+// is fine once and not fine on every render.
+let cacheQuality = null;
+let _qualityInFlight = null;
+
+async function fetchQuality(force){
+  if (cacheQuality && !force) return cacheQuality;
+  if (_qualityInFlight) return _qualityInFlight;      // coalesce concurrent callers
+  _qualityInFlight = (async () => {
+    try {
+      const r = await fetch(`${API}/quality`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      cacheQuality = d.funds || {};
+      return cacheQuality;
+    } finally { _qualityInFlight = null; }
+  })();
+  return _qualityInFlight;
+}
+
+// The five slots, in the one order every surface draws them.
+const QUALITY_SLOTS = [
+  { key:'fund_data',   label:'Fund data' },
+  { key:'asset_class', label:'Asset' },
+  { key:'sector',      label:'Sector' },
+  { key:'country',     label:'Country' },
+  { key:'currency',    label:'Currency' },
+];
+
+// How to read the dots, written once (v0.85.0).
+//
+// Every surface that draws a dot hangs this off it: the two column
+// headers, each individual dot's own tooltip, and the labelled block on
+// the fund page. Position, colour and fill each carry a separate bit,
+// and none of the three is guessable — a reader who has not been told
+// cannot know that a hollow green is a different claim from a solid one,
+// which is precisely the distinction the indicator exists to make.
+// Kept as one constant rather than five near-copies for the usual
+// reason: five copies are five places the explanation can drift from
+// what the dots actually do.
+// Written as a template literal because it IS a block of text: the line
+// breaks a tooltip renders are the ones on screen here, rather than a
+// column of \n escapes that has to be read to be pictured.
+const QUALITY_TIP =
+`Five dots, always in this order:
+fund data · asset · sector · country · currency.
+
+COLOUR — how much of the fund that facet can place:
+  green ≥95% · yellow ≥75% · orange ≥30% · red <30% · grey no data.
+The first dot is not a percentage but optimiser readiness:
+  green = rated against enough peers · orange = too few peers to
+  rank within · red = a rating input (cost, size, returns) is missing.
+
+FILL — where the number came from:
+  solid = counted from the fund's actual holdings
+  hollow = reported by the issuer, or declared complete by you.
+Both can read 100%, and they are not the same claim.`;
+
+// The same thing in two lines, for surfaces that show it rather than
+// hide it in a tooltip.
+const QUALITY_LEGEND_HTML =
+  'green ≥95% · yellow ≥75% · orange ≥30% · red &lt;30% · grey no data<br>'
++ 'solid = counted from holdings · hollow = reported, or declared complete';
+
+// Put the legend on every quality column header, wherever it lives.
+//
+// The pre-loaded list rebuilds its header from a template on each render
+// and the portfolio funds table's is static markup in the document, so
+// neither can own the string. Both are found by the one attribute they
+// share, which is also what the sort handlers key on.
+function applyQualityHeaderTips(){
+  document.querySelectorAll('th[data-key="quality"]').forEach(th => {
+    th.title = QUALITY_TIP
+             + `\n\nSorts by the WORST dot first, so the column surfaces `
+             + `what is broken rather than what is average.`;
+  });
+}
+
+// Coverage -> colour band. One function, so a colour means the same
+// thing in every dot and on every surface. The bands are deliberately
+// generous at the top: a fund whose look-through places 96% of itself is
+// not meaningfully worse than one that places 100%, and colouring it
+// differently would send people hunting for a gap that does not matter.
+function qCoverBand(cov){
+  if (cov == null)  return 'q-none';
+  if (cov >= 0.95)  return 'q-green';
+  if (cov >= 0.75)  return 'q-yellow';
+  if (cov >= 0.30)  return 'q-orange';
+  return 'q-red';
+}
+
+// The fund-data slot is NOT a coverage figure — see the endpoint. Three
+// states, three different things to go and do.
+function qFundDataBand(fd){
+  const st = (fd && fd.state) || 'unknown';
+  if (st === 'rated')   return 'q-green';
+  if (st === 'alone')   return 'q-orange';
+  if (st === 'missing') return 'q-red';
+  return 'q-none';
+}
+
+function qFundDataText(fd){
+  const st = (fd && fd.state) || 'unknown';
+  if (st === 'rated')
+    return `rated against ${fd.peer_n} peers`;
+  if (st === 'alone')
+    return `only ${fd.peer_n} in its peer group (needs ${fd.min_peers})`;
+  if (st === 'missing')
+    return `missing ${(fd.missing || []).join(', ')}`;
+  return 'not scored';
+}
+
+// One dot's own sentence — "Sector — 82% at sector · counted from
+// holdings". Shared by the compact dots and the labelled fund-page rows
+// so the two forms cannot describe the same dot differently.
+function qualitySlotText(entry, slot){
+  if (slot.key === 'fund_data')
+    return `Fund data — ${qFundDataText((entry || {}).fund_data || {})}`;
+  const f = ((entry || {}).facets || {})[slot.key] || {};
+  const pct = f.coverage == null ? 'no data'
+            : `${(f.coverage * 100).toFixed(0)}% at ${String(f.level).replace(/_/g,' ')}`;
+  const prov = f.measured ? 'counted from holdings'
+             : (f.completed ? `${f.source || 'source'}, declared complete`
+                            : `reported by ${f.source || 'no source'}`);
+  return `${slot.label} — ${pct} · ${prov}`;
+}
+
+// The tooltip a dot carries: what THIS dot says, then how to read any
+// dot. The general half is appended rather than left on the surrounding
+// cell because a tooltip on a child element wins over its parent's, and
+// the dots cover nearly the whole cell — a legend on the cell alone was
+// reachable only by hovering the gaps between them.
+function qualityDotTitle(entry, slot){
+  return `${qualitySlotText(entry, slot)}
+
+${QUALITY_TIP}`;
+}
+
+// One fund's dots. `entry` is a /api/quality funds[ticker] block.
+function qualityDotsHtml(entry){
+  if (!entry) return `<span class="qdots" title="${escapeAttr(
+    `No quality data for this fund yet.\n\n${QUALITY_TIP}`)}">${
+    QUALITY_SLOTS.map(() => `<span class="qdot q-none"></span>`).join('')}</span>`;
+  const parts = QUALITY_SLOTS.map(slot => {
+    if (slot.key === 'fund_data'){
+      // Always solid: readiness is a verdict, not a measurement, so the
+      // measured/reported distinction has nothing to say about it.
+      return `<span class="qdot ${qFundDataBand(entry.fund_data || {})}"
+                    title="${escapeAttr(qualityDotTitle(entry, slot))}"></span>`;
+    }
+    const f = (entry.facets || {})[slot.key] || {};
+    const ring = f.measured ? '' : ' q-ring';
+    return `<span class="qdot ${qCoverBand(f.coverage)}${ring}"
+                  title="${escapeAttr(qualityDotTitle(entry, slot))}"></span>`;
+  }).join('');
+  return `<span class="qdots" title="${escapeAttr(QUALITY_TIP)}">${parts}</span>`;
+}
+
+// The labelled form, for surfaces with room for it (the fund page).
+// Same data, same order, same colours — only the labels are added, so
+// the compact form is genuinely a summary of this one rather than a
+// second opinion about the same fund.
+function qualityRowsHtml(entry){
+  if (!entry) return `<div style="color:var(--muted);font-family:var(--mono);font-size:.64rem">
+    quality not loaded</div>`;
+  const rows = QUALITY_SLOTS.map(slot => {
+    // Whole-row tooltip, so the fund page answers the same question the
+    // lists answer — hovering the label, the value or the dot all give
+    // the dot's own sentence plus how to read any dot.
+    const tip = ` title="${escapeAttr(qualityDotTitle(entry, slot))}"`;
+    if (slot.key === 'fund_data'){
+      const fd = entry.fund_data || {};
+      return `<div class="qrow"${tip}>
+        <span class="qlbl">${slot.label}</span>
+        <span class="qval">${escapeHtml(qFundDataText(fd))}</span>
+        <span class="qdot ${qFundDataBand(fd)}"></span></div>`;
+    }
+    const f = (entry.facets || {})[slot.key] || {};
+    const ring = f.measured ? '' : ' q-ring';
+    const pct  = f.coverage == null ? '—' : `${(f.coverage * 100).toFixed(0)}%`;
+    const src  = f.measured ? 'holdings'
+               : (f.completed ? `${f.source || '?'} · complete` : (f.source || 'none'));
+    return `<div class="qrow"${tip}>
+      <span class="qlbl">${slot.label}</span>
+      <span class="qval">${pct} <span class="qsrc">${escapeHtml(src)}</span></span>
+      <span class="qdot ${qCoverBand(f.coverage)}${ring}"></span></div>`;
+  }).join('');
+  // The fund page is the one surface with room to SHOW the legend rather
+  // than hide it in a tooltip (v0.85.0). It is also where the user acts
+  // on a dot — switching a card's source, declaring a facet complete —
+  // so it is where "what does hollow mean?" actually gets asked.
+  return `<div class="qhdr" title="${escapeAttr(QUALITY_TIP)}">// data quality</div>`
+       + rows
+       + `<div class="qlegend">${QUALITY_LEGEND_HTML}</div>`;
+}
+
+// ── Derived-data invalidation (v0.85.0) ───────────────────────────────
+//
+// Three passes hang off the fund UNIVERSE rather than off one fund, and
+// each is fetched once and kept for the session because each one walks
+// every cached listing:
+//
+//   cacheQuality   the five dots                        (/api/quality)
+//   cacheScores    the score column, and the peer groups that the Peers
+//                  popover and the fund page's peer toggles read
+//                  (/api/scores)
+//   lastLoadedPid  the portfolio rollup                 (/view)
+//   fPeersFor      the fund page's loaded peer set, keyed by ticker
+//
+// They go stale under exactly the same conditions, because all four are
+// computed from the same cached fund data: change a card's breakdown
+// source, declare a facet complete, edit the focus, upload or match
+// holdings, add or delete a fund, and every one of them is now
+// answering about the fund as it was.
+//
+// Only the portfolio view used to be invalidated, which is why the dots
+// on the fund page kept their pre-change colours, and why editing a
+// fund's focus left the peer list and the scores as they were. One
+// function rather than four lines repeated at a dozen call sites: a
+// site that remembered three of the four is precisely the drift this
+// replaces.
+//
+// Cheap to call: the two fetches are read-only server-side passes over
+// the caches, and every surface repaints from data it already holds —
+// no extra /api/fund or /view round-trip.
+function invalidateFundDerived(){
+  lastLoadedPid = '';
+  cacheQuality  = null;
+  cacheScores   = {};
+  fPeersFor     = null;
+  refreshFundDerived().catch(e => console.warn('derived refresh:', e));
+}
+
+// Re-fetch the invalidated passes, then repaint whichever of the four
+// surfaces is currently on screen. Fire-and-forget by design: the caller
+// has already redrawn the thing the user just changed, and these are the
+// summaries that trail it.
+async function refreshFundDerived(){
+  await Promise.all([
+    fetchQuality().catch(e => console.warn('quality:', e)),
+    fetchCacheScores().catch(e => console.warn('scores:', e)),
+  ]);
+  // Fund page: the header dots, the Score tile, and the peer toggles
+  // under the chart — all three read a pass that has just been replaced.
+  if (lastFundData){
+    showFundQualityLazily(lastFundData);
+    try { showMetrics(lastFundData.profile, allPrices, lastFundData); }
+    catch(e){ console.warn('metrics:', e); }
+    // Re-walking the peer group empties the toggle row, so put back the
+    // lines that were on the chart and that the NEW group still
+    // contains. A focus edit that drops a peer should drop its line; a
+    // source flip that changes nothing about the group should not
+    // silently clear the comparison the user set up.
+    const tk = (lastFundData.ticker || '').toUpperCase();
+    if (tk){
+      const wasOn = new Set(fPeersOn);
+      loadFundPeers(tk).then(() => {
+        fPeersOn = new Set(fPeers.map(x => x.ticker).filter(t => wasOn.has(t)));
+        renderPriceChart(currentExpDays);
+        renderFundPeerToggles();
+      }).catch(() => {});
+    }
+  }
+  // The two lists, each from its own already-loaded rows.
+  if (cacheListData && cacheListData.length) preserveScroll(renderCachePanel);
+  if (currentPortfolioView) rerenderPortfolioFunds();
+}
+
+// Sortable as one number: the WORST slot decides, with the average
+// breaking ties. Sorting a quality column should surface what is broken,
+// not what is average — a fund with four greens and a red is a fund with
+// a red.
+function qualitySortKey(entry){
+  if (!entry) return -1;
+  const rank = { 'q-red':0, 'q-orange':1, 'q-yellow':2, 'q-green':3, 'q-none':0 };
+  const bands = [qFundDataBand(entry.fund_data || {})].concat(
+    QUALITY_SLOTS.slice(1).map(s => qCoverBand(((entry.facets||{})[s.key]||{}).coverage)));
+  const vals = bands.map(b => rank[b] ?? 0);
+  return Math.min(...vals) * 100 + (vals.reduce((a,b) => a+b, 0) / vals.length);
+}
+
 async function fetchCacheScores(){
   if (!cacheScoreMeta.presets.length){
     const pr = await fetch(`${API}/scores/presets`);
@@ -3903,6 +4454,7 @@ function peerMembers(ticker){
   return me.peers.map(tk => {
     const b = cacheScores[tk] || {};
     return { ticker: tk, name: b.name || tk, isin: b.isin || '',
+             currency: b.currency || '',
              score_peer: b.score_peer, score_all: b.score_all,
              self: tk === ticker };
   }).sort((a, b) =>
@@ -3916,16 +4468,22 @@ function peerMembers(ticker){
 // scrolled to, so it is rendered inert and says why.
 function _peerItemHtml(m, onClick, reason){
   const score = m.score_peer == null ? '—' : Number(m.score_peer).toFixed(0);
-  // ISIN rather than ticker as the identifier: it names the fund itself,
-  // which is the identity the rest of the app is keyed by (fund cache,
-  // overrides), and it is the same width on every row, which is what lets
-  // the three columns line up. The ticker stays in the hover title, since
-  // that is what a click acts on.
-  const ident = m.isin || m.ticker;
+  // Name and trading currency, and no code column. A peer list is read
+  // to compare funds, and a fund is compared by what it is: an
+  // identifier column carried an ISIN — or, when the listing had none,
+  // a bare ticker — so the same list named some members one way and
+  // some another. The currency earns the slot the code gave up: it is
+  // what actually distinguishes two share classes of one fund, which is
+  // the case where two peer rows otherwise read identically.
+  //
+  // The ticker and ISIN stay in the hover title. They are what a click
+  // acts on and what the caches are keyed by, so they are worth being
+  // able to reach — just not worth a column.
   const title = `${m.ticker}${m.isin ? ` · ${m.isin}` : ''} — ${m.name}`
+              + (m.currency ? ` (${m.currency})` : '')
               + (reason ? ` · ${reason}` : '');
-  const inner = `<span class="peer-id">${escapeHtml(ident)}</span>`
-              + `<span class="peer-nm">${escapeHtml(m.name)}</span>`
+  const inner = `<span class="peer-nm">${escapeHtml(m.name)}</span>`
+              + `<span class="peer-cur">${escapeHtml(m.currency || '—')}</span>`
               + `<span class="peer-sc">${score}</span>`;
   const self = m.self ? ' self' : '';
   if (!onClick){
@@ -4159,6 +4717,10 @@ async function deleteCachedFund(ticker, portfolioCount = 0){
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+    // Peer groups are a property of the UNIVERSE, so removing a fund
+    // changes the fund-data dot and the peer score of everything that
+    // was ranked against it — not only of the row that just vanished.
+    invalidateFundDerived();
     refreshCacheList().catch(()=>{});
   } catch(e){ alert('Delete failed: ' + e.message); }
 }
@@ -4220,8 +4782,9 @@ async function reloadResourceFiles(){
     }
     renderResourceFingerprints(d.fingerprints || {});
     // Cached funds re-normalise on their next read against the new
-    // fingerprints, so anything on screen is now potentially stale.
-    lastLoadedPid = '';
+    // fingerprints, so anything on screen is now potentially stale —
+    // coverage included, since an added alias closes a gap.
+    invalidateFundDerived();
     if (currentTab === 'explore' && lastFundData) reloadCurrentFund().catch(()=>{});
   } catch(e){
     if (st){ st.style.color = 'var(--red)';
@@ -6692,6 +7255,7 @@ function showFundHeader(d) {
   document.getElementById('fname').textContent = name;
   document.getElementById('fmeta').textContent = parts.join(' · ');
   document.getElementById('rnote').textContent = d.resolution || '';
+  showFundQualityLazily(d);
 
   // Cache-status pill: only shown when this fetch resulted in the fund
   // being added to the cache for the first time (i.e. every category was
@@ -6952,6 +7516,10 @@ async function saveToPreloaded(){
       return;
     }
     renderLoadedFund(d, `Saved ${d.ticker} to pre-loaded list`);
+    // The other half of deleteCachedFund: a fund joining the universe
+    // enlarges its peer group, which can take its peers from "too few
+    // to rank within" to rated.
+    invalidateFundDerived();
     refreshCacheList().catch(()=>{});
   } catch(e){
     alert(`Save failed: ${e.message || e}`);
@@ -7187,6 +7755,9 @@ async function refreshStaleFields(ticker, force){
       // leave tiles showing what they showed a moment ago.
       await loadFieldTaxonomy(ticker);
       if (lastFundData && lastFundData.ticker === ticker) renderFundGroups(lastFundData);
+      // Same store the Edit dialog writes: a refetched TER or size is a
+      // changed rating input.
+      invalidateFundDerived();
     }
     return d;
   } catch(e){ return null; }
@@ -7477,10 +8048,14 @@ function renderFundPeerToggles(){
     return;
   }
   // Same markup and the same label rule as the portfolio price chart:
-  // the fund's NAME, with the ticker as the subtitle. A row of tickers
-  // is unreadable when the whole point is comparing funds you know by
-  // name, and the two charts disagreeing on how to name a fund is a
-  // difference with no reason behind it.
+  // the fund's NAME, with its TRADING CURRENCY as the subtitle. A row of
+  // tickers is unreadable when the whole point is comparing funds you
+  // know by name, and the two charts disagreeing on how to name a fund
+  // is a difference with no reason behind it — the portfolio legend has
+  // always shown the currency there, and this one showed the ticker.
+  // The currency is the more useful subtitle anyway: these series are
+  // drawn at their own price, so the currency says why two lines sit on
+  // different scales. The ticker stays in the hover title.
   el.innerHTML = fPeers.map((p, i) => {
     const on    = fPeersOn.has(p.ticker);
     const color = PEER_COLOURS[i % PEER_COLOURS.length];
@@ -7490,7 +8065,7 @@ function renderFundPeerToggles(){
                  title="Toggle ${escapeAttr(label)} (${escapeAttr(p.ticker)}) on/off">
       <div class="pfsw" style="background:${color}"></div>
       <span class="pfnm">${escapeHtml(label)}</span>
-      <span class="pfsub">${escapeHtml(p.ticker)}</span>
+      <span class="pfsub">${escapeHtml(p.currency || '')}</span>
     </div>`;
   }).join('');
   if (note){
@@ -7579,7 +8154,11 @@ function renderPriceChart(days) {
   fPeers.forEach((p, i) => {
     if (!fPeersOn.has(p.ticker)) return;
     datasets.push({
-      label: p.ticker,
+      // Named the way the legend beside it names the same series: a
+      // tooltip reading "IE00B4L5Y983" or "IWDA.AS" made the reader
+      // match a code back to the row they had just clicked.
+      label: p.currency ? `${p.name || p.ticker} (${p.currency})`
+                        : (p.name || p.ticker),
       data: peerSeriesFor(p, labels, indexed),
       borderColor: PEER_COLOURS[i % PEER_COLOURS.length],
       backgroundColor: 'transparent',
@@ -7761,8 +8340,8 @@ function setFundCoverageBadge(elId, pct, mode, source, assertedFrom) {
 //
 // Every card reads data.fund_breakdowns — the unified four-facet block
 // built server-side by build_fund_breakdowns. Each facet is
-// {items:[{key,weight}], source:'yahoo'|'factsheet'|'holdings'|'upload',
-// available:{source: bool}}. The per-card breakdown-source override is
+// {items:[{key,weight}], source:'yahoo'|'factsheet'|'holdings'|'upload'
+// |'from_country' (currency only), available:{source: bool}}. The per-card breakdown-source override is
 // already baked into `source` and `items`; this renderer just draws
 // what it's given, plus the per-card control row (override toggle +,
 // for the country card, the Country/Region granularity toggle).
@@ -7838,6 +8417,27 @@ function fundScoreSub(data){
 
 // Populate the score map if the pre-loaded list hasn't already, then
 // redraw the tiles. Fire-and-forget: the page renders fine without it.
+// The header's quality block. Lazy and not awaited, exactly like the
+// score chip beside it: the pass reads every cached listing and builds
+// every fund's breakdown cards, and the header should not wait on it.
+// Repaints only if the user is still looking at the same fund — opening
+// a second fund while this is in flight must not stamp the first fund's
+// dots onto it.
+async function showFundQualityLazily(data){
+  const tk = ((data && data.ticker) || '').toUpperCase();
+  const box = document.getElementById('fquality');
+  if (!box) return;
+  if (!tk){ box.style.display = 'none'; return; }
+  try {
+    const q = await fetchQuality();
+    if (((lastFundData && lastFundData.ticker) || '').toUpperCase() !== tk) return;
+    const entry = q[tk];
+    if (!entry){ box.style.display = 'none'; return; }
+    box.innerHTML = qualityRowsHtml(entry);
+    box.style.display = '';
+  } catch(e){ console.warn('quality:', e); box.style.display = 'none'; }
+}
+
 async function showFundScoreLazily(data){
   const tk = ((data && data.ticker) || '').toUpperCase();
   if (!tk || cacheScores[tk]) return;
@@ -7884,13 +8484,17 @@ function _bkSourceCaption(src){
     }
     case 'holdings': return 'Fund-level data computed from this fund\u2019s own holdings';
     case 'upload':   return 'Fund-level data selected from an uploaded CSV';
+    case 'from_country':
+      return 'Fund-level data converted from this fund\u2019s country card';
     default:         return 'Fund-level data selected from Yahoo';
   }
 }
 
 function _bkSourceTitle(facet, src){
   const who = { factsheet: "this fund's factsheet", holdings: "the fund's own holdings",
-                upload: 'a CSV you uploaded', yahoo: 'Yahoo' }[src] || src;
+                upload: 'a CSV you uploaded', yahoo: 'Yahoo',
+                from_country: "the country card, converted country by country "
+                            + "to each country's primary currency" }[src] || src;
   return `The card's ${facet} data comes from ${who}. Saved per fund — every `
        + `portfolio holding it uses the same figures.`;
 }
@@ -8029,8 +8633,10 @@ async function setFundFacetComplete(facet, on) {
     renderFundBreakdowns(lastFundData);
 
     // The assertion changes what this fund contributes to the portfolio
-    // and to the optimiser, so the cached portfolio view is stale.
-    lastLoadedPid = '';
+    // and to the optimiser — and it is what the facet's dot reports, so
+    // the dot must move with it (a declared-complete card reads 100%,
+    // hollow rather than solid because it is asserted, not measured).
+    invalidateFundDerived();
     if (currentTab === 'portfolio') {
       reloadPortfolio(false).catch(e => console.warn('portfolio refresh:', e));
     }
@@ -8056,7 +8662,12 @@ function emptyCard(facet){
            levels_available_by_source: {},
            default_level: (facet === 'sector') ? 'sector'
                         : (facet === 'country') ? 'country' : facet,
-           source: 'yahoo', available: {yahoo:true}, unresolved: [] };
+           source: 'yahoo', available: {yahoo:true},
+           // The common four, struck through: this is a card with no
+           // data yet, not a facet with fewer sources. A facet's derived
+           // source is deliberately absent — the real block names it.
+           sources_applicable: ['yahoo','factsheet','holdings','upload'],
+           unresolved: [] };
 }
 
 function blockLevels(card){
@@ -8499,6 +9110,42 @@ function facetChainFromRow(row, facet){
   }));
 }
 
+// The node CURRENTLY IN FORCE for a facet, given a resolution chain
+// (v0.82.1).
+//
+// A facet value has two nodes behind it and they are routinely not the
+// same one. The MATCHED node is where the import resolved the source
+// text to. The CURRENT node is where the row actually sits afterwards,
+// once the import path has placed it deeper — `is_default` in the
+// resource files, and the other rules that run on import. What the user
+// wants to see, and to edit, is the second: where the import happened to
+// make contact is provenance, not the value.
+//
+// The chain is ordered finest-first (LEVELLED_FACETS), and a row leaves a
+// level blank where its tree does not reach, so the first entry carrying
+// a key IS the deepest level in force. "unknown" and "n/a" are guarded
+// against defensively — the backend strips them from a path, but a row
+// read straight from storage may still spell one out, and neither is a
+// node a picker should open on.
+function facetDeepestInChain(chain){
+  for (const e of (chain || [])) {
+    const k = String(e && e.key || '').trim();
+    if (k && k.toLowerCase() !== 'unknown' && k.toLowerCase() !== 'n/a') return k;
+  }
+  return '';
+}
+
+// The same question asked of a row rather than of a chain. Falls back to
+// the stated-node column, which is where an UNMATCHED value keeps its raw
+// source text: that row has no chain by construction, and the text has to
+// stay visible or the Resolve dialog is being asked to fix something it
+// cannot show.
+function facetCurrentNode(row, facet){
+  const deep = facetDeepestInChain(facetChainFromRow(row, facet));
+  if (deep) return deep;
+  return String((row && row[FACET_NODE_FIELD[facet]]) || '').trim();
+}
+
 // The facet tree behind one canonical node, read from the vocabulary
 // rather than from a row (v0.75.3).
 //
@@ -8541,35 +9188,486 @@ function facetChainFromNode(facet, key){
 // level, grouped by level, finest first. One dropdown per facet — the
 // user names a node and the backend completes the tree from it, so the
 // UI never has to decide which levels a choice implies.
-function facetNodeOptions(facet, current){
+// facetNodeOptions() lived here until v0.82.0. It built the flat
+// <option> list every facet picker used, grouped by level and labelled
+// `level-name`. It has no callers left: facetTreeHtml draws the same
+// vocabulary as the tree it actually is, and keeping a second builder
+// for the same list is how the two would come to disagree about what a
+// node is called. The behaviours it owned did not go away — the legacy
+// "not in the definitions file" row and the level tag on every node are
+// both carried by ftBodyHtml.
+
+// ── Facet tree picker (v0.82.0) ───────────────────────────────────────
+// One component behind every control that picks a canonical facet node,
+// replacing the flat <select> facetNodeOptions built. A flat list asked
+// the user to find "semiconductors" among 66 sector rows, or a country
+// among 250, with the level tag as the only clue to where a node sat —
+// and the tag named the level without naming the branch, so "sub-japan"
+// and "region-japan" read as two spellings of one thing rather than as a
+// country inside a region.
+//
+// The vocabulary IS a tree (config.py's FACET_LEVELS, finest first), so
+// the picker draws it as one. Structure comes from the backend's
+// `parent` and `path` fields — the browser arranges what it is given and
+// never works out which level a node belongs to, which is the rule that
+// keeps one authority over the shape of a facet.
+//
+// Behaviour, as specified by the user:
+//   * clicking a node EXPANDS it — clicking is navigation, never a
+//     choice, so exploring the tree can never change what is stored;
+//   * the checkbox is the only thing that selects;
+//   * ticking a node ticks its ANCESTORS too, because a claim about a
+//     sub-node is necessarily a claim about the branch holding it;
+//   * nothing below the ticked node is ever ticked. `is_default` in the
+//     resource files is an import-side rule for placing holdings whose
+//     source under-specifies them; it says nothing about what a user
+//     asserted, so this picker does not read it.
+//
+// One value at a time, as the <select> had: the ticked leaf-most node is
+// the assertion, and the ancestor ticks are shown in a derived style so
+// the level actually asserted stays legible — invariant 1 keeps the whole
+// tree PLUS the stated level, and a picker that drew the two identically
+// would hide the half that matters.
+// The tree body's height cap, in pixels. One number so every mount of the
+// picker is the same control; it must match the .ftree-body max-height in
+// the stylesheet, which is the pre-measurement fallback for the same box.
+const FT_PANEL_MAX_H = 190;
+const FT_STATE = {};        // id -> {facet, expanded:Set, filter, extras, onchange}
+let _ftIndexSrc  = null;    // RES_FACET_NODES identity this index was built from
+let _ftIndexes   = {};
+
+// Index one facet's vocabulary as a forest. Memoised against the
+// vocabulary OBJECT, matching ufCanonicalSet: loadHoldingClassResources
+// swaps RES_FACET_NODES wholesale, so identity is the invalidation signal
+// and a resource-file edit cannot leave a stale tree behind.
+// A node's identity is (level, key), NOT the key alone. The country facet
+// proves why: `japan` is both a country and a region, so a key-keyed index
+// collapsed the two into one entry AND gave that entry itself as a parent
+// — a self-loop that made the tree walker recurse until it threw, taking
+// the whole country picker down with it. It is also what the rest of the
+// codebase already says: a facet value is a claim AT a level.
+const FT_SEP = '\u001f';
+function ftId(level, key){ return String(level) + FT_SEP + String(key); }
+
+// Index one facet's vocabulary as a forest, keyed by node id. Memoised
+// against the vocabulary OBJECT, matching ufCanonicalSet:
+// loadHoldingClassResources swaps RES_FACET_NODES wholesale, so identity
+// is the invalidation signal and a resource-file edit cannot leave a
+// stale tree behind.
+function ftIndex(facet){
+  if (_ftIndexSrc !== RES_FACET_NODES){ _ftIndexSrc = RES_FACET_NODES; _ftIndexes = {}; }
+  if (_ftIndexes[facet]) return _ftIndexes[facet];
   const blk = (RES_FACET_NODES || {})[facet];
-  if (!blk) return null;                       // not loaded yet
-  const cur = String(current || '').trim().toLowerCase();
-  let matched = false;
-  // `level-name`, e.g. `sub-money market`. Inline rather than optgroups
-  // so every facet dropdown in the app — upload defaults, the Resolve
-  // dialog, the holdings editor — reads identically. Three
-  // presentations of one list is what made the two Resolve tabs look
-  // like different features.
-  const opts = (blk.levels || []).map(lv =>
-    (blk.targets || [])
-      .filter(t => t.level === lv)
-      .map(t => {
-        const on = String(t.key).toLowerCase() === cur;
-        if (on) matched = true;
-        const lbl = `${String(LEVEL_LABELS[lv] || lv).toLowerCase()}-${t.key}`;
-        return `<option value="${escapeAttr(t.key)}"${on ? ' selected' : ''}>`
-             + `${escapeHtml(lbl)}</option>`;
-      }).join('')
-  ).join('');
-  // A stored value the file no longer contains is shown rather than
-  // silently dropped — the user cannot fix what they cannot see. It
-  // sits first so it is the visible selection.
-  const legacy = (cur && !matched)
-    ? `<option value="${escapeAttr(current)}" selected style="color:var(--red)">`
-      + `⚠ ${escapeHtml(current)} (not in the definitions file)</option>`
-    : '';
-  return `<option value=""></option>` + legacy + opts;
+  if (!blk) return null;
+  const levels = blk.levels || [];
+  const byId = {}, children = {}, roots = [];
+  for (const t of (blk.targets || [])) byId[ftId(t.level, t.key)] = t;
+  for (const t of (blk.targets || [])){
+    // The backend fills `parent` from the level exactly one step coarser,
+    // so that is where to look for it. Resolving by key alone is what
+    // produced the self-loop.
+    const li  = levels.indexOf(t.level);
+    const pl  = (li >= 0 && li + 1 < levels.length) ? levels[li + 1] : null;
+    const pid = (t.parent && pl) ? ftId(pl, t.parent) : null;
+    const id  = ftId(t.level, t.key);
+    if (pid && pid !== id && byId[pid]) (children[pid] = children[pid] || []).push(id);
+    else roots.push(id);
+  }
+  const bylabel = (a, b) => String(byId[a].label || byId[a].key)
+    .localeCompare(String(byId[b].label || byId[b].key));
+  roots.sort(bylabel);
+  for (const k of Object.keys(children)) children[k].sort(bylabel);
+  return (_ftIndexes[facet] = { byId, children, roots, levels });
+}
+
+// Ancestor ids above `id`, nearest first. Walked through `parent` rather
+// than read off `path`, so a node whose tree stops short (a region with no
+// super-region) yields the ancestors it actually has. The `seen` guard
+// keeps a malformed vocabulary from hanging the page.
+function ftAncestorIds(facet, id){
+  const idx = ftIndex(facet);
+  const out = [];
+  if (!idx) return out;
+  const levels = idx.levels;
+  let cur = idx.byId[id];
+  const seen = new Set([id]);
+  while (cur && cur.parent){
+    const li = levels.indexOf(cur.level);
+    const pl = (li >= 0 && li + 1 < levels.length) ? levels[li + 1] : null;
+    if (!pl) break;
+    const pid = ftId(pl, cur.parent);
+    if (seen.has(pid) || !idx.byId[pid]) break;
+    seen.add(pid);
+    out.push(pid);
+    cur = idx.byId[pid];
+  }
+  return out;
+}
+
+// The id of the node a stored VALUE refers to. The value is a bare key, so
+// a key living at two levels is genuinely ambiguous in storage; the
+// deepest is chosen, matching how the rest of the app reads a facet — the
+// current lowest-level node, never the coarser reading.
+function ftIdForValue(facet, value){
+  const idx = ftIndex(facet);
+  const v = String(value || '').trim().toLowerCase();
+  if (!idx || !v) return '';
+  for (const lv of idx.levels){          // finest first
+    for (const id of Object.keys(idx.byId)){
+      const t = idx.byId[id];
+      if (t.level === lv && String(t.key).toLowerCase() === v) return id;
+    }
+  }
+  return '';
+}
+
+function ftNodeLabel(facet, id){
+  const idx = ftIndex(facet);
+  const t = idx && idx.byId[id];
+  return t ? (t.label || t.key) : id;
+}
+function ftLevelLabel(facet, id){
+  const idx = ftIndex(facet);
+  const t = idx && idx.byId[id];
+  return t ? String(LEVEL_LABELS[t.level] || t.level).toLowerCase() : '';
+}
+
+// What the closed control reads. Named for the node, with its level, so
+// the trigger says the same thing the ticked row does.
+function ftTriggerLabel(id){
+  const st = FT_STATE[id];
+  if (!st) return '';
+  const v = ftValue(id);
+  if (!v) return st.placeholder || '— none —';
+  const extra = (st.extras || []).find(e => e.value === v);
+  if (extra) return extra.label;
+  const nid = ftIdForValue(st.facet, v);
+  if (!nid) return `⚠ ${v} (not in the definitions file)`;
+  return `${ftNodeLabel(st.facet, nid)} · ${ftLevelLabel(st.facet, nid)}`;
+}
+
+function ftValue(id){
+  const el = document.getElementById(id);
+  return el ? el.value : '';
+}
+
+// Build one picker. The hidden input keeps the caller's element id and
+// carries the value, so every existing read (`sel.value`, `this.value`
+// from an inline handler) goes on working against the same id it always
+// did — the control changed, not its contract.
+//
+// opts: {id, facet, value, placeholder, extras[], onchange, filterFn}
+//   extras   rows above the tree that are not vocabulary nodes ("no
+//            default", "clear this facet"). They were <option>s in the
+//            head of the old select and are answers of the same kind, so
+//            they stay in the same list rather than becoming buttons.
+//   filterFn narrows which nodes are offered (the cash table wants only
+//            the cash-ish branches). Ancestors of a kept node are kept
+//            regardless, or the survivors would have no branch to hang
+//            from.
+function facetTreeHtml(opts){
+  const id = opts.id;
+  FT_STATE[id] = {
+    facet:       opts.facet,
+    expanded:    new Set(),
+    filter:      '',
+    extras:      opts.extras || [],
+    placeholder: opts.placeholder || '— none —',
+    onchange:    opts.onchange || '',
+    filterFn:    opts.filterFn || null,
+  };
+  const val = opts.value || '';
+  // Open the branch the current value sits in, so a picker that starts on
+  // a value shows it rather than making the user find it again.
+  const seedId = ftIdForValue(opts.facet, val);
+  if (seedId) for (const a of ftAncestorIds(opts.facet, seedId)) FT_STATE[id].expanded.add(a);
+  return `<div class="ftree" id="${escapeAttr(id)}_wrap">
+    <input type="hidden" id="${escapeAttr(id)}" value="${escapeAttr(val)}">
+    <button type="button" class="ftree-trig" id="${escapeAttr(id)}_trig"
+            onclick="ftToggleOpen('${escapeAttr(id)}')">
+      <span class="ftree-trig-lbl" id="${escapeAttr(id)}_lbl"></span>
+      <span class="ftree-caret">▾</span>
+    </button>
+    <div class="ftree-panel" id="${escapeAttr(id)}_panel" style="display:none">
+      <input type="text" class="ftree-search" id="${escapeAttr(id)}_q"
+             placeholder="filter…" autocomplete="off"
+             oninput="ftOnFilter('${escapeAttr(id)}', this.value)">
+      <div class="ftree-body" id="${escapeAttr(id)}_body"></div>
+    </div>
+  </div>`;
+}
+
+// Draw (or redraw) a picker's trigger label and tree body. Called after
+// the markup lands in the DOM, and after every change, so one function
+// owns what the control looks like in every state.
+function ftPaint(id){
+  const st = FT_STATE[id];
+  if (!st) return;
+  const lbl = document.getElementById(id + '_lbl');
+  const body = document.getElementById(id + '_body');
+  if (lbl){
+    const v = ftValue(id);
+    lbl.textContent = ftTriggerLabel(id);
+    lbl.className = 'ftree-trig-lbl' + (v ? ' ft-set' : ' ft-empty');
+  }
+  // Guarded: a vocabulary that cannot be walked must not leave the control
+  // half-rendered. Before v0.82.5 the country tree threw partway through
+  // this call (see the `japan` self-loop), which skipped ftPosition and
+  // left an unsized, unplaced panel that read as a layout bug rather than
+  // as the crash it was. A failure now says so, on screen and in the
+  // console, and the rest of the control still paints.
+  if (body){
+    try {
+      body.innerHTML = ftBodyHtml(id);
+    } catch (e){
+      console.error('[facet tree] could not render', st && st.facet, e);
+      body.innerHTML = `<div class="ftree-empty" style="color:var(--red)">`
+        + `could not draw this vocabulary — see the console</div>`;
+    }
+  }
+  ftPosition(id);
+}
+
+function ftBodyHtml(id){
+  const st  = FT_STATE[id];
+  const idx = ftIndex(st.facet);
+  if (!idx) return `<div class="ftree-empty">vocabulary still loading…</div>`;
+  const val   = ftValue(id);
+  const selId = ftIdForValue(st.facet, val);
+  const anc   = new Set(selId ? ftAncestorIds(st.facet, selId) : []);
+  const q     = (st.filter || '').trim().toLowerCase();
+
+  // Which nodes survive the caller's filter and the search box.
+  //
+  // A match keeps ITSELF and its ANCESTORS — the ancestors only so the
+  // branch is drawable. It deliberately does NOT keep its descendants:
+  // doing so meant typing a letter that happened to match a root ("d" ->
+  // "developed") pulled that root's entire subtree back in, so the list
+  // never appeared to narrow. Filtering should remove things.
+  let keep = null;
+  if (q || st.filterFn){
+    keep = new Set();
+    for (const nid of Object.keys(idx.byId)){
+      const t = idx.byId[nid];
+      if (st.filterFn && !st.filterFn(t)) continue;
+      if (q){
+        const hay = `${t.label || ''} ${t.key || ''}`.toLowerCase();
+        if (!hay.includes(q)) continue;
+      }
+      keep.add(nid);
+      for (const a of ftAncestorIds(st.facet, nid)) keep.add(a);
+    }
+  }
+
+  const rows = [];
+
+  // A stored value the definitions file no longer contains is shown rather
+  // than dropped — the user cannot fix what they cannot see.
+  if (val && !selId && !(st.extras || []).some(e => e.value === val)){
+    rows.push(`<div class="ftree-row ft-legacy" style="padding-left:6px">
+      <span class="ftree-box ft-on">✓</span>
+      <span class="ftree-nm">⚠ ${escapeHtml(val)} (not in the definitions file)</span>
+    </div>`);
+  }
+
+  for (const e of (st.extras || [])){
+    const on = val === e.value;
+    rows.push(`<div class="ftree-row ft-extra${on ? ' ft-sel' : ''}" style="padding-left:6px"
+         onclick="ftPickValue('${escapeAttr(id)}', ${JSON.stringify(e.value)
+           .replace(/"/g,'&quot;')})">
+      <span class="ftree-box${on ? ' ft-on' : ''}">${on ? '✓' : ''}</span>
+      <span class="ftree-nm">${escapeHtml(e.label)}</span>
+    </div>`);
+  }
+
+  const seen = new Set();          // cycle guard: never walk a node twice
+  const walk = (nid, depth) => {
+    if (keep && !keep.has(nid)) return;
+    if (seen.has(nid)) return;
+    seen.add(nid);
+    const kids  = (idx.children[nid] || []).filter(k => !keep || keep.has(k));
+    // While filtering, open every surviving branch: a match three levels
+    // down is useless if the user still has to find it.
+    const open  = q ? true : st.expanded.has(nid);
+    const isSel = selId === nid;
+    const isAnc = anc.has(nid);
+    const cls = 'ftree-row' + (isSel ? ' ft-sel' : '') + (isAnc ? ' ft-anc' : '');
+    const caret = kids.length
+      ? `<span class="ftree-car${open ? ' ft-open' : ''}">▸</span>`
+      : `<span class="ftree-car ft-none"></span>`;
+    const mark   = (isSel || isAnc) ? '✓' : '';
+    const boxCls = 'ftree-box' + (isSel ? ' ft-on' : (isAnc ? ' ft-derived' : ''));
+    const boxTip = isSel ? 'Selected — this is the level being asserted'
+                 : isAnc ? 'Selected automatically: it contains the node you picked'
+                         : 'Select this node';
+    const jid = JSON.stringify(nid).replace(/"/g,'&quot;');
+    rows.push(`<div class="${cls}" style="padding-left:${6 + depth * 11}px">
+      <span class="ftree-hit" onclick="ftToggleExpand('${escapeAttr(id)}', ${jid})"
+            title="${kids.length ? 'Click to expand' : 'No sub-nodes'}">${caret}</span>
+      <span class="${boxCls}" title="${escapeAttr(boxTip)}"
+            onclick="event.stopPropagation(); ftPick('${escapeAttr(id)}', ${jid})">${mark}</span>
+      <span class="ftree-nm" onclick="ftToggleExpand('${escapeAttr(id)}', ${jid})"
+            title="${escapeAttr(ftNodeLabel(st.facet, nid))}">
+        ${escapeHtml(ftNodeLabel(st.facet, nid))}
+        <span class="ftree-lv">${escapeHtml(ftLevelLabel(st.facet, nid))}</span>
+      </span>
+    </div>`);
+    if (open) for (const k of kids) walk(k, depth + 1);
+  };
+  for (const r of idx.roots) walk(r, 0);
+
+  if (!rows.length) return `<div class="ftree-empty">nothing matches that filter</div>`;
+  return rows.join('');
+}
+
+// ── Interactions ──────────────────────────────────────────────────────
+// Clicking a node expands it and nothing else. Kept separate from ftPick
+// so that "I am looking" and "I am choosing" cannot be the same gesture:
+// a picker where browsing writes a value is one where a value gets
+// written by accident.
+function ftToggleExpand(id, nid){
+  const st = FT_STATE[id];
+  if (!st) return;
+  const idx = ftIndex(st.facet);
+  if (!idx || !(idx.children[nid] || []).length) return;   // leaf: nothing to open
+  if (st.expanded.has(nid)) st.expanded.delete(nid); else st.expanded.add(nid);
+  ftPaint(id);
+}
+
+// The checkbox — the only thing that selects. One value at a time, so a
+// pick replaces whatever was ticked; ticking what is already ticked
+// clears it, which is how a user says "no value" without hunting for a
+// placeholder row.
+//
+// Ancestors are not written anywhere: they are DRAWN as ticked by
+// ftBodyHtml from the parent chain. Storing them would be storing a
+// derived fact, and the level actually asserted is exactly what the one
+// stored value has to keep saying.
+// Tick a vocabulary node. `nid` is a node id; what gets STORED is its bare
+// key, which is the value shape every reader of this control already
+// expects.
+function ftPick(id, nid){
+  const st  = FT_STATE[id];
+  const idx = st && ftIndex(st.facet);
+  const t   = idx && idx.byId[nid];
+  if (!t) return;
+  ftPickValue(id, t.key);
+}
+
+// Set a raw value — a node's key, or one of the `extras` sentinels.
+function ftPickValue(id, key){
+  const st = FT_STATE[id];
+  if (!st) return;
+  const el = document.getElementById(id);
+  if (!el) return;
+  const next = (el.value === key) ? '' : key;
+  el.value = next;
+  const nid = ftIdForValue(st.facet, next);
+  if (nid) for (const a of ftAncestorIds(st.facet, nid)) st.expanded.add(a);
+  ftPaint(id);
+  // Fire a real change event so inline `onchange="…(this.value)"`
+  // handlers written for the <select> keep working untouched.
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  if (typeof st.onchange === 'function') st.onchange(next);
+  ftClose(id);
+}
+
+function ftOnFilter(id, text){
+  const st = FT_STATE[id];
+  if (!st) return;
+  st.filter = text || '';
+  const body = document.getElementById(id + '_body');
+  if (body) body.innerHTML = ftBodyHtml(id);
+  ftPosition(id);
+}
+
+function ftToggleOpen(id){
+  const panel = document.getElementById(id + '_panel');
+  if (!panel) return;
+  const show = panel.style.display === 'none';
+  ftCloseAll();
+  if (!show) return;
+  panel.style.display = '';
+  ftPaint(id);
+  const q = document.getElementById(id + '_q');
+  if (q){ q.value = FT_STATE[id] ? FT_STATE[id].filter : ''; q.focus(); }
+}
+
+// Size and place an open panel against the viewport (v0.82.1).
+//
+// The body scrolls already, so no amount of expanding puts a node out of
+// reach — but a trigger sitting low in a dialog leaves very little room
+// beneath it, and a panel anchored below it opened past the bottom of the
+// screen. So the body's height is taken from the room actually available,
+// and the panel flips above its trigger when there is more space there.
+//
+// Measured against the VIEWPORT (getBoundingClientRect), not the dialog:
+// the modal scrolls inside a fixed backdrop, so viewport coordinates are
+// what "off the screen" actually means here.
+function ftPosition(id){
+  const panel = document.getElementById(id + '_panel');
+  const trig  = document.getElementById(id + '_trig');
+  const body  = document.getElementById(id + '_body');
+  if (!panel || !trig || !body || panel.style.display === 'none') return;
+  // MAX is a CAP, never a target: the panel is the same height wherever it
+  // is mounted, and the measurement below only shrinks it when the room
+  // under (or over) the trigger is tighter than that. Without the cap the
+  // Resolve popover — which sits mid-screen with plenty of space beneath —
+  // grew a panel two-and-a-half times the one the holdings editor showed
+  // for the same facet, from the same component.
+  const GAP = 10, MIN = 130, MAX = FT_PANEL_MAX_H;
+  const CHROME = 46;          // filter box + the panel's own padding
+  const r     = trig.getBoundingClientRect();
+  const below = window.innerHeight - r.bottom - GAP;
+  const above = r.top - GAP;
+  // Flip only when below is genuinely tight AND above is roomier. Opening
+  // downwards is what a dropdown is expected to do, so it stays default.
+  const up = (below < MIN) && (above > below);
+  panel.classList.toggle('ft-up', up);
+  const room = Math.max(MIN, (up ? above : below) - CHROME);
+  body.style.maxHeight = Math.min(MAX, room) + 'px';
+}
+
+function ftClose(id){
+  const panel = document.getElementById(id + '_panel');
+  if (panel){ panel.style.display = 'none'; panel.classList.remove('ft-up'); }
+}
+
+function ftCloseAll(){
+  for (const id of Object.keys(FT_STATE)) ftClose(id);
+}
+
+// A click anywhere outside an open picker closes it, matching how the
+// other popovers in the app behave.
+document.addEventListener('click', (e) => {
+  for (const id of Object.keys(FT_STATE)){
+    const wrap  = document.getElementById(id + '_wrap');
+    const panel = document.getElementById(id + '_panel');
+    if (!wrap || !panel || panel.style.display === 'none') continue;
+    if (!wrap.contains(e.target)) ftClose(id);
+  }
+}, true);
+
+// An open panel is measured against the viewport, so anything that moves
+// the trigger — resizing, or scrolling the dialog it sits in — has to
+// re-measure. Capture phase so it fires for the modal backdrop's own
+// scrolling, which does not bubble to window.
+function ftRepositionOpen(){
+  for (const id of Object.keys(FT_STATE)){
+    const panel = document.getElementById(id + '_panel');
+    if (panel && panel.style.display !== 'none') ftPosition(id);
+  }
+}
+window.addEventListener('resize', ftRepositionOpen);
+window.addEventListener('scroll', ftRepositionOpen, true);
+
+// Install a picker into a container and paint it. The two-step (build
+// markup, then paint) exists because the trigger label and the tree body
+// both need the element to be in the DOM to read its value back.
+function ftMount(containerEl, opts){
+  if (!containerEl) return;
+  containerEl.innerHTML = facetTreeHtml(opts);
+  ftPaint(opts.id);
 }
 
 // One source-selector segment, drawn the same way wherever a source is
@@ -8714,9 +9812,9 @@ async function setFundHoldingsSource(source) {
     renderHoldingsTileState(lastFundData);
     renderFundBreakdowns(lastFundData);
 
-    // The fund’s look-through feeds the active portfolio, so the
-    // cached portfolio view is stale the moment this changes.
-    lastLoadedPid = '';
+    // The fund’s look-through feeds the active portfolio and every
+    // facet's coverage, so both are stale the moment this changes.
+    invalidateFundDerived();
     if (currentTab === 'portfolio') {
       reloadPortfolio(false).catch(e => console.warn('portfolio refresh:', e));
     }
@@ -8755,7 +9853,8 @@ function renderFundCardControls(data, facet, card) {
   const identified = levelItems(card, card.default_level)
     .some(it => it.key !== 'unknown');
   const nudge = !identified
-             && !['factsheet', 'holdings', 'upload'].some(k => avail[k]);
+             && !['factsheet', 'holdings', 'upload', 'from_country']
+                  .some(k => avail[k]);
 
   // Four sources, built from what the card says is available rather than
   // a hardcoded list — so adding a fifth is a backend change only. Both
@@ -8773,10 +9872,41 @@ function renderFundCardControls(data, facet, card) {
     { key:'upload',    label:'Upload',
       tip:`Use the user-uploaded ${facet} breakdown for this fund.`,
       none:`No CSV covering ${facet} for this fund — use the "upload CSV" button beside these options.` },
+    // Currency only, and the BACKEND decides that: the button is listed
+    // for every card and `available` strikes it through on the three
+    // that have no derivation registered — the same mechanism that
+    // disables "Upload" on a facet no CSV covered. Nothing here tests
+    // the facet name, so a second derived pair would be a backend
+    // change only, as the comment above this list promises.
+    { key:'from_country', label:'From country',
+      tip:`Convert this fund's country card into ${facet}, country by country, `
+        + `using each country's primary currency. It follows the country card: `
+        + `an unknown slice there stays unknown here, and marking THAT card `
+        + `coverage-complete marks this one complete too.`,
+      none:`This fund's country card identifies nothing, so there is `
+        + `nothing to convert.` },
   ];
+  // Two different questions, two different fields, and the button is
+  // drawn only when the first says yes:
+  //
+  //   sources_applicable — does this SOURCE exist for this FACET at all?
+  //     A source that does not is left out entirely. Showing "From
+  //     country" struck through on the sector card would promise a
+  //     sector split derivable from geography, and there is none — a
+  //     disabled button means "you could have this", which is true of a
+  //     missing factsheet and never true of this.
+  //   available — does THIS FUND have it? Applicable but absent is where
+  //     the struck-through button belongs, since uploading a factsheet
+  //     or a CSV is exactly what fills it.
+  //
+  // The list comes from the backend registry, so the card the button
+  // appears on is decided in one place and not by a facet test here.
+  const applicable = card.sources_applicable
+                  || SRC_BTNS.map(b => b.key);   // pre-0.86.0 payload
   // Yahoo is always selectable: it is the one source every fund has.
   const btns = srcSegHtml(
-    SRC_BTNS.map(b => Object.assign({}, b, {
+    SRC_BTNS.filter(b => applicable.includes(b.key))
+            .map(b => Object.assign({}, b, {
       has: b.key === 'yahoo' ? true : !!avail[b.key],
       tip: `${b.tip} Saved per fund, applies in every portfolio that holds it.`,
     })),
@@ -8820,7 +9950,20 @@ function renderFundCardControls(data, facet, card) {
   const idPct    = ((card.identified || {})[effectiveLevel(facet, card)]);
   const unkPct   = unknownPctOf(lvlItems);
   const hasBase  = lvlItems.some(it => !isResidual(it.key) && (it.weight || 0) > 0);
-  if ((unkPct > 0 || already) && hasBase) {
+  // Completeness INHERITED from the card this one is derived from. The
+  // card is complete, but the control that withdraws the assertion is on
+  // the other card, so this one shows the state and points at it rather
+  // than offering a tick box whose untick would do nothing.
+  const inherited = card.completed_from;
+  if (inherited && hasBase) {
+    parts.push(`<label class="bkctl-chk" title="${escapeAttr(
+        `This card is derived from the ${inherited} card, which you have marked `
+        + `coverage-complete — so this one is complete too, and reads as fully `
+        + `describing the fund everywhere its data is used. Untick it on the `
+        + `${inherited} card to withdraw both.`)}">`
+      + `<input type="checkbox" checked disabled>`
+      + `coverage complete (from ${escapeHtml(inherited)})</label>`);
+  } else if ((unkPct > 0 || already) && hasBase) {
     const gapPct = already && idPct != null
       ? (1 - idPct) * 100
       : unkPct;
@@ -8831,7 +9974,9 @@ function renderFundCardControls(data, facet, card) {
         + `Saved with the fund and used everywhere its facet data is — the `
         + `portfolio X-ray, the target deviations and the optimiser, which can `
         + `do nothing with an "unknown" slice. Untick to go back to reporting `
-        + `only what is actually identified.`)}">`
+        + `only what is actually identified.\n\n`
+        + `This facet's quality dot then reads 100% but HOLLOW: the coverage `
+        + `is declared by you, not counted from holdings.`)}">`
       + `<input type="checkbox"${already ? ' checked' : ''} `
       + `onchange="setFundFacetComplete('${facet}', this.checked)">`
       + `coverage complete${already ? '' : ` (+${gapPct.toFixed(1)}%)`}</label>`);
@@ -8956,12 +10101,11 @@ async function setFundCardSource(facet, source) {
     renderFundCardControls(lastFundData, facet,
       (lastFundData.fund_breakdowns || {})[facet]
         || emptyCard(facet));
-    // The breakdown-source override also feeds the portfolio's
-    // country/sector X-ray rollup, so any cached portfolio view is now
-    // stale — invalidate it (same lever the edit-fund and holdings
-    // saves use). If the Portfolio tab is showing this portfolio,
-    // refresh it in place.
-    lastLoadedPid = '';
+    // The breakdown-source override feeds the portfolio's X-ray rollup
+    // AND this facet's coverage, so the dots move with it — same lever
+    // the edit-fund and holdings saves use. If the Portfolio tab is
+    // showing this portfolio, refresh it in place.
+    invalidateFundDerived();
     if (currentTab === 'portfolio'){
       reloadPortfolio(false).catch(e => console.warn('portfolio refresh:', e));
     }
@@ -9025,7 +10169,23 @@ async function reloadCurrentFund(forceRefresh=false){
   const params = fundIdentityParams(lastFundData);
   if (activePid) params.set('portfolio', activePid);
   if (forceRefresh) params.set('refresh', '1');
-  // Wipe the panels so stale tiles don't sit on-screen during the fetch.
+  // A reload is "re-read the fund I am already looking at", so the
+  // user's place on the page is theirs to keep — and this is the one
+  // re-render that cannot keep it by itself. clearFundView() hides every
+  // panel so no stale tile shows during the fetch, which collapses the
+  // document to the empty-state placeholder; the browser clamps the
+  // scroll to the top there and then, and by the time the fund is drawn
+  // again the position is gone. Editing a facet on holdings row 80 and
+  // being returned to the fund's name is the shape that reaches the
+  // user, but every caller had it — the resource reload, the Resolve
+  // dialog, the Edit-fund save.
+  //
+  // Snapshot before the collapse, restore once the page has its height
+  // back. Same lever the portfolio tab and the two lists already use, so
+  // "a re-render keeps your place" means one thing everywhere; putting
+  // it here rather than at the eleven call sites is what keeps it true
+  // for the next caller as well.
+  const snap = _snapshotScroll();
   clearFundView();
   setStatus('spin', `Reloading…`);
   try {
@@ -9036,6 +10196,12 @@ async function reloadCurrentFund(forceRefresh=false){
     return true;
   } catch(e){
     return false;
+  } finally {
+    // Settling rather than a single restore: renderLoadedFund returns
+    // before the page is its full height again — the group tiles wait on
+    // the field taxonomy, the header's quality block on its own fetch —
+    // so one restore is clamped against a document that is still short.
+    _restoreScrollSettling(snap);
   }
 }
 
@@ -9061,6 +10227,12 @@ function openBdUploadModal(facet) {
   if (bdSrc) bdSrc.value = '';
   _bdUploadState = {
     originFacet:    facet || '',
+    // What the Source field said at preview time, echoed back on commit
+    // so the server can remember it. Held from preview rather than read
+    // at commit because the resolution stage may take a while and the
+    // field is the user's to change in the meantime.
+    source:         '',
+    sourceName:     '',
     token:          null,
     inlineAccepted: null,
     unresolvedFacets: [],
@@ -9091,6 +10263,10 @@ function openBdUploadModal(facet) {
   document.getElementById('bdUploadCommitBtn').style.display = 'none';
   document.getElementById('bdUploadCommitBtn').disabled = true;
   document.getElementById('bdUploadModal').classList.add('show');
+
+  // Same remembered-source prefill as the holdings and factsheet
+  // dialogs — see prefillUploadSource().
+  prefillUploadSource('breakdown_csv', 'bdSourceInput', 'bdSourceLastUsed');
 }
 
 function bdUploadClose() {
@@ -9115,6 +10291,9 @@ async function bdUploadPreview() {
   if (!_bdUploadState || !lastFundData) return;
   const source = readSource('bdSourceInput');
   if (!source) return;
+  _bdUploadState.source     = source;
+  _bdUploadState.sourceName =
+    (document.getElementById('bdSourceInput').value || '').trim();
   const errEl  = document.getElementById('bdUploadErr');
   const btnEl  = document.getElementById('bdUploadPreviewBtn');
   errEl.style.display = 'none';
@@ -9336,6 +10515,10 @@ async function bdUploadCommit() {
   const body = _bdUploadState.token
     ? { token: _bdUploadState.token, facet_map, key_map }
     : { accepted: _bdUploadState.inlineAccepted };
+  // Where the CSV came from, remembered on the server once the commit
+  // succeeds — the same memory the holdings and factsheet uploads keep.
+  body.source   = _bdUploadState.source || '';
+  body.filename = _bdUploadState.sourceName || '';
 
   try {
     const url = `${API}/funds/${encodeURIComponent(lastFundData.ticker)}/uploaded_breakdowns/commit`;
@@ -9395,10 +10578,11 @@ async function bdUploadCommit() {
   }
 }
 
-// Invalidate any cached portfolio view — the X-ray rollup consumes
-// fund_breakdowns, so changing a card's source makes it stale.
+// Invalidate everything computed from fund_breakdowns — the X-ray
+// rollup and the quality dots both consume them, so an upload that
+// changes a card changes both.
 function bdUploadInvalidatePortfolio(){
-  lastLoadedPid = '';
+  invalidateFundDerived();
   if (currentTab === 'portfolio'){
     reloadPortfolio(false).catch(e => console.warn('portfolio refresh:', e));
   }
@@ -9478,8 +10662,9 @@ async function removeUploadedBreakdown(facet) {
     }
     renderFundBreakdowns(lastFundData);
     setStatus('ok', `Removed uploaded ${facet} data`);
-    // Same portfolio-cache invalidation as setFundCardSource.
-    lastLoadedPid = '';
+    // Same invalidation as setFundCardSource: the card falls back to
+    // another source, with another source's coverage.
+    invalidateFundDerived();
     if (currentTab === 'portfolio'){
       reloadPortfolio(false).catch(e => console.warn('portfolio refresh:', e));
     }
@@ -9854,7 +11039,7 @@ function fhTh(key, label, opts) {
   // is the same rule the by-row tab follows, and the reason its
   // sub_class column is not separately editable.
   const editBtn = opts.edit
-    ? `<button type="button" class="btn btn-s fhedit"
+    ? `<button type="button" class="btn btn-s fhedit" id="fhedit-${opts.edit}"
                style="font-size:.6rem;padding:1px 6px;margin-left:4px"
                onclick="event.stopPropagation(); fhOpenEditPopover('${opts.edit}', event)"
                title="Edit ${escapeAttr(label)} on the selected row(s)">edit</button>`
@@ -9954,6 +11139,9 @@ let editingHoldingRowId = null;
 // for any value that doesn't exist in the canonical taxonomy
 // (legacy rows from before strict resolution), so the value isn't
 // silently dropped from the UI.
+// The pickers' values at the moment the editor opened, so Save can tell
+// which facets the user actually moved. See saveHoldingEditor.
+let editorOpenedValues  = { asset_class:'', sector:'', country:'', currency:'' };
 let editorPendingValues = { asset_class:'', sector:'', country:'', currency:'' };
 
 // ── Bulk edit on the fund holdings table (v0.74.0) ────────────────────
@@ -10027,6 +11215,40 @@ function fhSyncSelectionUi(){
     const n = s.selected.size;
     note.textContent = n ? `${n} selected` : '';
   }
+  fhSyncEnrichLabel();
+}
+
+// The Enrich button acts on the ticked rows and ONLY on the ticked rows,
+// so with nothing ticked there is nothing for it to do and it is
+// disabled rather than quietly falling back to the whole list. An empty
+// selection is not shorthand for "all": on a fund of a few thousand
+// holdings that reading turns a mis-click into minutes of Yahoo calls,
+// and it makes the same button mean two different things depending on a
+// state elsewhere on the screen. Every other bulk control in the table
+// reads the ticks the same way.
+//
+// The label carries the count for the same reason — a button reading
+// "Enrich through Yahoo" above a table with four rows ticked does not
+// say which of the two things it is about to do. Called from every place
+// the selection changes, and after a re-render, exactly as the count
+// note in the filter strip is.
+let _hEnrichBusy = false;
+
+function fhSyncEnrichLabel(){
+  const btn = document.getElementById('hEnrichBtn');
+  if (!btn || _hEnrichBusy) return;   // mid-run; the label says "Enriching…"
+  const n = (fullHoldingsState.selected || new Set()).size;
+  btn.disabled    = !n;
+  btn.textContent = n
+    ? `↻ Enrich ${n} selected through Yahoo`
+    : '↻ Enrich through Yahoo';
+  btn.title = n
+    ? `Look up the ${n} ticked holding${n === 1 ? '' : 's'} on Yahoo and fill `
+      + `their blank facets (country, currency, sector, …). Never overwrites a `
+      + `value already on the row, or a facet you have edited. Which fields get `
+      + `filled is configured in Settings.`
+    : `Tick the rows you want enriched first — this button acts on the `
+      + `selection, never on the whole list.`;
 }
 
 // ── One by-row edit context, shared by both surfaces (v0.76.1) ──────
@@ -10194,11 +11416,11 @@ function fhOpenEditPopover(facet, evt){
       setStatus('ok', ctx.unpinned
         ? 'Rows follow their source again.'
         : `Applied: ${d.rows_written} row${d.rows_written === 1 ? '' : 's'} written.`);
-      // The rollup feeds this fund's breakdown cards and every portfolio
-      // holding it, so neither may be left showing pre-edit numbers.
-      // True of an unpin as much as of a write: both change what the
-      // rows resolve to.
-      lastLoadedPid = '';
+      // The rollup feeds this fund's breakdown cards, its coverage dots
+      // and every portfolio holding it, so none may be left showing
+      // pre-edit numbers. True of an unpin as much as of a write: both
+      // change what the rows resolve to.
+      invalidateFundDerived();
       await reloadCurrentFund(false).catch(() => {});
     },
   }), evt);
@@ -10227,17 +11449,36 @@ function openHoldingEditor(rowId){
   document.getElementById('heMaturity').value      = row.maturity || '';
   document.getElementById('heEffectiveDate').value = row.effective_date || '';
 
-  // Stash each facet's STATED value — the node, not a derived level
-  // column. Seeding from a derived column would offer the user a
-  // pre-selection at a grain their source never asserted, and saving
-  // it unchanged would turn that display choice into an assertion.
-  // The fallbacks cover a row read before the migration ran.
+  // Stash each facet's CURRENT node — the deepest level actually in force
+  // (v0.82.1).
+  //
+  // This used to seed from the STATED node, on the reasoning that
+  // offering a pre-selection at a grain the source never asserted, and
+  // saving it unchanged, would turn a display choice into an assertion.
+  // That reasoning had the wrong subject. The import path places a row
+  // deeper than its match — `is_default` and the other import rules — so
+  // the stated node is where the resolution made contact, while the
+  // deeper node is what the row IS. Opening the editor on the match
+  // showed the user a coarser value than the one their data actually
+  // holds, and offered to save it, which is the very substitution the old
+  // comment was trying to avoid.
+  //
+  // facetCurrentNode falls back to the stated-node column, so an
+  // unmatched row still arrives carrying its raw source text.
   editorPendingValues = {
-    asset_class: row.asset_node   || row.sub_class || row.asset_class || '',
-    sector:      row.sector_node  || row.sector    || '',
-    country:     row.country_node || row.country   || '',
-    currency:    row.currency     || '',
+    asset_class: facetCurrentNode(row, 'asset_class'),
+    sector:      facetCurrentNode(row, 'sector'),
+    country:     facetCurrentNode(row, 'country'),
+    currency:    facetCurrentNode(row, 'currency'),
   };
+  // What the pickers OPENED on, kept separate because
+  // editorPendingValues tracks the user as they pick and so cannot
+  // answer "did this change?" by the time Save runs. Saving a facet is
+  // a pin — it overrules the source for good — so only a facet the user
+  // actually moved may be sent. Pinning all four on every save would
+  // silently opt the row out of ever being healed by a later alias in a
+  // resource CSV, which is the one repair that fixes every row at once.
+  editorOpenedValues = Object.assign({}, editorPendingValues);
 
   // Reset the hint lines (left over from when these fields were
   // free-text-with-hint; the elements still exist).
@@ -10279,16 +11520,18 @@ function populateEditHoldingDatalists(){
   const SELS = { asset_class:'heAsset', sector:'heSector',
                  country:'heCountry',   currency:'heCurrency' };
   for (const [facet, id] of Object.entries(SELS)) {
+    const mount = document.getElementById(id + 'Mount');
+    if (!mount) continue;
+    if (!(RES_FACET_NODES || {})[facet]) continue;   // vocabulary not loaded yet
+    // v0.82.0: a tree rather than a flat list. The hidden input keeps the
+    // id, so the save path below still reads heAsset.value and friends.
+    ftMount(mount, { id, facet, value: editorPendingValues[facet] || '' });
     const sel = document.getElementById(id);
     if (!sel) continue;
-    const html = facetNodeOptions(facet, editorPendingValues[facet] || '');
-    if (html == null) continue;          // vocabulary not loaded yet
-    sel.innerHTML = html;
-    // The selected attribute in the built markup already carries the
-    // pending value, including the legacy option when the stored value
-    // is no longer in the file. heRenderFacetHint reads it back, which
-    // keeps pending and displayed in step without a second
-    // canonicalisation pass.
+    // The hidden input already carries the pending value, including a
+    // stored value the definitions file no longer contains (drawn as the
+    // legacy row). heRenderFacetHint reads it back, which keeps pending
+    // and displayed in step without a second canonicalisation pass.
     //
     // Show the whole tree the current choice resolves into, with the
     // level it sits at marked — the same block the resolve popover
@@ -10436,16 +11679,6 @@ async function saveHoldingEditor(){
     ticker:         document.getElementById('heTicker').value.trim(),
     isin:           document.getElementById('heIsin').value.trim().toUpperCase(),
     cusip:          document.getElementById('heCusip').value.trim().toUpperCase(),
-    // One value per levelled facet: the node the user picked, at
-    // whatever level they picked it. The backend resolves it against
-    // the definitions file and rewrites every level from it, so the
-    // derived columns are deliberately NOT sent — they are outputs of
-    // this value, and sending them would offer the server a second,
-    // possibly stale, opinion about the same fact.
-    asset_node:     document.getElementById('heAsset').value,
-    sector_node:    document.getElementById('heSector').value,
-    country_node:   document.getElementById('heCountry').value,
-    currency:       document.getElementById('heCurrency').value,
     weight_pct:     weightNum,
     // Bond fields — send blank-as-empty-string so the backend's
     // HOLDINGS_NUMERIC_FIELDS guard treats them as 0.0 (the canonical
@@ -10456,6 +11689,46 @@ async function saveHoldingEditor(){
     maturity:       document.getElementById('heMaturity').value.trim(),
     effective_date: document.getElementById('heEffectiveDate').value.trim(),
   };
+
+  // One value per facet: the node the user picked, at whatever level
+  // they picked it. The backend pins it and rewrites every level from
+  // it, so the derived columns are deliberately NOT sent — they are
+  // outputs of this value, and sending them would offer the server a
+  // second, possibly stale, opinion about the same fact.
+  //
+  // Sent ONLY when the user moved the picker. The server pins whatever
+  // arrives, and a pin stops the row re-resolving from its source text
+  // for good; sending an untouched facet would pin it as a side effect
+  // of editing the name, and quietly cost the row the ability to be
+  // fixed by a later alias.
+  //
+  // The read is guarded because these four inputs do not exist in the
+  // modal's markup — ftMount creates them, and populateEditHoldingDatalists
+  // skips any facet whose vocabulary has not loaded. Reading .value off
+  // the null that results threw a TypeError from here, which is OUTSIDE
+  // the try below, so the save died silently: no request, no message,
+  // the dialog just sat there.
+  const FACET_INPUTS = { asset_class:'heAsset', sector:'heSector',
+                         country:'heCountry',   currency:'heCurrency' };
+  const FACET_PATCH_KEY = { asset_class:'asset_node', sector:'sector_node',
+                            country:'country_node',   currency:'currency' };
+  const unmounted = [];
+  for (const [facet, id] of Object.entries(FACET_INPUTS)) {
+    const el = document.getElementById(id);
+    if (!el) { unmounted.push(facet.replace(/_/g, ' ')); continue; }
+    const was = (editorOpenedValues || {})[facet] || '';
+    if (el.value !== was) patch[FACET_PATCH_KEY[facet]] = el.value;
+  }
+  if (unmounted.length) {
+    // Loudly, rather than saving a partial edit: the user picked a value
+    // in a control that never loaded, and silently dropping it is how
+    // this bug went unnoticed in the first place.
+    showHoldingEditorError(
+      `The ${unmounted.join(', ')} picker${unmounted.length === 1 ? ' has' : 's have'} `
+      + `not finished loading. Close and reopen the editor, or use `
+      + `Tools \u2192 Reload resource files if it persists.`);
+    return;
+  }
 
   const btn = document.getElementById('heSaveBtn');
   btn.disabled = true;
@@ -10548,7 +11821,9 @@ async function saveHoldingEditor(){
     // redundant /view fetch returning identical data; matching the
     // edited fund against the portfolio here would add coupling and a
     // new way to be subtly wrong (ticker/ISIN/exchange matching).
-    lastLoadedPid = '';
+    // What the rows resolve to is what every facet's coverage counts,
+    // so the four facet dots move with a by-row edit too.
+    invalidateFundDerived();
     // If the Portfolio tab happens to be the visible tab right now,
     // don't wait for a tab switch — re-fetch /view immediately so the
     // portfolio breakdown cards update in place. reloadPortfolio() is a
@@ -10954,6 +12229,12 @@ async function saveEditFundModal(){
     const ticker = efState.ticker;
     closeEditFundModal();
     setStatus('ok', `Saved ${ticker}`);
+    // The pins land in overrides.json, which the scoring pass reads as a
+    // view over the cached profile. So a TER pinned to the factsheet is a
+    // TER the fund now HAS: the fund-data dot must stop reporting it
+    // missing, the score must recompute, and focus / focus detail /
+    // primary asset class redefine the peer group outright.
+    invalidateFundDerived();
     // Re-read the fund so the page shows the committed pins rather than
     // the dialog's working copy.
     await reloadCurrentFund(false);
@@ -11805,60 +13086,91 @@ function openUploadModal(){
     `Upload holdings — ${lastFundData.profile?.shortName || lastFundData.ticker}`;
   document.getElementById('uploadModal').classList.add('show');
 
-  // Fire and forget — prefill the source field from the saved upload
-  // prefs if any. Done async so the modal opens instantly even on a
-  // slow first call; the input is empty in the meantime.
-  prefillUploadSourceFromPrefs(lastFundData.ticker);
+  // Fire and forget, both of them: the remembered column mapping (used
+  // once the file has been parsed) and the remembered source, which all
+  // three upload dialogs prefill through one function.
+  loadUploadPrefs(lastFundData.ticker);
+  prefillUploadSource('holdings', 'uvSourceInput', 'uvSourceLastUsed');
 }
 
-// Fetch /api/upload/prefs for the current ticker and prefill the source
-// field. Stash the full prefs blob on the global `pendingUploadPrefs` so
-// that initMappingViewFromPreview() can apply mapping/defaults/etc. once
-// the file has actually been parsed (we don't apply mapping here because
+// Fetch /api/upload/prefs for the current ticker and stash the prefs
+// blob on the global `pendingUploadPrefs`, so that
+// initMappingViewFromPreview() can apply mapping/defaults/etc. once the
+// file has actually been parsed (we don't apply mapping here because
 // columns can only be matched after we see the file's header row).
+//
+// The Source field is NOT prefilled from here — that is the same job in
+// all three upload dialogs and is done by prefillUploadSource() below.
 let pendingUploadPrefs = null;
-async function prefillUploadSourceFromPrefs(ticker){
+async function loadUploadPrefs(ticker){
   pendingUploadPrefs = null;
   try {
     const r = await fetch(`${API}/upload/prefs?ticker=${encodeURIComponent(ticker)}`);
     if (!r.ok) return;
     const d = await r.json();
-    const p = d && d.prefs;
-    if (!p) return;
-    pendingUploadPrefs = p;
-    // Source field — only prefill if the user hasn't started typing.
-    const inp = document.getElementById('uvSourceInput');
-    if (inp && !inp.value && p.source_value) {
-      inp.value = p.source_value;
-    }
-    // Helper line under the input — shows where the last upload came
-    // from and when it was saved. Mirrors the holdings-tile format
-    // (LOCAL:<filename> / URL:<url>) so the two places agree rather
-    // than the dialog always calling it a "file".
-    const hint = document.getElementById('uvSourceLastUsed');
-    if (hint) {
-      const bits = [];
-      // Blobs saved before 0.22.1 have no source_kind; fall back to
-      // 'disk' when we at least have a filename, since that was the
-      // only path in practice.
-      const kind = p.source_kind || (p.filename ? 'disk' : '');
-      if (kind === 'url') {
-        bits.push(`last source: URL:${p.source_value || p.filename || ''}`);
-      } else if (kind === 'disk') {
-        bits.push(`last source: LOCAL:${p.filename || p.source_value || ''}`);
-      }
-      if (p.saved_at) {
-        const dt = new Date(p.saved_at);
-        if (!isNaN(dt)) bits.push(`saved ${dt.toLocaleDateString()}`);
-      }
-      if (bits.length) {
-        hint.textContent = '↩ ' + bits.join(' · ');
-        hint.style.display = '';
-      }
-    }
+    pendingUploadPrefs = (d && d.prefs) || null;
   } catch(_e){
-    // Silent — prefill is a nicety, not a hard requirement.
+    // Silent — a remembered mapping is a nicety, not a requirement.
   }
+}
+
+// ── Remembered upload source — shared by all three upload dialogs ─────
+// Holdings, factsheet and breakdown CSV all ask the same question
+// ("where is the document?") and all three should answer it the same
+// way next time: an issuer publishes at a stable URL and re-publishes
+// it every month, so the URL you used last time is nearly always the
+// one you want now. One function serves all three, taking the kind and
+// the element ids, so they cannot drift apart in what they prefill or
+// how they describe it. GET /api/upload/source is the single reader.
+//
+// Fire-and-forget: the modal opens instantly and the field fills a beat
+// later, so a slow first call never delays the dialog.
+async function prefillUploadSource(kind, inputId, hintId){
+  const ticker = lastFundData && lastFundData.ticker;
+  const inp    = document.getElementById(inputId);
+  const hint   = hintId ? document.getElementById(hintId) : null;
+  if (hint){ hint.textContent = ''; hint.style.display = 'none'; }
+  if (!ticker || !inp) return null;
+  try {
+    const r = await fetch(`${API}/upload/source?ticker=${encodeURIComponent(ticker)}`
+                          + `&kind=${encodeURIComponent(kind)}`);
+    if (!r.ok) return null;
+    const rec = (await r.json()).source;
+    if (!rec || !rec.source_value) return null;
+    // Only fill an untouched field: this lands after the modal opened,
+    // and the user may already be typing or have dropped a file.
+    if (!inp.value){
+      inp.value = rec.source_value;
+      // Wake whatever gate the dialog hangs off its own oninput (the
+      // factsheet's Upload button, the breakdown CSV's Preview button).
+      // A prefilled field is a usable one, and leaving those disabled
+      // would show an answer the dialog refuses to act on.
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    if (hint){
+      hint.textContent = uploadSourceHintText(rec);
+      hint.style.display = '';
+    }
+    return rec;
+  } catch(_e){
+    return null;      // prefill is a nicety, not a hard requirement
+  }
+}
+
+// One line naming a remembered source, in the same LOCAL:/URL: shorthand
+// the holdings tile uses — the dialog and the tile should not describe
+// one source two ways.
+function uploadSourceHintText(rec){
+  const bits = [];
+  const kind = rec.source_kind || (rec.filename ? 'disk' : '');
+  bits.push(kind === 'url'
+    ? `last source: URL:${rec.source_value || ''}`
+    : `last source: LOCAL:${rec.filename || rec.source_value || ''}`);
+  if (rec.saved_at){
+    const dt = new Date(rec.saved_at);
+    if (!isNaN(dt)) bits.push(`saved ${dt.toLocaleDateString()}`);
+  }
+  return '↩ ' + bits.join(' · ');
 }
 
 // Cancel button on the column-mapping dialog. Pre-commit (and on
@@ -11995,6 +13307,13 @@ function openFactsheetModal(){
     ex.style.display = 'none'; del.style.display = 'none';
   }
   document.getElementById('factsheetModal').classList.add('show');
+
+  // Offer back the URL or path this fund's factsheet last came from.
+  // Issuers re-publish a factsheet at the same address every month, so
+  // the previous answer is nearly always the right one — and it is the
+  // one thing about a replacement upload the user would otherwise have
+  // to go and find again. Shared with the other two upload dialogs.
+  prefillUploadSource('factsheet', 'fsSourceInput', 'fsSourceLastUsed');
 }
 
 function closeFactsheetModal(){
@@ -12031,6 +13350,11 @@ async function saveFactsheet(){
     closeFactsheetModal();
     renderPostFundActions(lastFundData);
     setStatus('ok', `Factsheet stored for ${ticker}`);
+    // A new document replaces the old one's reading wholesale — the
+    // server clears the factsheet-supplied breakdowns — so every card
+    // pinned to the factsheet has just lost its numbers until the new
+    // sheet is extracted.
+    invalidateFundDerived();
   } catch(e){
     err.textContent = e.message; err.style.display = '';
     btn.disabled = false; btn.textContent = factsheetMeta ? 'Replace' : 'Upload';
@@ -12050,6 +13374,9 @@ async function deleteFactsheet(){
     closeFactsheetModal();
     renderPostFundActions(lastFundData);
     setStatus('ok', 'Factsheet removed');
+    // The other half of saveFactsheet: an extraction must not outlive
+    // its document, so the factsheet's facet items go with it.
+    invalidateFundDerived();
   } catch(e){
     document.getElementById('fsError').textContent = e.message;
     document.getElementById('fsError').style.display = '';
@@ -12089,7 +13416,10 @@ async function extractFactsheet(){
     showExtractionReport(d.extraction || null);
     setStatus('ok', 'Factsheet read');
     // Facets landed as a new source, and the fund page's cards read them
-    // from the payload — so refetch rather than leave stale cards.
+    // from the payload — so refetch rather than leave stale cards. The
+    // extraction fills rating inputs (TER, size) and facet items alike,
+    // so both halves of the indicator move with it.
+    invalidateFundDerived();
     reloadCurrentFund(false).catch(() => {});
   } catch(e){
     setStatus('err', `Extraction failed: ${e.message}`);
@@ -12763,9 +14093,14 @@ const MAP_FIELDS = [
 // is not a node in the tree at all; it is an alias of the super class
 // "fixed income".
 //
-// Options for a facet's picker come from facetNodeOptions(), which
-// groups every node by level. These two helpers wrap it where a
-// specific default label or a restricted branch is wanted.
+// These two helpers still build flat <option> lists, and that is
+// DELIBERATE for now: the cash positions table edits facets in table
+// CELLS, where the tree picker's drop panel would open inside a scrolling
+// row. The dialogs named in the v0.82.0 change — the holdings editor, the
+// Resolve popover and the upload defaults — are the ones that moved to
+// facetTreeHtml. Converting these too is the obvious next step and the
+// component already takes the `filterFn` the cash asset list needs; it is
+// left until the tree has been seen working in the dialogs.
 
 // Cash sub-tab: a cash position is a liquid instrument or an
 // interest-bearing deposit, so the picker is restricted to those
@@ -12863,11 +14198,16 @@ function buildMappingRows(){
   MAP_FIELDS.filter(f => f.required).forEach(autoPickFor);
   MAP_FIELDS.filter(f => !f.required).forEach(autoPickFor);
 
-  // Whether enrichment buttons should be enabled — depends on having a
-  // ticker, CUSIP, or ISIN column mapped (all three can drive Yahoo lookups).
-  const tickerMapped = uploadState.mapping.ticker != null
-                    || uploadState.mapping.cusip  != null
-                    || uploadState.mapping.isin   != null;
+  // Enrichment needs SOMETHING to identify a holding by. Ticker, CUSIP
+  // and ISIN all drive a Yahoo lookup — and so does the name, which the
+  // resolver falls back to (search_name_only) and which every upload has
+  // by definition, since Name is a required mapping. So there is nothing
+  // left to gate on: the buttons used to be disabled until one of the
+  // three identifier columns was mapped, which locked out exactly the
+  // files that need enrichment most — an issuer position table of names
+  // and weights and nothing else. The backend has tried the name since
+  // v0.77.0; only this control still said otherwise.
+  const nameMapped = uploadState.mapping.name != null;
 
   const rows = MAP_FIELDS.map(f => {
     const cur    = uploadState.mapping[f.key];
@@ -12904,10 +14244,15 @@ function buildMappingRows(){
         // level, labelled exactly as the Resolve dialog labels it. A
         // free-text box here could name something the tree has never
         // heard of, which lands straight back in the unmatched list.
-        const opts = ufFacetOptionsHtml(f.key, curDef, { head: [
-          `<option value=""${curDef ? '' : ' selected'}>— no default —</option>`] });
-        defCtl = `<select class="uvmdef" title="Used only where the file and Yahoo both leave this empty"
-                    onchange="onDefaultChange(${JSON.stringify(f.key).replace(/"/g,'&quot;')}, this.value)">${opts}</select>`;
+        // v0.82.0: a tree, like every other facet-node picker. Built
+        // inline here rather than mounted, because this row's markup is
+        // assembled as a string; ufRepaintDefaultTrees() paints them once
+        // the table lands in the DOM.
+        defCtl = `<div class="uvmdef">${facetTreeHtml({
+          id: `uvmdef_${f.key}`, facet: f.key, value: curDef,
+          placeholder: '— no default —',
+          onchange: (v) => onDefaultChange(f.key, v),
+        })}</div>`;
       } else {
         const placeholder = (
           f.key === 'duration'       ? 'e.g. 5.5' :
@@ -12930,13 +14275,16 @@ function buildMappingRows(){
       if (ENRICHABLE.includes(f.key)) {
         const isOn = uploadState.enrich.has(f.key);
         const cls  = 'uvmenrich' + (isOn ? ' on' : '');
-        const dis  = tickerMapped ? '' : ' disabled';
-        const tip  = !tickerMapped
-          ? 'Map a Ticker, CUSIP or ISIN column first — enrichment identifies each holding by one of those'
+        const dis  = nameMapped ? '' : ' disabled';
+        const idCols = ['ticker', 'cusip', 'isin']
+          .filter(k => uploadState.mapping[k] != null).length;
+        const tip  = !nameMapped
+          ? 'Map the Name column first — enrichment identifies each holding by its ticker, CUSIP, ISIN or name'
           : (isOn ? 'Every holding is sent to Yahoo for this field. Click to disable.'
                   : (isNone
                      ? 'Fetch this field from Yahoo for every holding'
-                     : 'Fetch this field from Yahoo for every holding whose mapped cell is empty'));
+                     : 'Fetch this field from Yahoo for every holding whose mapped cell is empty'))
+                 + (idCols ? '' : ' Holdings will be matched by name only, which is slower and less certain than a ticker, CUSIP or ISIN column.');
         btn = `<button type="button" class="${cls}"${dis}
                  title="${escapeAttr(tip)}"
                  onclick="onEnrichToggle(${JSON.stringify(f.key).replace(/"/g,'&quot;')})">
@@ -12969,6 +14317,12 @@ function buildMappingRows(){
       terminal shows progress, and Cancel stops it cleanly.
     </div>`;
   document.getElementById('uvMapRows').innerHTML = rows + note;
+  // The facet default pickers are trees built as markup above; they read
+  // their own value back out of the DOM, so they are painted once the
+  // rows are actually in it.
+  for (const f of MAP_FIELDS){
+    if (f.defaultable && f.facet && FT_STATE[`uvmdef_${f.key}`]) ftPaint(`uvmdef_${f.key}`);
+  }
 }
 
 function onMappingChange(key, val){
@@ -12985,8 +14339,9 @@ function onMappingChange(key, val){
     delete uploadState.defaults[key];
     uploadState.enrich.delete(key);
   }
-  // Ticker mapping affects whether enrichment buttons are enabled
-  // for other fields — rebuild to refresh those.
+  // Mapping a field changes its own enrich/default controls, and the
+  // identifier columns change the enrichment tooltip (name-only matching
+  // is called out), so the rows are rebuilt rather than patched.
   buildMappingRows();
   renderMappingPreview();
 }
@@ -13026,7 +14381,10 @@ let _uvNormSeq = 0;
 // client-side mirror of backend arithmetic and has already drifted from
 // it once. One resolver, on the server, is the whole point.
 async function uvRequestNormalisation(sample, cols){
-  const facets = ['asset_class','sub_class','sector','country','currency'];
+  // The four real facets. 'sub_class' was listed here too — it is a LEVEL
+  // of asset_class, not a facet, and no mapping column has produced it
+  // since v0.72.0, so it only ever selected nothing.
+  const facets = ['asset_class','sector','country','currency'];
   const mapped = cols.filter(c => facets.includes(c.key));
   if (!mapped.length) { uvNormalised = []; return; }
 
@@ -13372,8 +14730,9 @@ async function submitUploadCommit(){
     // the freshly-uploaded holdings. Affects any portfolio that
     // contained the fund — but clearing the marker is enough: other
     // portfolios already reload on their first visit because their
-    // pid doesn't match activePid anyway.
-    lastLoadedPid = '';
+    // pid doesn't match activePid anyway. The uploaded rows are also
+    // what every facet's coverage is counted from, so the dots move too.
+    invalidateFundDerived();
     // Refresh the global unmatched-facets banner. The upload may have
     // introduced rows with unresolvable sector / currency / sub_class
     // values; the banner needs to surface them now, not on the next
@@ -13388,8 +14747,11 @@ async function submitUploadCommit(){
       if (w.invalid_isins)     bits.push(`${w.invalid_isins} invalid ISINs`);
       if (w.unmapped_countries?.length)
         bits.push(`${w.unmapped_countries.length} unmapped countries`);
-      if (enr.skipped_no_ticker)
-        bits.push(`${enr.skipped_no_ticker} enrichment skipped (no ticker)`);
+      if (enr.skipped_no_identifier)
+        bits.push(`${enr.skipped_no_identifier} enrichment skipped (no ticker, ISIN, CUSIP or name)`);
+      if (enr.lookup_failed)
+        bits.push(`${enr.lookup_failed} Yahoo lookup(s) failed` +
+                  (enr.lookup_error ? ` — ${enr.lookup_error}` : ''));
       if (enr.skipped_over_cap)
         bits.push(`${enr.skipped_over_cap} enrichment skipped (over ${enr.row_cap}-row cap)`);
       if (enr.unrecognised_count) {
@@ -13440,9 +14802,9 @@ async function clearUploadedHoldings(){
     setStatus('spin', `Removed — re-fetching fund…`);
     await reloadCurrentFund();
     // Reverting to Yahoo top-10 mutates the rollup that feeds the
-    // active portfolio's breakdowns — invalidate so the next visit
-    // re-fetches. Same pattern as enrichHoldings.
-    lastLoadedPid = '';
+    // active portfolio's breakdowns and the coverage dots — invalidate
+    // so the next visit re-fetches. Same pattern as enrichHoldings.
+    invalidateFundDerived();
   } catch(e){
     alert('Network error: ' + e.message);
   }
@@ -13464,13 +14826,29 @@ async function enrichHoldings(){
     if (!confirm('No enrichment fields are selected in Settings — the button will do nothing. Open Settings to tick the facets you want enriched.')) return;
   }
 
+  // The ticked rows are the ONLY rows sent to Yahoo. The button is
+  // disabled without a selection (see fhSyncEnrichLabel), so this is the
+  // belt to that braces: reached by a keyboard activation on a stale
+  // render, it says what to do rather than enriching everything.
+  const selected = [...(fullHoldingsState.selected || [])];
+  if (!selected.length){
+    setStatus('err', 'Tick the holdings you want enriched first — '
+                   + 'this button acts on the selected rows.');
+    return;
+  }
+
   const btn = document.getElementById('hEnrichBtn');
-  const orig = btn ? btn.textContent : '';
+  _hEnrichBusy = true;
   if (btn){ btn.disabled = true; btn.textContent = 'Enriching…'; }
-  setStatus('spin', 'Enriching holdings through Yahoo…');
+  setStatus('spin',
+    `Enriching ${selected.length} selected holding${selected.length===1?'':'s'} through Yahoo…`);
   try {
     const url = `${API}/funds/${encodeURIComponent(lastFundData.ticker)}/enrich_holdings`;
-    const r = await fetch(url, { method:'POST' });
+    const r = await fetch(url, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ row_ids: selected }),
+    });
     const d = await r.json();
     if (!r.ok){
       setStatus('err', d.error || `HTTP ${r.status}`);
@@ -13507,9 +14885,10 @@ async function enrichHoldings(){
     if (lastFundData) renderFundBreakdowns(lastFundData);
 
     // The enrichment may have mutated the fund's holdings rollup, which
-    // feeds the active portfolio's breakdowns. Invalidate so the next
-    // portfolio view re-fetches; refresh now if the tab is visible.
-    lastLoadedPid = '';
+    // feeds the active portfolio's breakdowns and the coverage dots.
+    // Invalidate so the next portfolio view re-fetches; refresh now if
+    // the tab is visible.
+    invalidateFundDerived();
     if (currentTab === 'portfolio'){
       reloadPortfolio(false).catch(e => console.warn('portfolio refresh:', e));
     }
@@ -13522,14 +14901,34 @@ async function enrichHoldings(){
     const filledFields = Object.entries(filled)
       .filter(([, n]) => n > 0)
       .map(([f, n]) => `${f}: ${n}`);
-    const msg = filledFields.length
-      ? `Enriched ${stats.rows_with_changes} rows (${filledFields.join(', ')})`
-      : `No blanks needed filling.`;
-    setStatus('ok', msg);
+    if (filledFields.length){
+      setStatus('ok', `Enriched ${stats.rows_with_changes} rows (${filledFields.join(', ')})`);
+    } else {
+      // "Nothing changed" has several quite different causes, and saying
+      // only "no blanks needed filling" for all of them is how a run that
+      // reached Yahoo and was told nothing, a run that could not reach
+      // Yahoo at all, and a run over rows with no blanks left all looked
+      // identical — which is exactly how the button looked broken.
+      const why = [];
+      if (stats.rows_lookup_failed)
+        why.push(`${stats.rows_lookup_failed} lookup${stats.rows_lookup_failed===1?'':'s'} failed` +
+                 (stats.lookup_error ? ` (${stats.lookup_error})` : ''));
+      if (stats.rows_yahoo_not_found)
+        why.push(`${stats.rows_yahoo_not_found} not found on Yahoo`);
+      if (stats.rows_skipped_no_identifier)
+        why.push(`${stats.rows_skipped_no_identifier} with nothing to look up`);
+      setStatus(stats.rows_lookup_failed ? 'err' : 'ok',
+        why.length
+          ? `No blanks filled — ${why.join(', ')}.`
+          : (stats.rows_processed
+             ? `No blanks needed filling (${stats.rows_processed} rows checked).`
+             : 'No blanks needed filling.'));
+    }
   } catch(e){
     setStatus('err', 'Network error: ' + e.message);
   } finally {
-    if (btn){ btn.disabled = false; btn.textContent = orig || '↻ Enrich through Yahoo'; }
+    _hEnrichBusy = false;
+    fhSyncEnrichLabel();
   }
 }
 
@@ -13750,12 +15149,11 @@ async function saveSettings(){
       if (lastFundData) renderPostFundActions(lastFundData);
     });
 
-    // Scoring weights changed the meaning of every score on screen.
-    // Re-fetch rather than leaving the fund list showing numbers from
-    // the previous model.
-    fetchCacheScores()
-      .then(() => { if (currentTab === 'explore') renderCachePanel(); })
-      .catch(e => console.warn('scores:', e));
+    // Scoring weights and the size floor changed the meaning of every
+    // score on screen — and of the fund-data dot, which reads the same
+    // pass for which rating inputs count and how big a peer group is.
+    // Refetching the scores alone left the dots on the previous model.
+    invalidateFundDerived();
 
     portfolioHoldings    = null;
     portfolioHoldingsPid = '';
@@ -13937,8 +15335,53 @@ function ufRestoreFilterFocus(root, attr, col){
   if (!root || !col) return;
   const inp = root.querySelector(`input[${attr}="${CSS.escape(col)}"]`);
   if (!inp) return;
-  inp.focus();
+  inp.focus({ preventScroll: true });
   inp.setSelectionRange(inp.value.length, inp.value.length);
+}
+
+// Carry a scroll position across a rebuild that destroys the element
+// holding it.
+//
+// The same shape as ufRestoreFilterFocus, and needed for the same
+// reason: a re-render replaces the scroller, and the position is a
+// property of that element rather than of the list, so it goes with it.
+// Both tabs of this dialog rebuild their whole region on Apply, so both
+// need it — the by-value tab carried its position inline and the by-row
+// tab did not, which is exactly the drift a shared helper prevents.
+// Both axes: a wide row table scrolls sideways too, and restoring only
+// the vertical offset moves the reader's column out from under them.
+function ufCarryScroll(root, sel, render){
+  const prev = root && root.querySelector(sel);
+  const top  = prev ? prev.scrollTop  : 0;
+  const left = prev ? prev.scrollLeft : 0;
+  render();
+  const next = root && root.querySelector(sel);
+  if (next){ next.scrollTop = top; next.scrollLeft = left; }
+}
+
+// The control the resolve popover was opened from, so focus can go back
+// to it once the popover closes.
+//
+// Applying rebuilds the list under the popover, which destroys both the
+// popover and the button that opened it; focus then falls to <body> and
+// the keyboard has nowhere to be — no tabbing on from where you were, no
+// Escape target, nothing highlighted to say what you just acted on.
+// Remembered by ID rather than by element for precisely that reason: the
+// element the user pressed does not survive, but its replacement carries
+// the same id.
+//
+// preventScroll, always. The fund page is at that same moment restoring
+// a scroll position across its own reload, and a focus() that scrolls
+// the button into view would undo it — one fix must not re-break the
+// other.
+let ufPopoverTriggerId = '';
+
+function ufRestoreTriggerFocus(){
+  const id = ufPopoverTriggerId;
+  ufPopoverTriggerId = '';
+  if (!id) return;
+  const el = document.getElementById(id);
+  if (el) el.focus({ preventScroll: true });
 }
 // Anchor for shift-click range selection: the last row checked or
 // unchecked without shift held.
@@ -14257,7 +15700,9 @@ function ufOpenValueBulkPopover(evt){
       await ufRefreshValues();
       await ufRefreshBanner().catch(() => {});
       ufRenderDialog();
-      lastLoadedPid = '';
+      // An alias resolves rows that were counted as `unknown`, so every
+      // affected fund's coverage — and its dot — has just moved.
+      invalidateFundDerived();
       if (currentTab === 'explore' && lastFundData) reloadCurrentFund().catch(() => {});
       else if (currentTab === 'portfolio')          reloadPortfolio(false).catch(() => {});
       return '';
@@ -14354,6 +15799,7 @@ function ufBuildValuesHtml(){
               ${nSel ? '' : 'disabled'}
               title="${nSel ? escapeAttr(`Resolve the ${nSel} ticked value(s) together`)
                             : 'Tick one or more values first'}"
+              id="ufValBulkEdit"
               onclick="ufOpenValueBulkPopover(event)">
         edit${nSel ? ` (${nSel})` : ''}</button>
       ${ufValFilterActive()
@@ -14364,7 +15810,14 @@ function ufBuildValuesHtml(){
         weight is each occurrence's share of its own fund
       </span>
     </div>
-    <div data-ufvalscroll style="overflow-x:auto;max-height:60vh;overflow-y:auto;
+    <!-- THE scroll region of this tab (v0.83.1). Its height comes from
+         the flex chain in the stylesheet, not from a max-height: the
+         dialog is a fixed-height column, every other part of it is
+         flex:0 0 auto, and this box takes what is left. A vh cap here
+         made a box that could be shorter OR taller than the space
+         available — taller meant the dialog scrolled too, which is the
+         second scrollbar. -->
+    <div data-ufvalscroll style="overflow:auto;
                                  border:1px solid var(--border);border-radius:4px">
     <table class="tbl" style="width:100%;min-width:700px;
                               font-family:var(--mono);font-size:.68rem">
@@ -14592,6 +16045,9 @@ async function bkApply(){
     if ((rep.missing_funds||[]).length)
       bits.push(`${rep.missing_funds.length} referenced funds not present`);
     msg.textContent = bits.join(' · ') || 'Nothing to import.';
+    // Imported funds join the universe, so peer groups resize for the
+    // funds already in it — the same reason saveToPreloaded invalidates.
+    invalidateFundDerived();
     if (typeof reloadAll === 'function') reloadAll();
   } catch(e){
     err.textContent = String(e.message || e); err.style.display = '';
@@ -14677,15 +16133,11 @@ function ufRenderDialog(){
     empty.style.display = 'none';
     // Applying one alias rebuilds this table — the list has to refresh,
     // since resolving a value removes it — which destroys the scroll
-    // container with it. Carry the position across by hand, both axes,
-    // exactly as the by-row tab does: without it, resolving the tenth
-    // value threw you back to the first.
-    const prev = vbody.querySelector('[data-ufvalscroll]');
-    const top  = prev ? prev.scrollTop  : 0;
-    const left = prev ? prev.scrollLeft : 0;
-    vbody.innerHTML = ufBuildValuesHtml();
-    const next = vbody.querySelector('[data-ufvalscroll]');
-    if (next) { next.scrollTop = top; next.scrollLeft = left; }
+    // container with it. Without the carry, resolving the tenth value
+    // threw you back to the first.
+    ufCarryScroll(vbody, '[data-ufvalscroll]', () => {
+      vbody.innerHTML = ufBuildValuesHtml();
+    });
     ufRestoreFilterFocus(vbody, 'data-ufvalfilter', ufValFocusCol);
     return;
   }
@@ -14704,8 +16156,17 @@ function ufRenderDialog(){
   // region — so the <input> keeps its identity (and focus) across
   // keystrokes. The summary span's text updates via direct write,
   // not innerHTML replacement.
-  body.innerHTML = ufBuildShellHtml();
-  ufRenderTable();
+  // The by-row tab's twin of the carry above, which it did not have.
+  // ufRenderTable carries the position across ITS OWN re-renders (a
+  // keystroke in a column filter, a sort), reading it off the scroller
+  // already sitting in #ufTableWrap — but here the shell is replaced
+  // first, so the wrap ufRenderTable then finds is brand new and reports
+  // zero. That is why Apply threw the reader back to the top of the row
+  // list while typing in a filter did not.
+  ufCarryScroll(body, '[data-ufscroll]', () => {
+    body.innerHTML = ufBuildShellHtml();
+    ufRenderTable();
+  });
   // Bind chip clicks here rather than in inline onclick so we can
   // toggle the active CSS state in place without re-rendering the
   // chip's DOM.
@@ -14738,10 +16199,12 @@ function ufBuildShellHtml(){
       <span id="ufSummary"></span>
     </div>
     <!-- ufRenderTable replaces this element's contents wholesale with
-         its own [data-ufscroll] div, which carries the overflow. Do NOT
-         put a second scroll container here: two elements claiming the
-         same job is how the earlier attempt at horizontal scrolling
-         looked correct and did nothing. -->
+         its own [data-ufscroll] div, which carries the HORIZONTAL
+         overflow only. Do NOT put a second scroll container here, and do
+         not give that div a max-height: vertical scrolling belongs to
+         #ufDialog .modal-b, so that this dialog has exactly one vertical
+         scrollbar. Two of them moving independently is the thing the
+         layout is built to avoid. -->
     <div id="ufTableWrap"></div>
   `;
 }
@@ -14899,7 +16362,7 @@ function ufRenderTable(){
       ? (ufSort.dir === 'asc' ? ' ▲' : ' ▼')
       : '';
     const editBtn = c.editable
-      ? `<button type="button" class="btn btn-s"
+      ? `<button type="button" class="btn btn-s" id="ufedit-${c.key}"
                  style="font-size:.6rem;padding:1px 6px;margin-left:4px"
                  onclick="event.stopPropagation(); ufOpenEditPopover('${c.key}', event)"
                  title="Edit ${escapeAttr(c.label)} on the selected row(s)">edit</button>`
@@ -14978,7 +16441,9 @@ function ufRenderTable(){
         : 'No unmatched values left.'}
     </td></tr>`;
 
-  wrap.innerHTML = `<div data-ufscroll style="overflow-x:auto;max-height:60vh;overflow-y:auto;
+  // THE scroll region of this tab — sized by the flex chain, not by a vh
+  // cap. Same rule as the by-value tab.
+  wrap.innerHTML = `<div data-ufscroll style="overflow:auto;
                                 border:1px solid var(--border);border-radius:4px">
     <table style="font-family:var(--mono);font-size:.66rem;
                    border-collapse:collapse;width:100%;
@@ -15085,6 +16550,11 @@ function ufClosePopover(){
     ufActivePopover.remove();
     ufActivePopover = null;
     document.removeEventListener('click', ufPopoverOutsideClickHandler, true);
+    // Applied, cancelled or clicked away — all three otherwise leave
+    // focus on an element that no longer exists. By the time Apply
+    // reaches here its handler has already rebuilt the list, so the
+    // trigger being focused is the newly rendered one.
+    ufRestoreTriggerFocus();
   }
 }
 function ufPopoverOutsideClickHandler(e){
@@ -15139,8 +16609,40 @@ function ufMatchChainHtml(chain){
     </div>`;
 }
 
+// Keep a popover wholly on screen, measured rather than guessed
+// (v0.82.3).
+//
+// The popover is placed just under the click, which is right until the
+// click is near the bottom of the window — then its own buttons end up
+// past the edge, and being position:fixed there is nothing to scroll to
+// reach them. So: measure the height it actually rendered at, put it
+// above the click point when it does not fit below, and if it fits
+// neither way pin it to the top margin and let its body scroll.
+function ufFitPopover(pop, clickY){
+  const M = 12;                                   // margin from the edge
+  const h = pop.offsetHeight;
+  const vh = window.innerHeight;
+  let top;
+  if (clickY + 8 + h + M <= vh)      top = clickY + 8;      // below: fits
+  else if (clickY - 8 - h >= M)      top = clickY - 8 - h;  // above: fits
+  else {
+    // Taller than the room either side of the click: sit at the top
+    // margin and cap the height so the whole thing, buttons included,
+    // stays inside the viewport.
+    top = M;
+    pop.style.maxHeight = (vh - 2 * M) + 'px';
+    pop.style.overflowY = 'auto';
+  }
+  pop.style.top = Math.max(M, Math.min(top, vh - M - Math.min(h, vh - 2 * M))) + 'px';
+}
+
 function ufOpenResolvePopover(ctx, evt){
   ufClosePopover();
+  // Recorded AFTER that close, which clears it: a popover being replaced
+  // by this one should not hand focus back on its way out.
+  const trig = (evt && evt.target && evt.target.closest)
+             ? evt.target.closest('button') : null;
+  ufPopoverTriggerId = (trig && trig.id) || '';
   const cf = ufCanonicalsFor(ctx.facet);
   if (!cf.loaded) {
     alert(`Resource list for ${ctx.facet.replace(/_/g,' ')} is not loaded. ` +
@@ -15156,8 +16658,13 @@ function ufOpenResolvePopover(ctx, evt){
     padding:10px;box-shadow:0 4px 16px rgba(0,0,0,.3);
     font-family:var(--mono);font-size:.7rem;min-width:380px;max-width:470px;
   `;
+  // Provisional placement; ufFitPopover re-does it against the popover's
+  // REAL height once it is in the DOM. The old clamp subtracted a
+  // hard-coded 360px, which was a guess at the height — and the popover
+  // has grown since, so a click low on the page put the Close and Apply
+  // buttons below the bottom of the screen with no way to scroll to them.
   const x = Math.min((evt && evt.clientX) || 200, window.innerWidth - 490);
-  const y = Math.min(((evt && evt.clientY) || 200) + 8, window.innerHeight - 360);
+  const y = ((evt && evt.clientY) || 200) + 8;
   pop.style.left = x + 'px';
   pop.style.top  = y + 'px';
 
@@ -15176,21 +16683,18 @@ function ufOpenResolvePopover(ctx, evt){
   const chain    = multi ? null : (ctx.matchChain || null);
   const chainHtml = chain ? ufMatchChainHtml(chain) : '';
 
-  // Start the picker on the node the value already resolves to
-  // (v0.75.3). With one spelling in front of you there is exactly one
-  // right answer to begin from, and the usual edit is to confirm or
-  // nudge it rather than to hunt for it in a list of 260 countries. A
-  // mixed selection resolves several ways, so it still starts blank —
-  // and so does an unmatched value, which by definition resolves to
-  // nothing. The placeholder carries no `selected`, so the marked
-  // option wins when there is one and the placeholder shows when not.
-  const preset = (chain && (chain.find(e => e.matched) || {}).key) || '';
-  const optsHtml = ufFacetOptionsHtml(ctx.facet, preset, {
-    head: ['<option value="">— pick what this should mean —</option>',
-           // Clearing is a per-row decision and is pinned like any other,
-           // so it lives in the node list rather than as a third scope:
-           // "this row has no sector" is an answer, not a reach.
-           `<option value="${UF_CLEAR}">— no value (clear this facet) —</option>`] });
+  // Start the picker on the node the value CURRENTLY sits at (v0.82.1).
+  // With one spelling in front of you there is exactly one right answer
+  // to begin from, and the usual edit is to confirm or nudge it rather
+  // than to hunt for it in a list of 260 countries. A mixed selection
+  // resolves several ways, so it still starts blank — and so does an
+  // unmatched value, which by definition resolves to nothing.
+  //
+  // The deepest level in force, NOT the level flagged `matched`. The
+  // match is where the import made contact with the vocabulary; the
+  // import then places the row deeper, and it is that deeper node the
+  // user is looking at in the table and expects the picker to open on.
+  const preset = facetDeepestInChain(chain);
 
   pop.innerHTML = `
     <div style="margin-bottom:8px;color:var(--text)">
@@ -15209,9 +16713,19 @@ function ufOpenResolvePopover(ctx, evt){
       ${chainHtml}
     </div>
 
-    <div style="color:var(--muted);margin-bottom:3px">should mean</div>
-    <select id="ufVPick" style="width:100%;font-family:var(--mono);font-size:.7rem;margin-bottom:10px"
-            onchange="ufResolvePopoverSync()">${optsHtml}</select>
+    <!-- Labelled with the modal's own .mfl class rather than an inline
+         colour, so the picker reads as the same control in both places:
+         it IS the same component editing the same kind of value, and two
+         typographies for one control is the drift this dialog has been
+         cleaned up for twice already.
+
+         No .he-resolve hint underneath, unlike the modal — deliberate.
+         The modal has nothing else on screen saying what a choice
+         resolves to, whereas this dialog already prints the chain in the
+         "currently" box above. Repeating it below the picker would say
+         the same thing twice in a popover whose size is the complaint. -->
+    <label class="mfl">should mean</label>
+    <div id="ufVPickMount" style="margin-bottom:10px"></div>
 
     <!-- The scope of the decision, asked outright (v0.76.3).
 
@@ -15251,14 +16765,12 @@ function ufOpenResolvePopover(ctx, evt){
         </span></span>
     </label>
 
-    <label style="display:flex;align-items:flex-start;gap:6px;margin-bottom:6px;cursor:pointer">
-      <input type="radio" name="ufVScope" value="none" id="ufVScopeNone"
-             onchange="ufResolvePopoverSync()" checked style="margin-top:2px">
-      <span><span style="color:var(--text)">Leave untouched</span>
-        <span style="color:var(--muted);font-size:.6rem;display:block">
-          Change nothing. Look at what the value resolves to, then close.
-        </span></span>
-    </label>
+    <!-- There is no third "leave untouched" option (removed v0.83.0). It
+         was a radio that disabled Apply, which is what Cancel already
+         does — one outcome offered twice, in two different shapes. Its
+         real job was making the OPENING state inert so a stray Apply
+         could not write anything, and no radio being selected does that
+         just as well: Apply stays disabled until a scope is chosen. -->
 
     <!-- Only under "all": a wildcard or a re-spelling is a property of
          the alias being written, and has no meaning for a pin. -->
@@ -15287,16 +16799,29 @@ function ufOpenResolvePopover(ctx, evt){
 
     <div id="ufVErr" style="color:var(--red);font-size:.62rem;margin-bottom:6px"></div>
     <div style="display:flex;gap:6px;justify-content:flex-end">
-      <button type="button" class="btn btn-s" onclick="ufClosePopover()">Close</button>
+      <button type="button" class="btn btn-s" id="ufVCloseBtn"
+              onclick="ufClosePopover()">Cancel</button>
       <button type="button" class="btn btn-p btn-s" id="ufVApplyBtn"
               onclick="ufPopoverApply()">Apply</button>
     </div>
   `;
   document.body.appendChild(pop);
   ufActivePopover = pop;
+  // v0.82.0: the node picker is a tree. Mounted after the markup lands,
+  // since the component reads its own value back out of the DOM.
+  // Clearing is a per-row decision and is pinned like any other, so it
+  // lives in the node list rather than as a third scope: "this row has
+  // no sector" is an answer, not a reach.
+  ftMount(pop.querySelector('#ufVPickMount'), {
+    id: 'ufVPick', facet: ctx.facet, value: preset,
+    placeholder: '— pick what this should mean —',
+    extras: [{ value: UF_CLEAR, label: '— no value (clear this facet) —' }],
+    onchange: () => ufResolvePopoverSync(),
+  });
   const nt = pop.querySelector('#ufVNewText');
   if (nt) nt.addEventListener('input', ufResolvePopoverSync);
   ufResolvePopoverSync();
+  ufFitPopover(pop, (evt && evt.clientY) || 200);
   setTimeout(() => {
     document.addEventListener('click', ufPopoverOutsideClickHandler, true);
   }, 0);
@@ -15345,7 +16870,6 @@ function ufResolvePopoverSync(){
   const multi = ctx.rawCount > 1;
   const node  = pick.value;
   const clear = node === UF_CLEAR;
-  const noneR = document.getElementById('ufVScopeNone');
 
   // Labels carry the counts, because "this row" is a lie for a
   // multi-row selection and the by-value tab's rows are counted a
@@ -15361,25 +16885,46 @@ function ufResolvePopoverSync(){
   // something to write. A row scope needs rows.
   allR.disabled = !ctx.aliasEnabled || clear;
   rowR.disabled = !ctx.rowsEnabled;
-  // A scope that becomes unavailable falls back to doing nothing, never
-  // to the other scope: silently re-aiming a change the user already
-  // chose is how you write vocabulary when they asked for a pin.
-  if ((allR.disabled && allR.checked) || (rowR.disabled && rowR.checked)) {
-    if (noneR) noneR.checked = true;
-  }
+  // A scope that becomes unavailable falls back to NO scope, never to the
+  // other one: silently re-aiming a change the user already chose is how
+  // you write vocabulary when they asked for a pin.
+  if (allR.disabled && allR.checked) allR.checked = false;
+  if (rowR.disabled && rowR.checked) rowR.checked = false;
 
-  const doNothing = !!(noneR && noneR.checked);
+  // "No value" is a per-ROW pin: it records "this row has no country" on
+  // the rows themselves. It is deliberately NOT expressible as an alias —
+  // an alias is a claim about a WORD, and "this word means nothing" is
+  // not one this vocabulary makes. So when the ticked values have no
+  // holdings rows behind them, "no value" has nothing at all to act on:
+  // the alias scope is disabled because of the clear, the row scope
+  // because there are no rows, and the popover falls back to "leave
+  // untouched" with "Nothing will change." — which is true, and reads as
+  // a broken control. Name the dead end instead.
+  const clearImpossible = clear && !ctx.rowsEnabled;
+
+  // Nothing chosen yet — the state the popover opens in.
+  const doNothing = !rowR.checked && !allR.checked;
   const useAll = allR.checked && !allR.disabled;
   if (wrap) wrap.style.display = (useAll && !multi) ? '' : 'none';
 
   const aliasText = (text && text.value || '').trim();
   let msg = '', ok = true;
 
-  if (doNothing) {
-    // Deliberately not an error: "I only wanted to look" is a valid
-    // outcome, and it is the one the popover opens on so that a stray
-    // Apply cannot write anything.
-    msg = 'Nothing will change.';
+  if (clearImpossible) {
+    ok  = false;
+    msg = '"No value" is recorded on holdings rows, and '
+        + (ctx.rowsWhy
+            ? ctx.rowsWhy.charAt(0).toLowerCase() + ctx.rowsWhy.slice(1)
+            : 'these values have no holdings rows behind them.')
+        + ' It cannot be written as an alias either — an alias says what a '
+        + 'word MEANS, and "nothing" is not a meaning this vocabulary has. '
+        + 'Either map it to a node, or leave it: a value that matches '
+        + 'nothing already counts as unknown everywhere it is used.';
+  } else if (doNothing) {
+    // Not an error: "I only wanted to look" is a valid outcome, and it is
+    // the one the popover opens in so that a stray Apply cannot write
+    // anything. Cancel is how you leave from here.
+    msg = 'Choose how far this should reach, or Cancel to leave everything as it is.';
     ok  = false;
   } else if (!node) {
     ok = false;
@@ -15477,9 +17022,14 @@ function ufPopoverApply(){
   if (!ctx) return;
   const sel   = _ufPopoverSel();
   const allR  = document.getElementById('ufVScopeAll');
-  const noneR = document.getElementById('ufVScopeNone');
-  if (noneR && noneR.checked) return;      // the no-op scope writes nothing
-  const useAll = allR && allR.checked && !allR.disabled;
+  const rowR  = document.getElementById('ufVScopeRow');
+  // No scope chosen writes nothing. Belt-and-braces: the button is
+  // already disabled in that state, but Apply must never depend on the
+  // button's own disabled attribute to decide whether it may write.
+  const rowOn = rowR && rowR.checked && !rowR.disabled;
+  const allOn = allR && allR.checked && !allR.disabled;
+  if (!rowOn && !allOn) return;
+  const useAll = allOn;
   if (!sel.canonical && !sel.clear) return;
   const fn = useAll ? ctx.onAlias : ctx.onRows;
   if (!fn) return;
@@ -15567,7 +17117,9 @@ function ufOpenEditPopover(facet, evt){
       } else {
         setStatus('ok', `Applied: ${d.rows_written} row${d.rows_written===1?'':'s'} written, ${d.files_written} file${d.files_written===1?'':'s'} touched.`);
       }
-      lastLoadedPid = '';
+      // Same as the by-value tab: what the rows resolve to is what the
+      // coverage dots count.
+      invalidateFundDerived();
       if (currentTab === 'explore' && lastFundData)      reloadCurrentFund().catch(() => {});
       else if (currentTab === 'portfolio')               reloadPortfolio(false).catch(() => {});
     },
@@ -15579,15 +17131,10 @@ function ufOpenEditPopover(facet, evt){
 // `sub_sector — Semiconductors` in one, `semiconductors (Sub)` in the
 // other — off the same endpoint. One builder now serves both, so the
 // list a user learns in one tab reads identically in the other.
-function ufFacetOptionsHtml(facet, selected, opts){
-  // Delegates to facetNodeOptions so the Resolve dialog, the upload
-  // defaults and the holdings editor cannot drift apart again. Only the
-  // leading placeholder differs per caller.
-  const head = (opts && opts.head) || [];
-  const core = facetNodeOptions(facet, selected || '');
-  if (core == null) return head.join('');
-  return head.join('') + core.replace('<option value=""></option>', '');
-}
+// ufFacetOptionsHtml() lived here until v0.82.0. It wrapped
+// facetNodeOptions so the Resolve dialog and the upload defaults shared
+// one list; both now mount facetTreeHtml directly, which is the same
+// sharing one layer down.
 
 // Canonical keys of one facet as a lookup set, memoised against the
 // vocabulary object ITSELF: `loadHoldingClassResources` replaces
@@ -15652,7 +17199,7 @@ async function reloadPortfolio(forceRefresh){
   document.getElementById('pTitle').textContent = 'Loading…';
   document.getElementById('pSub').textContent = '';
   document.getElementById('pfundsBody').innerHTML =
-    `<tr><td colspan="10" style="padding:20px;text-align:center;color:var(--muted)"><div class="spin" style="display:inline-block;margin-right:8px"></div>Loading fund data…</td></tr>`;
+    `<tr><td colspan="11" style="padding:20px;text-align:center;color:var(--muted)"><div class="spin" style="display:inline-block;margin-right:8px"></div>Loading fund data…</td></tr>`;
 
   try {
     const params = new URLSearchParams();
@@ -15682,6 +17229,12 @@ async function reloadPortfolio(forceRefresh){
     // Fetch price-history separately — it's the slow one (FX history etc.)
     // and we don't want it blocking the main view.
     loadPortfolioPriceHistory(forceRefresh).catch(e => console.warn('pchart:', e));
+    // Quality dots, same lazily-and-repaint treatment as on the
+    // pre-loaded list. rerenderPortfolioFunds redraws from the cached
+    // view, so this costs one repaint and no second /view fetch.
+    fetchQuality()
+      .then(() => rerenderPortfolioFunds())
+      .catch(e => console.warn('quality:', e));
     // Refresh the global unmatched-facets banner. The /view fetch
     // above triggers lazy migration in cache_read for every fund in
     // the portfolio; some previously-unmatched values may now be
@@ -15689,7 +17242,7 @@ async function reloadPortfolio(forceRefresh){
     ufRefreshBanner().catch(() => {});
   } catch(e){
     document.getElementById('pfundsBody').innerHTML =
-      `<tr><td colspan="10" style="padding:20px;text-align:center;color:var(--red)">Error: ${escapeHtml(e.message)}</td></tr>`;
+      `<tr><td colspan="12" style="padding:20px;text-align:center;color:var(--red)">Error: ${escapeHtml(e.message)}</td></tr>`;
     document.getElementById('pTitle').textContent = 'Error';
   } finally {
     if (_scrollSnap) _restoreScroll(_scrollSnap);
@@ -15724,10 +17277,11 @@ let portfolioFundsFilterState = {
 };
 
 function renderPortfolioFunds(view){
+  applyQualityHeaderTips();
   const funds = view.funds || [];
   if (!funds.length){
     document.getElementById('pfundsBody').innerHTML =
-      `<tr><td colspan="10" style="padding:24px;text-align:center;color:var(--muted)">
+      `<tr><td colspan="12" style="padding:24px;text-align:center;color:var(--muted)">
         No funds yet — switch to Explore, fetch a fund, then "Add to portfolio".</td></tr>`;
     populatePortfolioFundsFilterOptions([]);
     return;
@@ -15750,7 +17304,7 @@ function renderPortfolioFunds(view){
 
   if (!sorted.length){
     document.getElementById('pfundsBody').innerHTML =
-      `<tr><td colspan="10" style="padding:18px;text-align:center;color:var(--muted);
+      `<tr><td colspan="12" style="padding:18px;text-align:center;color:var(--muted);
               font-family:var(--mono);font-size:.72rem">
         No funds match the current filters.</td></tr>`;
     wirePortfolioFundsFilterEvents();
@@ -15798,7 +17352,12 @@ function renderPortfolioFunds(view){
     //   TOP · N · ENRICHED    Yahoo top-N with enrichment baked in
     //   TOP · N               raw Yahoo top-N
     const hs = f.holdings_status || {};
-    const topCount = hs.top_count || (f.data?.holdings_rows || []).length;
+    // top_count is the only source here: /view no longer ships
+    // data.holdings_rows (it is answered by /holdings_rollup). The two
+    // were never independent anyway — both derive from the same cached
+    // rows — and topCount is read only inside the hs.source branches
+    // below, which a cash entry (no holdings_status) never reaches.
+    const topCount = hs.top_count || 0;
     let holdingsCell;
     if (hs.source === 'manual_upload'){
       holdingsCell = `<span class="crfull" title="Full holdings list cached (${hs.full_count} positions)">FULL · ${hs.full_count}</span>`;
@@ -15837,6 +17396,10 @@ function renderPortfolioFunds(view){
       return `<tr title="No cached identity for ${escapeAttr(f.ticker||'')} — re-fetch this fund to restore its data"
                   style="opacity:.85">
         <td class="tk wrap">${escapeHtml(f.ticker || '—')}</td>
+        <!-- ISIN, Cur, Name, Holdings, Quality, Asset class — the six
+             columns there is nothing cached to fill. The count must
+             track the header: this row is twelve columns wide like
+             every other. -->
         <td colspan="6" style="color:var(--muted);font-family:var(--mono);font-size:.7rem">
           Needs re-fetch — cached data missing.
           <button class="btn btn-s btn-sm" style="margin-left:8px"
@@ -15850,7 +17413,9 @@ function renderPortfolioFunds(view){
                  onclick="event.stopPropagation()"
                  onchange="event.stopPropagation(); updateFundShares('${tkEsc}',this.value)">
         </td>
+        <td class="r"></td>
         <td class="wcell"></td>
+        <td></td>
         <td class="r">
           <button class="btn btn-d btn-sm" title="Remove from portfolio"
                   onclick="event.stopPropagation(); removeFundFromPortfolio('${tkEsc}')">✕</button>
@@ -15871,6 +17436,7 @@ function renderPortfolioFunds(view){
         <td class="tk" style="text-align:center">${curCell}</td>
         <td class="wrap" style="color:var(--text)">${escapeHtml(name)}</td>
         <td>${holdingsCell}</td>
+        <td><span class="derived muted" title="A cash position has no fund data and nothing to look through">—</span></td>
         <td><span class="actag ${ac}" style="margin:0;padding:2px 8px;font-size:.62rem">${fmtAssetClass(ac)}</span></td>
         <td class="r"><span class="derived muted" title="Cash positions are sized by amount (edit on the Cash sub-tab), not by share count">—</span></td>
         <td class="r">${valueCell}</td>
@@ -15892,7 +17458,13 @@ function renderPortfolioFunds(view){
       <td class="tk wrap">${isinCell}</td>
       <td class="tk" style="text-align:center">${curCell}</td>
       <td class="wrap" style="color:var(--text)">${escapeHtml(name)}</td>
+      <!-- Holdings then Quality, the same pair in the same order as on
+           the pre-loaded list and on the cash row below. The Quality
+           column (v0.84.0) was inserted here without the Holdings cell
+           being kept, which left this row one cell short of its own
+           header and pulled every column after it one place left. -->
       <td>${holdingsCell}</td>
+      <td>${qualityDotsHtml((cacheQuality || {})[(f.ticker || '').toUpperCase()])}</td>
       <td><span class="actag ${ac}" style="margin:0;padding:2px 8px;font-size:.62rem">${fmtAssetClass(ac)}</span></td>
       <td class="r"><input type="text" inputmode="decimal" class="wedit"
                  value="${shares!=null?shares:''}" placeholder="—"
@@ -15964,9 +17536,15 @@ function sortPortfolioFunds(funds){
       case 'isin':        return (f.isin || '').toLowerCase();
       case 'currency':    return ((f.valuation?.native_currency || prof.currency || '')).toLowerCase();
       case 'name':        return (prof.longName || prof.shortName || f.ticker || '').toLowerCase();
+      // Worst dot first — same rule and same helper as the pre-loaded
+      // list, so the two Quality columns cannot sort differently.
+      case 'quality':
+        return qualitySortKey((cacheQuality || {})[(f.ticker || '').toUpperCase()]);
       case 'holdings': {
         const hs  = f.holdings_status || {};
-        const cnt = hs.top_count || (f.data?.holdings_rows || []).length;
+        // Same as the holdings cell above: top_count only, since /view
+        // no longer ships data.holdings_rows.
+        const cnt = hs.top_count || 0;
         // Tiered numeric so sort behaves predictably:
         //   FULL     = 3M + count
         //   ENRICHED = 2M + count
@@ -17875,7 +19453,11 @@ function fmtCacheCat(raw){
   const map = {
     profile:'Profile', holdings:'User Uploaded Holdings', sectors:'Sectors',
     asset_class:'Asset Class', asset_allocation:'Asset Allocation',
-    price_history:'Price History', upload_prefs:"Holding upload URL's",
+    price_history:'Price History',
+    // upload_prefs used to carry the source URL too; since 0.87.0 that
+    // moved to upload_sources, which all three upload dialogs share.
+    upload_prefs:'Holdings Column Mapping',
+    upload_sources:'Remembered Upload Sources',
   };
   return map[raw] || raw;
 }

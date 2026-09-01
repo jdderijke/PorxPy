@@ -1273,10 +1273,13 @@ def detect_asset_class(ticker: yf.Ticker, profile: dict) -> dict:
 # currency from yfinance. This avoids hunting down an iShares URL when
 # the top-10 already gives us enough information for a useful look-through.
 #
-# The mapping from yfinance.Ticker.info to our row schema:
-#   info["country"]   → row["country"]      (HQ country)
-#   info["currency"]  → row["currency"]     (trading currency, per Yahoo)
-#   info["quoteType"] → row["asset_class"]  (Equity / Fixed Income / blank)
+# The mapping from yfinance.Ticker.info to our row schema. Every facet
+# lands in that facet's RAW column, not its level column — Yahoo is a
+# source like any other, and normalise_facets derives the levels from
+# what the source said (see _ENRICH_TARGET):
+#   info["country"]   → row["country_raw"]   (HQ country)
+#   info["currency"]  → row["currency_raw"]  (trading currency, per Yahoo)
+#   info["quoteType"] → row["asset_raw"]     (Equity / Fixed Income / blank)
 #
 # Yahoo top-10 symbols are sometimes bare (e.g. "NVDA") and sometimes
 # Yahoo-suffixed (e.g. "7203.T"). We pass them through to yf.Ticker as-is.
@@ -2019,6 +2022,34 @@ _ENRICH_TARGET: dict[str, str] = {
     "sub_class":   "asset_raw",
 }
 
+# Which facet each enrichable field belongs to, so a write can ask
+# whether the user has already PINNED that facet on this row. ``name``
+# is absent because it is not a facet — it has no tree, no raw column
+# and no pin.
+_ENRICH_FACET: dict[str, str] = {
+    "country":     "country",
+    "currency":    "currency",
+    "sector":      "sector",
+    "asset_class": "asset_class",
+    "sub_class":   "asset_class",
+}
+
+# Where a field's value comes from inside a symbol-info dict, finest
+# answer first.
+#
+# Asset is ONE facet at several grains, so the asset enrichment takes
+# Yahoo's ``sub_class`` where it has one and falls back to its
+# ``asset_class``: the definitions file derives the coarser levels from
+# a finer value and can never derive a finer one from a coarser. This
+# rule is stated in config.ENRICHABLE_FIELDS' comment and was
+# implemented only in the upload pipeline's private copy of the
+# enrichment loop, so the fund-page button and the top-10 build coarsened
+# every asset answer Yahoo gave them. Stating it here, at the one writer,
+# is what stops the two disagreeing again.
+_ENRICH_SOURCE_KEYS: dict[str, tuple[str, ...]] = {
+    "asset_class": ("sub_class", "asset_class"),
+}
+
 
 def _info_looks_found(info: dict) -> bool:
     """Heuristic: does this symbol-info dict look like Yahoo had real data?
@@ -2313,10 +2344,11 @@ def _apply_lookup_to_row(row: dict, info: dict, fields: list[str], *,
     "Enrich through Yahoo" endpoint (where the row may already carry
     user data we must not overwrite).
 
-    Field-specific normalisation matches the upload pipeline:
-        * ``country`` is canonicalised via :func:`country_to_mstar`
-        * ``currency`` is uppercased
-        * everything else is a verbatim string assignment
+    Every facet value lands in that facet's ``<facet>_raw`` column, not
+    in a level column: the raw is what a source SAID, and normalise_facets
+    re-derives every level from it on the next read. Writing a level
+    column directly is silently undone by that pass — which is what the
+    upload pipeline's private copy of this loop did for three releases.
 
     Args:
         row: The holdings row to mutate in place.
@@ -2325,15 +2357,16 @@ def _apply_lookup_to_row(row: dict, info: dict, fields: list[str], *,
             the user has opted into. Fields outside that set are
             silently ignored — defence in depth.
         blank_only: When True, only fill fields whose current value on
-            ``row`` is blank/missing. When False, every selected field
-            overwrites the existing value (used by the top-10 path
-            where the row was just built and has nothing to preserve).
+            ``row`` is blank/missing, and never touch a facet the user
+            has PINNED. When False, every selected field overwrites the
+            existing value (used by the top-10 path where the row was
+            just built and has nothing to preserve).
 
     Returns:
         The list of field names actually written, in order. Useful for
         per-field "rows_filled" counters surfaced in the response.
     """
-    from porxpy.resources import country_to_mstar
+    from porxpy.config import facet_pinned_field
 
     if not isinstance(info, dict):
         return []
@@ -2342,7 +2375,12 @@ def _apply_lookup_to_row(row: dict, info: dict, fields: list[str], *,
     for f in fields:
         if f not in ENRICHABLE_FIELDS:
             continue
-        v = info.get(f)
+        # Finest answer first — see _ENRICH_SOURCE_KEYS.
+        v = None
+        for key in _ENRICH_SOURCE_KEYS.get(f, (f,)):
+            v = info.get(key)
+            if v is not None and str(v).strip():
+                break
         if v is None:
             continue
         v_s = str(v).strip()
@@ -2350,6 +2388,17 @@ def _apply_lookup_to_row(row: dict, info: dict, fields: list[str], *,
             continue
 
         if blank_only:
+            # A pinned facet is a decision the user made on this row, so
+            # it counts as occupied even when its raw column is empty —
+            # which is the ordinary state after a by-row edit, since the
+            # edit states a node rather than a source wording. Writing
+            # the raw would not move the row (the pin wins in
+            # normalise_facets) but it WOULD change what the Resolve
+            # dialog offers to alias, attributing Yahoo's wording to a
+            # value the user chose by hand.
+            facet = _ENRICH_FACET.get(f)
+            if facet and row.get(facet_pinned_field(facet)):
+                continue
             cur = row.get(_ENRICH_TARGET.get(f, f))
             is_empty = cur is None or (
                 isinstance(cur, str) and not cur.strip())
@@ -2420,12 +2469,19 @@ def enrich_top10_holdings(top_rows: list[dict],
         # to recover the resolved form for the output row.
         cleaned = clean_holding_ticker_input(sym) if sym else ""
         info: dict = {}
-        if cleaned and eff_fields:
+        if (cleaned or r.get("name")) and eff_fields:
             # Skip the lookup entirely when the user has unticked every
             # field — saves a Yahoo call per top-10 row when enrichment
             # is fully disabled, and the row falls through to its
             # minimally-populated state.
-            info = get_symbol_info_cached(cleaned) or {}
+            #
+            # The name is passed for the same reason the other two
+            # enrichment callers pass it: it is the fallback the resolver
+            # uses when no ticker variant lands, and withholding it here
+            # made a top-10 row the only holdings row in the app that
+            # could not be resolved by name.
+            info = get_symbol_info_cached(
+                cleaned, name=(r.get("name") or None)) or {}
 
         # Determine the ticker to put on the output row. If Yahoo
         # resolved a variant form, the alias cache holds it; fall back
@@ -2467,20 +2523,42 @@ def enrich_top10_holdings(top_rows: list[dict],
     return out
 
 
-def enrich_existing_holdings(rows: list[dict], fields: list[str]
-                              ) -> tuple[list[dict], dict]:
-    """Fill blank fields on already-built holdings rows from Yahoo lookups.
+def enrich_holdings_rows(rows: list[dict],
+                         fields: list[str],
+                         *,
+                         row_ids: list[str] | set[str] | None = None,
+                         retry_negative: bool = True,
+                         row_cap: int | None = None,
+                         on_progress: Callable[[int, int, float], None] | None = None,
+                         should_cancel: Callable[[], None] | None = None,
+                         ) -> tuple[list[dict], dict]:
+    """Fill blank facets on holdings rows from per-symbol Yahoo lookups.
 
-    Backs the manual "Enrich through Yahoo" button on the fund-page
-    holdings tile. Iterates through the supplied rows and, for each one
-    that carries a ticker, fetches the per-symbol Yahoo lookup and
-    writes the selected ``fields`` ONLY where the current value is
-    blank. A user upload's data is therefore never overwritten — the
-    button is purely additive.
+    THE enrichment loop. Both places that enrich holdings call it:
+
+    * the fund page's "Enrich through Yahoo" button, over the rows
+      already in the cache (``/api/funds/<t>/enrich_holdings``);
+    * the holdings upload's commit, over the rows just parsed out of the
+      user's file (:func:`porxpy.upload.upload_commit`, pass 3).
+
+    It exists as one function because those two are the same operation on
+    the same row shape, and they had drifted apart in every way two
+    copies can (v0.86.0). The upload's copy wrote facet values into the
+    LEVEL columns, which ``coerce_holdings_row`` blanks at the end of the
+    same commit, so upload-time enrichment filled nothing at all; it
+    alone honoured the "finest asset answer wins" rule; and it alone
+    passed ``retry_negative``, so the fund-page button was the only
+    caller that could still be blocked by a negative alias the upload had
+    just cached.
+
+    Blank-only, always: a value already on the row — from the file, from
+    a previous enrichment, or pinned by a by-row edit — is never
+    overwritten. That is what makes the button safe to press repeatedly
+    and keeps the upload's documented precedence (file > enrichment >
+    default) true by construction rather than by a second blank check.
 
     Bond-specific columns (``duration`` / ``maturity`` / ``coupon`` /
-    ``effective_date``) are not part of the enrichable set and stay
-    untouched regardless.
+    ``effective_date``) are not enrichable and stay untouched regardless.
 
     Args:
         rows: Holdings rows to enrich. Mutated in place (and also
@@ -2488,43 +2566,98 @@ def enrich_existing_holdings(rows: list[dict], fields: list[str]
         fields: Subset of :data:`~porxpy.config.ENRICHABLE_FIELDS` to
             try filling. An empty list means "do nothing" — every row
             is left as-is and the counts come back zero.
+        row_ids: When given, only rows whose ``_row_id`` is in this
+            collection are looked up; the rest are left untouched and
+            counted in ``rows_skipped_not_selected``. This is what backs
+            the holdings table's tick boxes — enriching a 2,000-row fund
+            to fix four rows is minutes of Yahoo calls for four answers.
+            ``None`` means every row, which is what a fresh upload wants.
+        retry_negative: Clear a cached "Yahoo has never heard of this"
+            alias before probing. On by default because every caller here
+            is acting on rows whose identifiers may have changed since
+            that negative was recorded — a manual edit that adds an ISIN,
+            or a re-upload of a corrected file. Only pass False to
+            deliberately honour the negative cache.
+        row_cap: Stop looking up after this many rows; the remainder are
+            counted in ``rows_skipped_over_cap``. ``None`` means no cap.
+        on_progress: Optional ``f(i, total, elapsed_s)`` called at the
+            top of every row so a long run can print progress. A
+            per-holding lookup costs ~1s when it misses, so a few hundred
+            unknown rows is legitimately minutes and silence looks like a
+            hang. The callback decides how often to actually print.
+        should_cancel: Optional zero-argument callable invoked at the top
+            of every row. It may raise to abort the run — the upload
+            passes one that raises ``UploadCancelled`` — so the caller
+            keeps its own cancellation type and this loop needs no
+            knowledge of tokens.
 
     Returns:
         ``(rows, stats)``. ``stats`` is::
 
             {
-              "fields":              [<requested fields>],
-              "rows_filled":         {<field>: count, ...},
-              "rows_processed":      <int>,
-              "rows_skipped_no_ticker": <int>,
-              "rows_yahoo_not_found":  <int>,
-              "rows_with_changes":     <int>,
+              "fields":                    [<requested fields>],
+              "rows_filled":               {<field>: count, ...},
+              "rows_processed":            <int>,   # actually looked up
+              "rows_skipped_not_selected": <int>,
+              "rows_skipped_no_identifier":<int>,
+              "rows_skipped_over_cap":     <int>,
+              "rows_yahoo_not_found":      <int>,
+              "rows_lookup_failed":        <int>,
+              "lookup_error":              "<first message>",
+              "rows_with_changes":         <int>,
+              "unrecognised":              [<sample of inputs>],
             }
     """
     from porxpy.utils import coerce_holdings_row
 
     eff_fields = [f for f in (fields or []) if f in ENRICHABLE_FIELDS]
     stats: dict[str, Any] = {
-        "fields":                 eff_fields,
-        "rows_filled":            {f: 0 for f in eff_fields},
-        "rows_processed":         0,
-        "rows_skipped_no_ticker": 0,
-        "rows_yahoo_not_found":   0,
+        "fields":                     eff_fields,
+        "rows_filled":                {f: 0 for f in eff_fields},
+        "rows_processed":             0,
+        "rows_skipped_not_selected":  0,
+        # Named for the question it answers rather than for the ticker it
+        # used to demand: a row carrying only a name is enrichable
+        # (v0.77.0), so "no ticker" stopped being the reason a row gets
+        # skipped, and the counter kept the old name until v0.86.0.
+        "rows_skipped_no_identifier": 0,
+        "rows_skipped_over_cap":      0,
+        "rows_yahoo_not_found":       0,
         # Distinct from the above: the lookup could not be COMPLETED
         # (TLS, DNS, proxy, rate limit), so nothing is known either way.
-        "rows_lookup_failed":     0,
-        "lookup_error":           "",
-        "rows_with_changes":      0,
+        "rows_lookup_failed":         0,
+        "lookup_error":               "",
+        "rows_with_changes":          0,
+        "unrecognised":               [],
     }
     if not eff_fields or not rows:
         return rows, stats
 
-    for row in rows:
-        stats["rows_processed"] += 1
-        sym      = (row.get("ticker") or "").strip()
-        row_isin = row.get("isin")  or None
-        row_cusip= row.get("cusip") or None
-        row_name = row.get("name")  or None
+    wanted = set(row_ids) if row_ids is not None else None
+    # Only the rows we will actually look up count towards the cap and
+    # the progress total, so a four-row selection out of two thousand
+    # reports "1/4", not "1/2000".
+    targets = [r for r in rows
+               if wanted is None or (r.get("_row_id") in wanted)]
+    stats["rows_skipped_not_selected"] = len(rows) - len(targets)
+
+    total = len(targets) if row_cap is None else min(len(targets), row_cap)
+    started = time.time()
+    touched_any = False
+
+    for i, row in enumerate(targets):
+        if should_cancel is not None:
+            should_cancel()
+        if on_progress is not None:
+            on_progress(i, total, time.time() - started)
+        if row_cap is not None and i >= row_cap:
+            stats["rows_skipped_over_cap"] += 1
+            continue
+
+        sym       = (row.get("ticker") or "").strip()
+        row_isin  = row.get("isin")  or None
+        row_cusip = row.get("cusip") or None
+        row_name  = row.get("name")  or None
         # A name is enough to try with (v0.77.0). It used to take a
         # ticker, an ISIN or a CUSIP, which meant a factsheet's position
         # table — names and weights, routinely nothing else — could not
@@ -2532,27 +2665,30 @@ def enrich_existing_holdings(rows: list[dict], fields: list[str]
         # The name path is strict about what it accepts; see
         # resolver.search_name_only.
         if not sym and not row_isin and not row_cusip and not row_name:
-            stats["rows_skipped_no_ticker"] += 1
+            stats["rows_skipped_no_identifier"] += 1
             continue
+
+        stats["rows_processed"] += 1
         try:
             info = get_symbol_info_cached(
                 sym,
                 isin=row_isin,
                 cusip=row_cusip,
                 name=row_name,
+                retry_negative=retry_negative,
             )
         except Exception as exc:
             # A transport failure is NOT a miss, and counting it as one
-            # is how an unreachable Yahoo looks exactly like a Yahoo
-            # that has never heard of your holdings: every row "not
-            # found", nothing filled, no error anywhere. Recorded
-            # separately, with the first message kept, so the dialog can
-            # say "could not reach Yahoo" instead of implying the data
-            # does not exist.
+            # is how an unreachable Yahoo looks exactly like a Yahoo that
+            # has never heard of your holdings: every row "not found",
+            # nothing filled, no error anywhere. Recorded separately,
+            # with the first message kept, so the dialog can say "could
+            # not reach Yahoo" instead of implying the data does not
+            # exist.
             stats["rows_lookup_failed"] += 1
             if not stats["lookup_error"]:
                 stats["lookup_error"] = f"{type(exc).__name__}: {exc}"
-            print(f"[enrich_existing] {sym} error: {exc}")
+            print(f"[enrich] {sym or row_name} error: {exc}")
             continue
         if not isinstance(info, dict) or not info.get("_found"):
             if isinstance(info, dict) and info.get("_error"):
@@ -2561,39 +2697,51 @@ def enrich_existing_holdings(rows: list[dict], fields: list[str]
                     stats["lookup_error"] = str(info.get("_error"))
             else:
                 stats["rows_yahoo_not_found"] += 1
+                if len(stats["unrecognised"]) < 50:
+                    stats["unrecognised"].append(sym or row_name or "")
             continue
 
         # Backfill ticker / ISIN / CUSIP from the resolved info.
+        #
+        # _resolved_ticker is injected by get_symbol_info_cached at every
+        # successful return site — it is the canonical Yahoo ticker
+        # regardless of which path resolved it (variant rewrite, ISIN
+        # country prefix, id-search, name search, or straight hit).
         resolved_ticker = (info.get("_resolved_ticker") or "").strip() or None
         if resolved_ticker and resolved_ticker != (row.get("ticker") or ""):
             row["ticker"] = resolved_ticker
+            touched_any = True
+        # ISIN — read out of the Yahoo info cache; no extra HTTP call.
+        # Only fills blank, never overwrites a file-supplied ISIN.
         if resolved_ticker and not (row.get("isin") or "").strip():
             fetched_isin = _isin_from_info(resolved_ticker)
             if fetched_isin:
                 row["isin"] = fetched_isin
+                touched_any = True
+        # CUSIP — derived from a US ISIN (chars 2-10). Blank-fill only.
         if not (row.get("cusip") or "").strip():
             isin_for_cusip = (row.get("isin") or "").strip().upper()
             if isin_for_cusip:
                 derived = _cusip_from_isin(isin_for_cusip)
                 if derived:
                     row["cusip"] = derived
+                    touched_any = True
 
         written = _apply_lookup_to_row(row, info, eff_fields, blank_only=True)
         if written:
+            touched_any = True
             stats["rows_with_changes"] += 1
             for f in written:
                 stats["rows_filled"][f] = stats["rows_filled"].get(f, 0) + 1
 
-    # Re-coerce every row so a freshly-set asset_class default-fills
-    # sub_class consistently, and the numeric / date types stay clean
-    # for the rows we touched. Preserves _row_id (passed explicitly).
-    coerced: list[dict] = []
-    for r in rows:
-        rid = r.get("_row_id")
-        coerced.append(coerce_holdings_row(r, row_id=rid))
-    # Mutate the input list in place so the caller's reference still
-    # sees the updated rows.
-    rows[:] = coerced
+    # Re-coerce every row so a freshly-written raw resolves to its node
+    # and levels, a freshly-set asset_class default-fills sub_class, and
+    # the numeric / date types stay clean. Preserves _row_id (passed
+    # explicitly). Skipped when nothing was written — coercion is not
+    # free on a few thousand rows, and a no-op run should be one.
+    if touched_any:
+        rows[:] = [coerce_holdings_row(r, row_id=r.get("_row_id"))
+                   for r in rows]
     return rows, stats
 
 

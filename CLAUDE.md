@@ -27,7 +27,12 @@ Concretely, before finishing a change, sweep the parallel set it belongs to:
   shape, plus the resource CSV and any bundle export that carries it.
 - Change a **cache category** → check its counterpart scope (listings vs funds)
   and its entry in `DEFAULT_CACHE_CONFIG`.
-- Change a **breakdown source** → check the other three in `BREAKDOWN_SOURCES`.
+- Change a **breakdown source** → check the others in `BREAKDOWN_SOURCES`,
+  and ask whether the change applies to a *derived* source too
+  (`DERIVED_BREAKDOWN_SOURCES` — currency-from-country). A derived source
+  exists on one facet only, so `sources_for_facet()` decides which cards
+  offer it; a card's `available` map is the different question of whether
+  this fund has a source it could have.
 - Change a **per-card override** → the two that describe a card travel
   together: `breakdown_source.<facet>` (whose numbers) and
   `breakdown_complete.<facet>` (read them as covering the whole fund).
@@ -96,23 +101,38 @@ python tools/inspect_fund.py TDIV.AS [MORE.TICKERS]   # dump raw Yahoo fields be
 python tools/data_coverage.py                          # profile-field coverage across the saved listing cache (no network)
 ```
 
+The user usually keeps `main.py` running from PyCharm. **Check before
+starting another one:** the dev server binds port 5000, and on Windows a
+second process can bind the same port without a visible error — so a stray
+`python main.py` leaves two instances, requests are answered by whichever
+won, and a code change looks like it "didn't take effect" when you are
+really talking to a different process. It fails silently and costs rounds
+of debugging.
+
+- Is one up, and does it have your change?
+  `curl -s http://127.0.0.1:5000/api/meta` returns `version` and
+  `build_date` straight from `porxpy/__init__.py`.
+- Backend edits: `debug=True` means the stat reloader picks them up. If a
+  reload needs nudging, `touch porxpy/app.py`.
+- Only start one when nothing answers on that port.
+
 There is **no test suite, linter config, or build step** in this repo. Verification is done by running the app and exercising the affected screen, or by the two `tools/` scripts. `test files/` holds sample CSVs for manually exercising the breakdown-upload flow, not automated tests.
 
 The AI factsheet helper needs `ANTHROPIC_API_KEY` in the environment plus the Settings toggle; it is off by default and the key is never written to `settings.json`.
 
 ## Architecture
 
-Flask backend (`porxpy/`) + one 16k-line vanilla-JS file (`fund_explorer.html`) + JSON files on disk. No database, no frontend framework, no ORM. `main.py` is a banner, a legacy-file check, and `create_app()`.
+Flask backend (`porxpy/`) + one 19k-line vanilla-JS file (`fund_explorer.html`) + JSON files on disk. No database, no frontend framework, no ORM. `main.py` is a banner, a legacy-file check, and `create_app()`.
 
 ### Module roles
 
-`app.py` (~5.9k lines) holds every route and is a thin HTTP layer by design — parse, delegate, jsonify. Business logic belongs in:
+`app.py` (~6.8k lines) holds every route and is a thin HTTP layer by design — parse, delegate, jsonify. Business logic belongs in:
 
 | Module | Owns |
 |---|---|
-| `config.py` | Paths, TTLs, and the **registries** other modules read: `FACET_LEVELS`, `FACET_DEFAULT_LEVEL`, `BREAKDOWN_FACETS`, `BREAKDOWN_SOURCES`, `HOLDINGS_SOURCES` (plus the variant maps `HOLDINGS_VARIANT_SOURCE` / `HOLDINGS_VARIANT_ROLLUP` and their lookups), `CACHE_CATEGORIES`, `OVERRIDABLE_FIELDS`, `FIELD_SOURCES`. Does no I/O. |
+| `config.py` | Paths, TTLs, and the **registries** other modules read: `FACET_LEVELS`, `FACET_DEFAULT_LEVEL`, `BREAKDOWN_FACETS`, `BREAKDOWN_SOURCES`, `DERIVED_BREAKDOWN_SOURCES` (+ `sources_for_facet`), `HOLDINGS_SOURCES` (plus the variant maps `HOLDINGS_VARIANT_SOURCE` / `HOLDINGS_VARIANT_ROLLUP` and their lookups), `ENRICHABLE_FIELDS`, `CACHE_CATEGORIES`, `OVERRIDABLE_FIELDS`, `FIELD_SOURCES`. Does no I/O. |
 | `resources.py` | Loads the reference CSVs and resolves any raw string to a canonical facet node at every level (`resolve_sector_tree`, `resolve_country_tree`, `resolve_asset_tree`, `resolve_currency`). Also alias writing and `reload_resources()`. |
-| `extractors.py` | Yahoo fetching and per-holding enrichment. `load_fund_data()` is the composition point for `/api/fund` and the portfolio enrichment loop. |
+| `extractors.py` | Yahoo fetching and per-holding enrichment. `load_fund_data()` is the composition point for `/api/fund` and the portfolio enrichment loop. `enrich_holdings_rows()` is THE holdings-enrichment loop — the fund-page button and the upload commit both call it, and neither may grow a copy. |
 | `resolver.py` | Ticker variant generation and the resolution fallback chain (variant probe → ISIN country prefix → identifier search → name search). |
 | `breakdowns.py` | Holdings → per-facet levelled breakdown (`rollup_holdings`, `build_fund_breakdowns`), and the portfolio aggregation pass (`aggregate_portfolio_holdings`, `rollup_portfolio_fundlevel`). |
 | `utils.py` | Cache I/O (`cache_get`/`cache_put`/`cache_read`/`cache_write`/`cache_purge`), portfolios, settings, overrides, ISIN map. |

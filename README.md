@@ -1,5 +1,8 @@
 # PorxPy
 
+*Current as of v0.87.1. This is the fullest architecture write-up;
+check the stamp against `porxpy/__init__.py` before trusting a claim.*
+
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
 true exposure of an investment portfolio across funds, ETFs, sectors,
 countries, currencies, and asset classes.
@@ -165,6 +168,61 @@ The fund price chart can also overlay every peer's price series —
 indexed to 100 at the left edge of the window, since two funds priced at
 12 and 480 tell you nothing side by side.
 
+### See at a glance whether the data is good enough
+
+Every fund carries five dots — **fund data · asset · sector · country ·
+currency** — in the pre-loaded list, the portfolio funds table and the
+fund page header. Colour runs red → orange → yellow → green, so one look
+down the column finds the weak facet and one look across a row finds the
+weak fund. The column sorts by the **worst** dot first: a fund with four
+greens and a red is a fund with a red.
+
+The four facet dots are that facet's coverage — how much of the fund's
+exposure its chosen source can actually place, with `unknown` counting
+against it and `n/a` counting as answered, because a cash sleeve has no
+sector and never will.
+
+**A solid dot was measured; a hollow one was reported.** Solid means the
+number was counted from actual positions (a holdings look-through or an
+upload). Hollow means the issuer published it, or you asserted that a
+partial source covers the whole fund. Both can read 100%, and they are
+not the same claim — so the difference stays visible rather than being
+averaged away.
+
+**The fund-data dot is not a completeness score.** It answers whether the
+optimiser can rate this fund, which turns out to be a different question:
+a fund can have every field filled in and still be unrankable. Three
+states, three different things to do about them:
+
+| | meaning | what fixes it |
+|---|---|---|
+| red | a rating input is missing — TER, size, or focus | supply it: a factsheet, or your own value |
+| orange | inputs are all present, but too few peers to rank against | load more similar funds, or broaden the focus |
+| green | the optimiser can rank it | nothing |
+
+Orange is the one worth knowing about, because its fix is the
+counter-intuitive one. Peer groups are `primary asset class × focus ×
+focus detail`, and a group needs three members before anyone in it can be
+ranked. An over-specific focus detail splits the universe into groups of
+one — so *narrowing* a fund's description can be what makes it
+unrankable, and broadening it is the repair.
+
+**How to read a dot is on the dot.** Hovering any dot gives that dot's
+own reading — "Sector — 82% at sector · counted from holdings" — followed
+by the whole scale: what each colour means, and what solid and hollow
+mean. The column headers carry the same text, and the fund page prints
+the two-line version under its labelled block, since that is the screen
+where you act on a dot.
+
+**The dots follow what you change.** Switching a card's breakdown source,
+declaring a facet complete, editing a fund's focus, uploading or matching
+holdings, adding an alias in the Resolve dialog, or adding and deleting
+funds all move a dot — and all of them repaint it immediately, along with
+the score column and the peer list, wherever those are on screen. Peer
+groups in particular are a property of the *universe* rather than of one
+fund, so loading a fund can take its peers from orange to green without
+anything about them having changed.
+
 ### Manage funds and portfolios
 
 - Add funds by ticker or ISIN. PorxPy fetches profile, price history,
@@ -173,7 +231,11 @@ indexed to 100 at the left edge of the window, since two funds priced at
   per fund, plus cash positions.
 - Upload full holdings CSVs or Excel files when the fund issuer
   publishes them (top-10 from Yahoo is often not enough for a real
-  X-ray).
+  X-ray). Yahoo can fill the columns the file leaves blank, during the
+  upload or afterwards from the holdings tile — the same pass either
+  way, identifying each holding by its ticker, ISIN, CUSIP **or just its
+  name**, and never overwriting a value the file supplied or you edited.
+  Tick rows in the holdings table to enrich only those.
 - Hold **three position lists per fund at once** — Yahoo's top-10, the
   table read off the factsheet, and your uploaded file — and choose
   which one the fund shows. The choice is saved with the fund, so every
@@ -185,6 +247,15 @@ indexed to 100 at the left edge of the window, since two funds priced at
   document and stage the fields, breakdowns and positions it finds —
   every value carrying the page and verbatim quote it came from, and
   nothing applied until you say so.
+- Derive the **currency card from the country card**, for the many funds
+  whose issuer publishes a geographic split and no currency split at all.
+  "From country" converts the country card country by country to each
+  country's primary currency, and then follows it: an unknown slice there
+  stays unknown here, and marking the country card coverage-complete
+  marks the derived currency card complete too. Not the reverse — a
+  currency does not name a country, so country-from-currency would invent
+  detail rather than convert it, and the currency card's own
+  completeness assertion says nothing about country.
 - Tell a breakdown card that its source **covers the whole fund**, when
   the breakdown rests on a partial holdings list and nothing better
   exists. The unknown slice is dropped and the rest scaled up, and the
@@ -306,6 +377,8 @@ porxpy/
   bundles.py          Export/import of fund sets and portfolio backups
   utils.py            Cache I/O, portfolio data, coercion helpers
   resources.py        Reference-data loading and facet-value resolution
+  yf_session.py       Yahoo transport: TLS impersonation pinning and the
+                      trust store (see "TLS interception" below)
 fund_explorer.html    Single-file frontend (HTML + JS, no framework)
 resources/            Reference CSVs (shipped with the project)
   Geography_definitions.csv    country → region → super-region
@@ -399,8 +472,10 @@ overrides.json        Per-fund overrides, keyed by ISIN, then by field
 isin_map.json         Cached ISIN → ticker resolutions (from OpenFIGI)
 cache/
   factsheets/<isin>.*       Uploaded issuer factsheets + metadata sidecar
-  listings/<ticker>.json    Per-listing data (price history, profile)
-  funds/<isin>.json         Per-fund data (holdings, breakdowns, sectors)
+  listings/<ticker>.json    Per-listing data (price history, profile,
+                            remembered upload column mapping)
+  funds/<isin>.json         Per-fund data (holdings, breakdowns, sectors,
+                            remembered upload sources)
   _symbol_info.json         Shared per-symbol info cache (HQ country, etc.)
   _symbol_aliases.json      Resolved ticker alias cache
   FX_*.json / FXH_*.json    FX spot and historical rate caches
@@ -464,7 +539,8 @@ independently.
 All responses are cached locally with TTLs that reflect how often the
 underlying data actually changes (price: 1 day, sectors and issuer asset
 allocation: 7 days, profile: 30 days, fund asset class: 90 days,
-ISIN→ticker: 30 days, FX: 6 hours). Holdings are the exception: they are
+ISIN→ticker: 30 days, FX spot: 6 hours, FX history: 24 hours). Holdings
+are the exception: they are
 never expired on a clock, because a fund's holdings only change when you
 ask for them — "Reload fund data" on the fund page, or "Refresh all" on
 the portfolio.
@@ -594,7 +670,7 @@ You should see a startup banner:
 
 ```
 =======================================================
-  PorxPy  v0.80.0  (built 2026-08-24)
+  PorxPy  v0.87.1  (built 2026-09-01)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -640,7 +716,11 @@ leaves your machine. The only outbound traffic is:
 
 Bundles are files on your disk. Nothing is uploaded anywhere, and a
 fund bundle deliberately leaves out the overrides that describe how
-*you* use a fund rather than what the fund is.
+*you* use a fund rather than what the fund is. It also strips the
+filesystem paths behind remembered uploads: an issuer URL is kept,
+because the recipient can fetch from it too, but `C:\Users\you\…` is
+inert on their machine and would carry your username and folder layout
+along with the research.
 
 There are no telemetry, analytics, or update checks.
 
@@ -655,67 +735,16 @@ documents keeps the issues of its own subject: `OPTIMIZER.md` §13 for the
 solver, `FACET_TREE.md` §17 for the facet trees. Ideas that are merely
 absent rather than wrong belong in `WISHLIST.md`.
 
-### A portfolio view ships every fund's price history and holdings, and reads neither
-
-*Found 2026-08-24, at v0.80.0.*
-
-`GET /api/portfolios/<pid>/view` attaches each fund's whole
-`load_fund_data` blob under `funds[].data`. Two keys in there dominate
-the response and are never read by the screen it serves. Measured on a
-27-fund portfolio, 7.9MB of compact JSON:
-
-| Block | Bytes | Share | Read by this view? |
-|---|---|---|---|
-| `funds[].data.price_history` | 4,849,698 | 61.3% | no |
-| `funds[].data.holdings_rows` | 2,790,864 | 35.3% | only `.length` |
-| everything the view actually uses | 274,394 | 3.5% | yes |
-
-Neither block is idle by accident — each has its own endpoint. The
-portfolio History chart calls `/api/portfolios/<pid>/price_history`,
-which returns per-fund daily *values* in the base currency with FX
-applied and carry-forward alignment; raw OHLCV would not answer that
-question. The aggregated holdings table calls `/holdings_rollup`.
-Valuation for the view itself is finished server-side in
-`_build_enriched_funds` before anything is serialised, so the price
-series is spent by the time it is attached. The only readers of
-`f.data.holdings_rows` in portfolio code are two
-`hs.top_count || (f.data?.holdings_rows || []).length` fallbacks, and
-`holdings_status.top_count` is present for every real fund (only the
-synthetic cash rows lack it, and they hold nothing).
-
-**The consequence is not just waste.** With debug pretty-printing the
-response reaches ~15.7MB, and the development server does not deliver
-all of it: `Content-Length: 15707874` against 15698590 bytes received,
-so the JSON arrives truncated and unparseable and that portfolio's view
-fails to load. Smaller portfolios (400KB–3.3MB) are unaffected, which is
-why this reads as an intermittent fault rather than a size limit.
-
-**The fix** is to strip both keys from the view response only — the fund
-page reads both and must keep them. That takes the payload to ~274KB and
-removes the truncation. One open question before doing it: whether to
-drop `price_history` outright, or keep a trimmed date-and-close series
-inline (~40% of its current size) against a future portfolio screen that
-might want it. Each point currently carries `open`, `high`, `low`,
-`close` and `volume` at ~88 bytes.
-
-### Debug mode doubles the size of every JSON response
-
-*Found 2026-08-24, at v0.80.0.*
-
-`create_app()` leaves `app.json.compact` unset, so Flask decides by debug
-mode and indents every response when `debug=True` — which is how
-`main.py` runs. Measured on one portfolio view: 661,155 bytes in debug
-against 309,630 without, a factor of 2.14. It is invisible on small
-responses and it is what pushes the payload above into the range where
-the development server truncates it. Setting `app.json.compact = True`
-in `create_app()` fixes it for every endpoint at once; indentation is not
-something a browser needs, and anyone reading a response by hand has
-`jq`.
+Nothing is currently open here. The two defects listed at v0.80.0 — a
+portfolio view shipping every fund's price history and holdings, and
+Flask's debug mode doubling every JSON response — were both fixed in
+v0.81.0; see the CHANGELOG for what each was and why the fix sits where
+it does.
 
 ---
 
 ## Version
 
-Current release: **0.80.0** (2026-08-24)
+Current release: **0.86.3** (2026-08-27)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

@@ -65,11 +65,15 @@ WEIGHT_EPS = 1e-4
 # and the swap search run to rank candidates against each other.
 #
 # Those fits are never shown to anyone; they exist to answer "is A better
-# than B", and the ranking is settled long before the weights are. At 60
-# iterations the residual is within ~4e-5 of converged, which cannot flip
-# a comparison that matters, and it is ~8x faster — the inner loop is
-# dominated by numpy call overhead at these tiny sizes, so iteration count
-# is very nearly the whole cost.
+# than B", and the ranking is settled long before the weights are. The
+# inner loop is dominated by numpy call overhead at these tiny sizes, so
+# iteration count is very nearly the whole cost.
+#
+# Measured against the 500-iteration exact solve on 12x9 problems: at 150
+# iterations the residual sits within ~2e-6 of converged for a ~3x
+# speed-up. The value was 60 for a while — ~1e-4 off, and faster still —
+# and the comment here kept quoting that trade-off after the constant was
+# raised (corrected in v0.86.3 by measuring rather than by reading).
 #
 # The chosen set is always re-solved at full precision afterwards, so
 # nothing the user sees inherits the screening tolerance.

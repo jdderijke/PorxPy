@@ -257,6 +257,22 @@ FUND_CATEGORIES: list[str] = [
     # leaves the other alone, and only facets that source covered
     # (non-empty) can be flipped to it on the fund page.
     "uploaded_breakdowns",
+    # upload_sources = "where did the last upload of each kind come
+    # from?", one entry per UPLOAD_SOURCE_KINDS member:
+    #   { "upload_sources": {
+    #       "fetched_at": "...",
+    #       "value": { "holdings":      {"source_kind": "url",
+    #                                    "source_value": "https://…",
+    #                                    "filename": "…", "saved_at": "…"},
+    #                  "factsheet":     {...},
+    #                  "breakdown_csv": {...} } } }
+    # Fund-level rather than per-listing, unlike upload_prefs: the
+    # *layout* of a spreadsheet can differ between a fund's listings
+    # (which is why the column mapping stays ticker-keyed), but the
+    # *location* of the issuer's document cannot — a factsheet and a
+    # holdings schedule belong to the fund, and both listings of it
+    # should offer the same URL back.
+    "upload_sources",
 ]
 # Union, preserved for code that iterates "every category" (cache list,
 # settings UI, etc.). Order is listings-first for cosmetic stability.
@@ -301,6 +317,29 @@ DEFAULT_CACHE_CONFIG: dict[str, dict[str, Any]] = {
     # TTL is effectively "forever". 10 years is the practical upper
     # bound; cache_get treats anything above this as a miss.
     "upload_prefs":  {"enabled": True, "ttl_days": 3650},
+    # upload_sources = the remembered Source field of each upload dialog
+    # (see FUND_CATEGORIES). Like upload_prefs it is never fetched from
+    # anyone — it changes only when the user completes an upload — so
+    # the TTL is the same effective "forever".
+    "upload_sources": {"enabled": True, "ttl_days": 3650},
+}
+
+# The upload dialogs whose Source field is remembered per fund.
+#
+# Three dialogs ask the same question — "where is the document?" — and
+# accept the same answers (an http(s) URL, a local path, a file:// URI,
+# or a dropped file stashed in the scratch folder). They are listed here
+# so the store, the API and the frontend prefill are one implementation
+# taking the kind as a parameter, rather than three near-copies that can
+# drift apart in what they remember and how they show it.
+#
+# The keys are storage keys and must not be renamed casually: a rename
+# orphans every remembered source. The labels are what the dialogs and
+# the cache screen call each kind.
+UPLOAD_SOURCE_KINDS: dict[str, str] = {
+    "holdings":      "holdings file",
+    "factsheet":     "factsheet",
+    "breakdown_csv": "breakdown CSV",
 }
 
 # Canonical fund-level classification keys. The authority is
@@ -680,11 +719,87 @@ FACET_DISPLAY_LEVELS: dict[str, tuple[str, ...]] = {
 # source it says nothing that distinguishes the two, and a stored key
 # whose name contradicts its label is how confusion starts. Renamed, with
 # a migration.
-BREAKDOWN_SOURCES: tuple[str, ...] = ("yahoo", "factsheet", "holdings", "upload")
+#   from_country  currency only — the country card, converted country by
+#                 country to each country's primary currency
+BREAKDOWN_SOURCES: tuple[str, ...] = ("yahoo", "factsheet", "holdings",
+                                      "upload", "from_country")
 
 # Which sources supply their own item lists rather than deriving them.
 # Both are stored per facet per source in the uploaded_breakdowns cache.
 SUPPLIED_BREAKDOWN_SOURCES: tuple[str, ...] = ("upload", "factsheet")
+
+# ---------------------------------------------------------------------------
+# Cross-facet derived sources (v0.86.0)
+# ---------------------------------------------------------------------------
+# A source whose numbers are ANOTHER FACET'S finished card, converted.
+# The map is {facet: facet it derives from} and is deliberately a
+# registry rather than an if-test on "currency", so a second such pair
+# — if one is ever justified — is a row here and not a new branch in
+# build_fund_breakdowns.
+#
+# Only currency has one, and only from country. Currency is the facet
+# most often missing: plenty of issuers publish a geographic split and
+# no currency split at all, and for a long-only fund of listed equities
+# "where is it" is a decent proxy for "what is it priced in". The
+# reverse derivation is NOT offered and must not be added by symmetry —
+# a currency does not name a country (EUR spans twenty of them), so
+# country-from-currency would invent detail rather than convert it.
+#
+# The derivation is over the SOURCE facet's card as the user has it: its
+# chosen source, its completeness assertion, its own unknown slice. That
+# is what makes the two behave as one decision in the direction the user
+# asked for — completing country completes the currency derived from it
+# — while leaving the reverse direction untouched, since nothing about
+# the country card is computed from currency.
+DERIVED_BREAKDOWN_SOURCES: dict[str, str] = {
+    "currency": "country",
+}
+
+
+def derived_source_key(from_facet: str | None) -> str:
+    """The source name a derivation from ``from_facet`` is stored under.
+
+    One function so the stored string, the selector button and the
+    validation vocabulary cannot disagree about what the source is
+    called. Returns ``""`` for ``None``, which is what a facet with no
+    derivation registered passes in.
+    """
+    return f"from_{from_facet}" if from_facet else ""
+
+
+# Every derived source name, for the validators that need to ask "is
+# this source facet-restricted?" without knowing which facet.
+_DERIVED_SOURCE_KEYS: frozenset[str] = frozenset(
+    derived_source_key(f) for f in DERIVED_BREAKDOWN_SOURCES.values())
+
+
+def sources_for_facet(facet: str) -> tuple[str, ...]:
+    """Which sources EXIST for this facet, whether or not a fund has them.
+
+    The common four, plus this facet's derivation where it has one. A
+    derived source is meaningless on the facets that register none —
+    "sector from country" says nothing — so it is not a source those
+    cards lack, it is not one of their sources at all.
+
+    That distinction is the reason this is separate from a card's
+    ``available`` map, which answers the different question "does THIS
+    fund have it": a fund with no factsheet still has a factsheet source,
+    shown struck through, because uploading one would fill it. Nothing
+    would ever fill "sector from country".
+
+    One function so the three consumers cannot disagree: the override
+    vocabulary that validates a stored pin, the endpoint that accepts a
+    new one, and the block the selector is drawn from.
+
+    Args:
+        facet: One of :data:`BREAKDOWN_FACETS`.
+
+    Returns:
+        The source names in :data:`BREAKDOWN_SOURCES` order.
+    """
+    own = derived_source_key(DERIVED_BREAKDOWN_SOURCES.get(facet))
+    return tuple(s for s in BREAKDOWN_SOURCES
+                 if s not in _DERIVED_SOURCE_KEYS or s == own)
 
 
 # ---------------------------------------------------------------------------
@@ -1140,8 +1255,14 @@ OVERRIDABLE_FIELDS: dict[str, dict] = {
 # here rather than typed out, so a new breakdown facet cannot be added
 # without its override coming along.
 for _facet in BREAKDOWN_FACETS:
+    # A derived source is legal only on the facet that registers one, so
+    # each selector's vocabulary is the common sources plus its own
+    # derivation — not the full BREAKDOWN_SOURCES tuple. Otherwise
+    # "sector from country" would validate and then resolve to nothing,
+    # which is a stored pin no card can honour.
     OVERRIDABLE_FIELDS[f"breakdown_source.{_facet}"] = {
-        "type": "enum", "vocab": BREAKDOWN_SOURCES, "neutral": "yahoo",
+        "type": "enum", "neutral": "yahoo",
+        "vocab": sources_for_facet(_facet),
         "label": f"{_facet} card source",
     }
     # "Read this card's source as covering the whole fund." Stored beside

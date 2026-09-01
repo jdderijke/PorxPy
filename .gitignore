@@ -5,6 +5,13 @@
 # ----- Personal directories (not for repo) -------------------
 user_*/
 
+# Superseded resource files and sample CSVs kept for manual testing.
+# Both are working material, not source: the archive is what the
+# resource files used to be, and the test files exist to exercise the
+# breakdown-upload flow by hand.
+ZZ-archived/
+test files/
+
 # ----- PorxPy runtime data (never commit user data) ----------
 portfolios.json
 settings.json
@@ -57,6 +64,7 @@ Thumbs.db
 desktop.ini
 
 # ----- Misc -----------------------------------------------
+*.stackdump
 *.log
 *.bak
 *.swp

@@ -41,7 +41,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from porxpy.config import (BREAKDOWN_SOURCES, FACET_DEFAULT_LEVEL,
+from porxpy.config import (BREAKDOWN_SOURCES, DERIVED_BREAKDOWN_SOURCES,
+                           FACET_DEFAULT_LEVEL, derived_source_key,
+                           sources_for_facet,
                            FACET_LEVELS, FACET_NOT_APPLICABLE,
                            META_FACETS, NA_KEY, SUPPLIED_BREAKDOWN_SOURCES,
                            TARGET_FACETS, UNKNOWN_KEY)
@@ -561,9 +563,15 @@ def rollup_holdings(rows: list[dict]) -> dict:
 #                CSV from the issuer. The user gets the breakdowns from
 #                a fund factsheet (typically by screenshotting the
 #                issuer's fund page and asking an LLM to extract a CSV).
+#   "from_country" — currency ONLY, and derived rather than sourced: the
+#                fund's own country card, converted country by country to
+#                each country's primary currency. For the many funds whose
+#                issuer publishes a geographic split and no currency split
+#                at all. See config.DERIVED_BREAKDOWN_SOURCES for why the
+#                reverse direction is not offered.
 #
 # Per fund, per facet, the user can override the source from "yahoo" to
-# "holdings" or "upload" (persisted as "breakdown_source.<facet>"
+# any other source the fund has (persisted as "breakdown_source.<facet>"
 # in the per-field override store — see porxpy.utils.override_put).
 # Once overridden, that card *is* the fund's Fund/ETF-level data: it rolls up
 # into the portfolio's Fund/ETF-level cards exactly like issuer data.
@@ -671,6 +679,106 @@ def _resolve_items(facet: str,
     return out_items, out_miss
 
 
+# ---------------------------------------------------------------------------
+# Cross-facet derived sources (v0.86.0)
+# ---------------------------------------------------------------------------
+# One facet's card, converted member by member into another facet's
+# vocabulary, offered as a source on the target card. The registry of
+# which pairs exist is config.DERIVED_BREAKDOWN_SOURCES; the conversion
+# itself is a mapper per pair, here.
+#
+# Only country -> currency exists. See the registry's comment for why the
+# reverse is not offered and must not be added for symmetry.
+
+
+def _country_key_to_currency(key: str) -> str:
+    """One country node -> its primary ISO-4217 code, or ``""``."""
+    from porxpy.resources import MSTAR_TO_CURRENCY
+    return MSTAR_TO_CURRENCY.get((key or "").strip(), "")
+
+
+_CROSS_FACET_MAPPERS: dict[tuple[str, str], Any] = {
+    ("country", "currency"): _country_key_to_currency,
+}
+
+
+def derive_facet_items(from_facet: str, to_facet: str,
+                       from_block: dict | None) -> tuple[list[dict], list[dict]]:
+    """Convert a finished facet card into another facet's vocabulary.
+
+    Backs the "From country" source on the currency card, for the funds —
+    a large minority — whose issuer publishes a geographic split and no
+    currency split at all.
+
+    The input is the source facet's FINISHED block: the source the user
+    chose for it, at whatever coverage it has, with its completeness
+    assertion already applied. That is what makes the two cards behave as
+    one decision in this direction — asserting the country card complete
+    leaves it with no ``unknown`` slice, so the currency card derived
+    from it has none either — without any coupling in the other
+    direction, since nothing about the country card reads currency.
+
+    Residual weight passes through unchanged rather than being
+    reclassified: an ``unknown`` fifth of the country card is an unknown
+    fifth of the currency card, and ``n/a`` (the question does not apply
+    to these positions) stays ``n/a``. A country that resolves to no
+    currency on file becomes ``unknown`` and is reported, so the card can
+    say what it failed to convert instead of quietly shrinking.
+
+    Args:
+        from_facet: The facet supplying the numbers (``"country"``).
+        to_facet: The facet being derived (``"currency"``).
+        from_block: The source facet's block from
+            :func:`build_fund_breakdowns`. ``None`` or an unknown pair
+            yields empty lists, which the caller reads as "this source is
+            not available for this fund".
+
+    Returns:
+        ``(items, unresolved)`` in the same shapes the other sources
+        produce: items are canonical-keyed ``{"key", "weight"}``, heaviest
+        first; ``unresolved`` is ``[{"raw", "weight"}]`` naming the source
+        buckets that could not be converted.
+    """
+    mapper = _CROSS_FACET_MAPPERS.get((from_facet, to_facet))
+    if mapper is None or not isinstance(from_block, dict):
+        return [], []
+
+    # Read the source at its FINEST level. A coarser bucket does not name
+    # one member of the target vocabulary — "europe" is a dozen
+    # currencies — so deriving from a region would be inventing a split
+    # rather than converting one.
+    levels = from_block.get("levels") or [from_facet]
+    src_items = (from_block.get("items") or {}).get(levels[0]) or []
+
+    agg: dict[str, float] = {}
+    misses: dict[str, float] = {}
+    for it in src_items:
+        if not isinstance(it, dict):
+            continue
+        try:
+            w = float(it.get("weight") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if w <= 0:
+            continue
+        key = (it.get("key") or "").strip()
+        if key in _RESIDUAL_KEYS:
+            agg[key] = agg.get(key, 0.0) + w
+            continue
+        target = mapper(key)
+        if not target:
+            agg[UNKNOWN_KEY] = agg.get(UNKNOWN_KEY, 0.0) + w
+            misses[key] = misses.get(key, 0.0) + w
+            continue
+        agg[target] = agg.get(target, 0.0) + w
+
+    items = sorted(({"key": k, "weight": w} for k, w in agg.items()),
+                   key=lambda i: -i["weight"])
+    unresolved = sorted(({"raw": k, "weight": w} for k, w in misses.items()),
+                        key=lambda u: -u["weight"])
+    return items, unresolved
+
+
 def build_fund_breakdowns(holdings_breakdowns: dict,
                           sectors: list[dict] | None,
                           asset_allocation: list[dict] | None,
@@ -737,7 +845,7 @@ def build_fund_breakdowns(holdings_breakdowns: dict,
             {
               "asset_class": {
                   "items":     [{"key","weight"}, ...],
-                  "source":    "yahoo" | "factsheet" | "holdings" | "upload",
+                  "source":    one of BREAKDOWN_SOURCES,
                   "available": {source: bool, ...},
               },
               "sector":   {...},
@@ -770,7 +878,15 @@ def build_fund_breakdowns(holdings_breakdowns: dict,
     }
 
     out: dict[str, dict] = {}
-    for facet in _FUND_BD_FACETS:
+    # A facet whose card can be DERIVED from another (currency from
+    # country) is built after the facet it reads, so what it converts is
+    # that card as the user has it — chosen source, coverage and
+    # completeness assertion all already applied. Ordering it explicitly
+    # rather than relying on _FUND_BD_FACETS' order means adding a facet
+    # to that tuple cannot silently break the dependency.
+    ordered = ([f for f in _FUND_BD_FACETS if f not in DERIVED_BREAKDOWN_SOURCES]
+               + [f for f in _FUND_BD_FACETS if f in DERIVED_BREAKDOWN_SOURCES])
+    for facet in ordered:
         issuer_items   = issuer.get(facet) or []
         holdings_items = [
             it for it in (hb.get(facet) or [])
@@ -794,9 +910,20 @@ def build_fund_breakdowns(holdings_breakdowns: dict,
             for name in SUPPLIED_BREAKDOWN_SOURCES
         }
 
+        # The other facet's finished card, converted (currency from
+        # country). Empty for every facet with no derived source
+        # registered, and empty when the facet it reads has nothing real
+        # to convert — in both cases the selector simply does not offer
+        # it, by the same "available" test every other source uses.
+        from_facet   = DERIVED_BREAKDOWN_SOURCES.get(facet, "")
+        derived_key  = derived_source_key(from_facet)
+        derived_items, derived_unresolved = derive_facet_items(
+            from_facet, facet, out.get(from_facet)) if from_facet else ([], [])
+
         items_by_source = {
             "yahoo":    issuer_items,
             "holdings": holdings_items,
+            **({derived_key: derived_items} if derived_key else {}),
             **supplied,
         }
 
@@ -810,6 +937,13 @@ def build_fund_breakdowns(holdings_breakdowns: dict,
             "factsheet": bool(sp.get("factsheet")),
             "upload":    bool(supplied.get("upload")),
         }
+        if derived_key:
+            # Offered only where the conversion yields something other
+            # than pure residual: a country card that is 100% unknown
+            # derives a currency card that is 100% unknown, which is a
+            # source with nothing to say rather than a source to choose.
+            available[derived_key] = any(it["key"] not in _RESIDUAL_KEYS
+                                         for it in derived_items)
 
         src = overrides.get(facet, "yahoo")
         if src not in BREAKDOWN_SOURCES or not available.get(src):
@@ -831,6 +965,12 @@ def build_fund_breakdowns(holdings_breakdowns: dict,
         if src == "holdings":
             unresolved = [dict(u) for u in
                           ((hb.get("unresolved") or {}).get(facet) or [])]
+        elif derived_key and src == derived_key:
+            # What the derivation could not convert, named in the SOURCE
+            # facet's vocabulary — "these countries have no currency on
+            # file" is the actionable sentence, and it is a row in
+            # Geography_definitions.csv away from being fixed.
+            unresolved = [dict(u) for u in derived_unresolved]
 
         if not items:
             # The source exists but says nothing about this facet. That
@@ -892,11 +1032,35 @@ def build_fund_breakdowns(holdings_breakdowns: dict,
         # the finished block — including the native finer levels the
         # holdings source substitutes above, which would otherwise keep
         # an unknown slice the chosen level no longer has.
-        if (completed or {}).get(facet):
+        #
+        # A derived card inherits the assertion made on the card it reads:
+        # the country split IS the currency split here, so declaring the
+        # one fully descriptive of the fund declares the other so too, and
+        # requiring the user to tick both would let them state two
+        # contradictory things about one set of numbers. It is one-way by
+        # construction — completing the currency card asserts nothing
+        # about country, which is not derived from anything.
+        derived_completed = bool(
+            derived_key and src == derived_key
+            and (out.get(from_facet) or {}).get("completed"))
+        if (completed or {}).get(facet) or derived_completed:
             assume_complete_block(block)
+        # WHERE the assertion came from, when it was not made on this
+        # card. The card is complete either way, but the control that
+        # withdraws it lives on the other card, and a ticked box that
+        # does nothing when unticked is worse than no box at all.
+        if derived_completed and not (completed or {}).get(facet):
+            block["completed_from"] = from_facet
 
         block["source"]     = src
         block["available"]  = available
+        # Which sources this facet HAS, before asking whether this fund
+        # has them. The selector draws a button per entry here and greys
+        # it out per `available`, so a source that does not apply to the
+        # facet at all is absent rather than shown struck through: a
+        # disabled button says "you could get this", and nothing will
+        # ever make "sector from country" mean anything.
+        block["sources_applicable"] = list(sources_for_facet(facet))
         block["levels_available_by_source"] = lav_by_source
         # What the unknown slice is made of. Empty when the gap is a
         # silence rather than something we failed to place.
