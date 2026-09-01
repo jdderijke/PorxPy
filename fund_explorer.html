@@ -3482,6 +3482,66 @@ async function refreshConfigAndPortfolios(){
 // ── Cached funds (Pre-Loaded sub-tab) ──────────────────────────────────────
 let cacheListData = [];
 
+// ── Modal visibility and busy action buttons ──────────────────
+// An action button that kicks off a request puts itself into a busy
+// state — disabled, labelled "Saving…" / "Importing…" — and every
+// handler restored it in its catch block. None restored it on SUCCESS,
+// because success closes the dialog and the button goes off screen.
+//
+// A dialog is not thrown away when it closes, though: it is the same
+// element, hidden. So the busy state outlived the operation, and the
+// NEXT time that dialog opened its primary button was still disabled and
+// still read "Importing…" — with nothing on screen to say why, and no
+// way to proceed. That was reported against the bundle-import dialog
+// (import a fund bundle, then try to import a portfolio backup), but it
+// was true of every dialog whose open path did not happen to rewrite the
+// label, which was most of them.
+//
+// The fix belongs to closing rather than to any one handler: whatever a
+// dialog's buttons were doing, they have stopped doing it once it is
+// hidden. hideModal() restores every busy button inside it, so a handler
+// only has to declare the busy state and the reopen is correct by
+// construction. Restoring on close rather than on open also keeps the
+// ordering right — an open path that deliberately disables its button
+// (the factsheet dialog's Upload, dead until a source is entered) runs
+// afterwards and still wins.
+function setBtnBusy(btn, label){
+  if (!btn) return;
+  // Only the FIRST busy call records the idle label, so a handler that
+  // re-enters cannot record "Saving…" as the thing to go back to.
+  if (btn.dataset.busy !== '1'){
+    btn.dataset.idleLabel = btn.textContent;
+    btn.dataset.busy = '1';
+  }
+  btn.disabled = true;
+  btn.textContent = label;
+}
+
+function clearBtnBusy(btn){
+  if (!btn || btn.dataset.busy !== '1') return;
+  btn.textContent = btn.dataset.idleLabel || btn.textContent;
+  btn.disabled = false;
+  delete btn.dataset.busy;
+  delete btn.dataset.idleLabel;
+}
+
+function clearBusyButtons(root){
+  if (!root) return;
+  root.querySelectorAll('[data-busy="1"]').forEach(clearBtnBusy);
+}
+
+// Hide a modal and let go of any busy state inside it. `cls` is the
+// class that shows it — 'show' everywhere except the reset dialog, which
+// uses 'open'; passing it keeps that one from being the exception nobody
+// remembers.
+function hideModal(id, cls){
+  const el = typeof id === 'string' ? document.getElementById(id) : id;
+  if (!el) return null;
+  clearBusyButtons(el);
+  el.classList.remove(cls || 'show');
+  return el;
+}
+
 // ── Scroll preservation across list re-renders ────────────────────────────
 // Every list here re-renders by replacing innerHTML, which destroys the
 // scrolled element and recreates it at the top. That is fine when the user
@@ -10270,7 +10330,7 @@ function openBdUploadModal(facet) {
 }
 
 function bdUploadClose() {
-  document.getElementById('bdUploadModal').classList.remove('show');
+  hideModal('bdUploadModal');
   _bdUploadState = null;
 }
 
@@ -10297,8 +10357,7 @@ async function bdUploadPreview() {
   const errEl  = document.getElementById('bdUploadErr');
   const btnEl  = document.getElementById('bdUploadPreviewBtn');
   errEl.style.display = 'none';
-  btnEl.disabled = true;
-  btnEl.textContent = 'Previewing…';
+  setBtnBusy(btnEl, 'Previewing…');
   try {
     // A source string, not bytes — resolved server-side by the same
     // resolve_source the holdings upload uses, so a URL, a path and a
@@ -10339,8 +10398,7 @@ async function bdUploadPreview() {
   } catch(e) {
     errEl.textContent = e.message || String(e);
     errEl.style.display = '';
-    btnEl.disabled = false;
-    btnEl.textContent = 'Preview';
+    clearBtnBusy(btnEl);
   }
 }
 
@@ -10494,8 +10552,7 @@ async function bdUploadCommit() {
   const errEl = document.getElementById('bdUploadErr');
   const btn   = document.getElementById('bdUploadCommitBtn');
   errEl.style.display = 'none';
-  btn.disabled = true;
-  btn.textContent = 'Committing…';
+  setBtnBusy(btn, 'Committing…');
 
   // Collect facet_map and key_map from the rendered selects.
   const facet_map = {};
@@ -10573,8 +10630,7 @@ async function bdUploadCommit() {
   } catch(e) {
     errEl.textContent = e.message || String(e);
     errEl.style.display = '';
-    btn.disabled = false;
-    btn.textContent = 'Commit';
+    clearBtnBusy(btn);
   }
 }
 
@@ -11623,7 +11679,7 @@ function resolveValueClientSide(field, raw){
 }
 
 function closeHoldingEditor(){
-  document.getElementById('holdingEditModal').classList.remove('show');
+  hideModal('holdingEditModal');
   editingHoldingRowId = null;
 }
 
@@ -11731,8 +11787,7 @@ async function saveHoldingEditor(){
   }
 
   const btn = document.getElementById('heSaveBtn');
-  btn.disabled = true;
-  btn.textContent = 'Saving…';
+  setBtnBusy(btn, 'Saving…');
   try {
     const url = `${API}/funds/${encodeURIComponent(lastFundData.ticker)}`
               + `/holdings/${encodeURIComponent(editingHoldingRowId)}`;
@@ -11744,7 +11799,7 @@ async function saveHoldingEditor(){
     const d = await r.json();
     if (!r.ok){
       showHoldingEditorError(d.error || `HTTP ${r.status}`);
-      btn.disabled = false; btn.textContent = 'Save changes';
+      clearBtnBusy(btn);
       return;
     }
 
@@ -11848,7 +11903,7 @@ async function saveHoldingEditor(){
     setStatus('ok', `Holding updated${promoted}.`);
   } catch(e){
     showHoldingEditorError('Network error: ' + e.message);
-    btn.disabled = false; btn.textContent = 'Save changes';
+    clearBtnBusy(btn);
   }
 }
 
@@ -11962,7 +12017,7 @@ function closeEditFundModal(){
   // nothing to undo and nothing to re-fetch — the stored pins and their
   // values are still exactly as they were when the dialog opened.
   efState = null;
-  document.getElementById('editFundModal').classList.remove('show');
+  hideModal('editFundModal');
 }
 
 function _efDisplayValue(field, pin){
@@ -12205,7 +12260,7 @@ async function saveEditFundModal(){
   const dirty = _efDirty();
   if (!dirty.length){ closeEditFundModal(); return; }
 
-  btn.disabled = true; btn.textContent = 'Saving…';
+  setBtnBusy(btn, 'Saving…');
   err.style.display = 'none';
   const pins = {};
   for (const f of dirty){
@@ -12222,7 +12277,7 @@ async function saveEditFundModal(){
       err.innerHTML = d.errors.map(escapeHtml).join('<br>');
       err.style.display = '';
       if (!Object.keys(d.applied || {}).length){
-        btn.disabled = false; btn.textContent = 'Save';
+        clearBtnBusy(btn);
         return;
       }
     }
@@ -12241,7 +12296,7 @@ async function saveEditFundModal(){
   } catch(e){
     err.textContent = e.message; err.style.display = '';
   } finally {
-    btn.disabled = false; btn.textContent = 'Save';
+    clearBtnBusy(btn);
   }
 }
 
@@ -12887,7 +12942,7 @@ async function savePortfolioModal(){
   } catch(e){ alert('Save failed: ' + e.message); }
 }
 
-function closePortfolioModal(){ document.getElementById('pfModal').classList.remove('show'); }
+function closePortfolioModal(){ hideModal('pfModal'); }
 
 async function deleteCurrentPortfolio(){
   if (!activePid) return;
@@ -12924,7 +12979,7 @@ function openAddToPortfolio(){
   document.getElementById('addModal').classList.add('show');
 }
 
-function closeAddModal(){ document.getElementById('addModal').classList.remove('show'); }
+function closeAddModal(){ hideModal('addModal'); }
 
 async function confirmAddToPortfolio(){
   const pid       = document.getElementById('addModalPortfolio').value;
@@ -13317,7 +13372,7 @@ function openFactsheetModal(){
 }
 
 function closeFactsheetModal(){
-  document.getElementById('factsheetModal').classList.remove('show');
+  hideModal('factsheetModal');
 }
 
 function fsSourceChanged(){
@@ -13331,7 +13386,7 @@ async function saveFactsheet(){
   if (!ticker) return;
   const btn = document.getElementById('fsSaveBtn');
   const err = document.getElementById('fsError');
-  btn.disabled = true; btn.textContent = 'Uploading…';
+  setBtnBusy(btn, 'Uploading…');
   try {
     const r = await fetch(`${API}/funds/${encodeURIComponent(ticker)}/factsheet`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -13357,7 +13412,7 @@ async function saveFactsheet(){
     invalidateFundDerived();
   } catch(e){
     err.textContent = e.message; err.style.display = '';
-    btn.disabled = false; btn.textContent = factsheetMeta ? 'Replace' : 'Upload';
+    clearBtnBusy(btn);
   }
 }
 
@@ -13578,7 +13633,7 @@ function _renderExtractAction(){
 }
 
 function closeExtractionReport(){
-  document.getElementById('extractReportModal').classList.remove('show');
+  hideModal('extractReportModal');
 }
 
 // Open the document in its own window. A popup rather than an in-page
@@ -13727,7 +13782,7 @@ function openFilePicker(target){
 }
 
 function closeFilePicker(){
-  document.getElementById('filePickerModal').classList.remove('show');
+  hideModal('filePickerModal');
 }
 
 async function fpNavigate(path){
@@ -13884,7 +13939,7 @@ function fpFmtSize(bytes){
 }
 
 function closeUploadModal(){
-  document.getElementById('uploadModal').classList.remove('show');
+  hideModal('uploadModal');
   uploadState = null;
   pendingUploadPrefs = null;
 }
@@ -13909,7 +13964,7 @@ async function submitUploadPreview(){
   document.getElementById('uvFileError').style.display = 'none';
 
   const btn = document.getElementById('uvFileNext');
-  btn.disabled = true; btn.textContent = 'Fetching…';
+  setBtnBusy(btn, 'Fetching…');
   try {
     const r = await fetch(`${API}/upload/preview`, {
       method:  'POST',
@@ -13986,7 +14041,7 @@ async function submitUploadPreview(){
   } catch(e){
     showUploadFileError('Network error: ' + e.message);
   } finally {
-    btn.disabled = false; btn.textContent = 'Parse file →';
+    clearBtnBusy(btn);
   }
 }
 
@@ -14615,8 +14670,7 @@ async function submitUploadCommit(){
   }
 
   const btn = document.getElementById('uvCommitBtn');
-  btn.disabled = true;
-  btn.textContent = enrichList.length ? 'Saving + enriching…' : 'Saving…';
+  setBtnBusy(btn, enrichList.length ? 'Saving + enriching…' : 'Saving…');
 
   // Mark the commit as in-flight so the Cancel button (cancelOrCloseUpload)
   // knows to fire /api/upload/cancel instead of just dropping the modal,
@@ -14774,7 +14828,7 @@ async function submitUploadCommit(){
     }
     showUploadMapError('Network error: ' + e.message);
   } finally {
-    btn.disabled = false; btn.textContent = 'Save holdings';
+    clearBtnBusy(btn);
     // uploadState may have been nulled by closeUploadModal — guard.
     if (uploadState) {
       uploadState.commitInFlight = false;
@@ -15214,7 +15268,7 @@ function openResetModal(scope){
 
 function closeResetModal(){
   pendingResetScope = null;
-  document.getElementById('resetModal').classList.remove('open');
+  hideModal('resetModal', 'open');
 }
 
 function onResetTokenInput(){
@@ -15230,7 +15284,7 @@ async function doReset(){
   const btn   = document.getElementById('resetConfirmBtn');
   const errEl = document.getElementById('resetModalErr');
   errEl.textContent = '';
-  btn.disabled = true; btn.textContent = 'Working…';
+  setBtnBusy(btn, 'Working…');
   try {
     const r = await fetch(`${API}/reset/${scope}`, {
       method:'POST', headers:{'Content-Type':'application/json'},
@@ -15259,7 +15313,7 @@ async function doReset(){
     setTimeout(() => location.reload(), 700);
   } catch(e){
     errEl.textContent = e.message || 'Reset failed';
-    btn.disabled = false; btn.textContent = 'Confirm reset';
+    clearBtnBusy(btn);
   }
 }
 
@@ -15902,7 +15956,7 @@ async function bkInspect(input){
 }
 
 function bkCloseImport(){
-  document.getElementById('bkImportModal').classList.remove('show');
+  hideModal('bkImportModal');
   _bkFile = null; _bkInsp = null;
 }
 
@@ -16015,7 +16069,7 @@ async function bkApply(){
     actions[sel.getAttribute('data-bkisin')] = sel.value;
   });
   const resSel = document.getElementById('bkResourceAction');
-  btn.disabled = true; btn.textContent = 'Importing…';
+  setBtnBusy(btn, 'Importing…');
   try {
     const fd = new FormData();
     fd.append('file', _bkFile);
@@ -16029,7 +16083,7 @@ async function bkApply(){
     if ((rep.errors || []).length){
       err.innerHTML = rep.errors.map(escapeHtml).join('<br>');
       err.style.display = '';
-      btn.disabled = false; btn.textContent = 'Import';
+      clearBtnBusy(btn);
       return;
     }
     bkCloseImport();
@@ -16048,10 +16102,32 @@ async function bkApply(){
     // Imported funds join the universe, so peer groups resize for the
     // funds already in it — the same reason saveToPreloaded invalidates.
     invalidateFundDerived();
-    if (typeof reloadAll === 'function') reloadAll();
+
+    // Then re-read what the import just rewrote on disk. This used to
+    // call a `reloadAll` that does not exist in this file, guarded by a
+    // typeof test that therefore never passed — so an import wrote the
+    // portfolios and then showed you the list you had before it, and the
+    // only way to see them was to reload the page.
+    //
+    // Three things move, and each has an owner already:
+    //   • portfolios + the selector + the cached-funds panel
+    //     (refreshConfigAndPortfolios, the same call the app makes at
+    //     startup), for a portfolio backup and a fund bundle alike;
+    //   • settings.json, which a portfolio backup overwrites wholesale
+    //     — only worth re-rendering when that tab is on screen;
+    //   • the resource vocabularies, which a fund bundle merges into,
+    //     hence the force flag every caller that needs current files
+    //     passes.
+    await refreshConfigAndPortfolios();
+    if (rep.portfolios_imported && currentTab === 'settings') {
+      await renderSettingsTab();
+    }
+    if ((rep.resources || []).some(x => x.added || x.updated)) {
+      await loadHoldingClassResources(true);
+    }
   } catch(e){
     err.textContent = String(e.message || e); err.style.display = '';
-    btn.disabled = false; btn.textContent = 'Import';
+    clearBtnBusy(btn);
   }
 }
 
@@ -16100,7 +16176,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 function ufCloseDialog(){
-  document.getElementById('ufDialog').classList.remove('show');
+  hideModal('ufDialog');
 }
 
 function ufRenderDialog(){
@@ -18320,13 +18396,11 @@ async function openTargetsEditor(){
   document.getElementById('targetsEditorTitle').textContent =
     `Edit exposure targets — ${currentPortfolioView.portfolio?.name || ''}`;
   document.getElementById('targetsEditorErr').style.display = 'none';
-  // Reset the Save button — a successful save from a previous open
-  // leaves it disabled with text "Saving…" (closeTargetsEditor hides
-  // the modal but does not restore the button), so without this the
-  // button would be stuck on the second visit.
-  const saveBtn = document.getElementById('targetsEditorSaveBtn');
-  saveBtn.disabled    = false;
-  saveBtn.textContent = 'Save';
+  // The Save button needs no reset here: hideModal() restores every busy
+  // button in the dialog as it closes. This function used to do it
+  // itself, and it was the only dialog that did — which is why the same
+  // "stuck on the second visit" bug was still live in the bundle-import
+  // dialog. See setBtnBusy / hideModal.
   document.getElementById('targetsEditorModal').classList.add('show');
 
   // Lazy-fetch canonical values for the four facets (regions for
@@ -18453,15 +18527,9 @@ function tgLevelsOf(facet){
 }
 
 function closeTargetsEditor(){
-  document.getElementById('targetsEditorModal').classList.remove('show');
-  // Reset the Save button state so the next open starts clean even
-  // if openTargetsEditor's own reset is skipped (e.g. opened via a
-  // future code path that doesn't go through it).
-  const saveBtn = document.getElementById('targetsEditorSaveBtn');
-  if (saveBtn) {
-    saveBtn.disabled    = false;
-    saveBtn.textContent = 'Save';
-  }
+  // hideModal clears the Save button's busy state — that is its job now,
+  // for every dialog, so this function no longer carries its own copy.
+  hideModal('targetsEditorModal');
   _tgEditorState = null;
 }
 
@@ -18626,8 +18694,7 @@ async function saveTargetsEditor(){
   const btn = document.getElementById('targetsEditorSaveBtn');
   const err = document.getElementById('targetsEditorErr');
   err.style.display = 'none';
-  btn.disabled = true;
-  btn.textContent = 'Saving…';
+  setBtnBusy(btn, 'Saving…');
   try {
     const r = await fetch(`${API}/portfolios/${activePid}/targets`, {
       method: 'PUT', headers: {'Content-Type':'application/json'},
@@ -18642,8 +18709,7 @@ async function saveTargetsEditor(){
       err.innerHTML = `<div style="margin-bottom:4px">${escapeHtml(d.error || 'Inconsistent targets')}</div>` +
         d.problems.map(p => `<div style="padding-left:10px">• ${escapeHtml(p)}</div>`).join('');
       err.style.display = '';
-      btn.disabled = false;
-      btn.textContent = 'Save';
+      clearBtnBusy(btn);
       return;
     }
     if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
@@ -18664,8 +18730,7 @@ async function saveTargetsEditor(){
   } catch(e) {
     err.textContent = e.message || String(e);
     err.style.display = '';
-    btn.disabled = false;
-    btn.textContent = 'Save';
+    clearBtnBusy(btn);
   }
 }
 

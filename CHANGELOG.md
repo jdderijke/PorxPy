@@ -3,6 +3,50 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.87.2] - 2026-09-01
+
+### Fixed — a bundle import left its button stuck, and never showed you what it imported
+
+Reported after moving an install to another machine: import the
+pre-loaded fund bundle, then open the portfolio backup, and the dialog
+listed the portfolios but its Import button already read "Importing…"
+and could not be clicked. Restarting made it work once, and then the
+same thing happened again on the second import.
+
+Two separate defects, both in the import dialog's ending.
+
+**The button never came back.** Every handler in the app that starts a
+request disables its button and relabels it, and every one restored it
+in its `catch` block — none on success, because success closes the
+dialog. But a dialog is not discarded when it closes; it is the same
+element, hidden. So the busy state outlived the operation and the NEXT
+open inherited it: a dead button with no error on screen and nothing to
+say why. The fund-bundle import was the first one, which is exactly why
+the portfolio import was the one that looked broken.
+
+The fix belongs to closing rather than to any one handler, so `hideModal`
+now clears the busy state of every button inside a dialog it hides, and
+handlers declare that state through `setBtnBusy` / `clearBtnBusy`. It is
+applied to all thirteen dialogs and all thirteen busy buttons, not just
+the reported one — the same trap was live in the fund-bundle import, the
+breakdown-CSV preview and commit, the holdings upload's parse and commit
+steps, the holdings row editor, the Edit fund dialog and the factsheet
+upload. The targets editor had a hand-written workaround for exactly
+this, with a comment describing the bug; that copy is gone, since the
+shared close now does the job for every dialog.
+
+**The import did not reach the screen.** On success the dialog called a
+`reloadAll` that does not exist in the file, behind a
+`typeof reloadAll === 'function'` guard that therefore never passed. So
+an import wrote portfolios and settings to disk and then left the page
+showing what it had before — which is why the imported portfolios only
+appeared after restarting everything. It now calls
+`refreshConfigAndPortfolios`, the same function the app uses at startup,
+which reloads the portfolio list, repopulates the selector and refreshes
+the cached-funds panel; re-renders Settings when a portfolio backup
+overwrote `settings.json` and that tab is open; and re-fetches the
+resource vocabularies when a fund bundle merged into them.
+
 ## [0.87.1] - 2026-09-01
 
 ### Fund bundles no longer carry the exporter's filesystem paths
