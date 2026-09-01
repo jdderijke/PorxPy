@@ -3,6 +3,46 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.87.4] - 2026-09-01
+
+### Fixed — "Reset to defaults" reset two settings of six and said it had reset them all
+
+Found while auditing the rest of the Settings tab after the Danger zone
+fix. The button restored the enrichment field list and the holdings
+match key, then reported "Reset — click Save to persist" — while the
+scoring weights, the size floor, the group TTLs, the factsheet age limit
+and both AI toggles kept whatever they had. Clicking Save afterwards
+persisted the values it had just claimed to clear, which is worse than
+doing nothing: the user has been told the state is one thing and is
+saving another.
+
+The cause was upstream of the button. ``GET /api/settings`` handed the
+frontend ``DEFAULT_SETTINGS`` as its ``defaults``, and that config
+constant only seeds two of the six sections — the defaults for scoring,
+group TTLs, the factsheet age and the AI flags live in their own config
+constants and are applied by ``normalise_settings``. The button could
+only reset what it had been given.
+
+* ``utils.default_settings()`` returns ``normalise_settings({})``: the
+  complete document as it stands with nothing set, built by the same
+  function every save goes through, so a seventh section is in the
+  defaults the moment it is normalised rather than when someone
+  remembers to add it. The route now sends that.
+* The frontend half was the mirror image — the reset poked the two
+  controls it knew by name. The painting half of ``renderSettingsTab``
+  is now ``renderSettingsControls()``, and both the tab render and the
+  reset call it, so a control added to this tab is reset by
+  construction. The reset copies the server's defaults into the working
+  settings and repaints; it hardcodes no default of its own, since a
+  default invented in the frontend is a second opinion about what a
+  default is.
+
+Also checked, and working: both bundle exports (including their
+price-history and factsheet checkboxes), the file chooser, Save settings
+(its payload was compared field by field against what is stored — all
+six sections round-trip exactly), and the three Danger zone buttons
+fixed in 0.87.3.
+
 ## [0.87.3] - 2026-09-01
 
 ### Fixed — none of the three Danger zone buttons did anything

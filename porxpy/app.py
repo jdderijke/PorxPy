@@ -136,6 +136,7 @@ from porxpy.utils import (
     load_isin_map,
     isin_map_put,
     load_portfolios,
+    default_settings,
     load_settings,
     normalise_cache_config,
     normalise_currency,
@@ -484,10 +485,15 @@ def create_app() -> Flask:
         The frontend uses ``defaults`` to populate "Reset to default"
         controls without hardcoding the values. ``settings`` is always
         the normalised, validated form — never the raw on-disk dict.
+
+        ``defaults`` is the full default document, not the partial
+        ``DEFAULT_SETTINGS`` constant it used to be: that constant seeds
+        two of the six sections, so the reset button it feeds could only
+        ever restore those two and quietly left the rest alone.
         """
         return jsonify({
             "settings": load_settings(),
-            "defaults": DEFAULT_SETTINGS,
+            "defaults": default_settings(),
         })
 
     @app.route("/api/settings", methods=["PUT"])

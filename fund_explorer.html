@@ -15006,22 +15006,39 @@ async function enrichHoldings(){
 // ── Settings tab ───────────────────────────────────────────────────────────
 // Pulls from /api/settings on every open so a value changed in another tab
 // (or by direct edit of settings.json) is reflected without a page reload.
-async function renderSettingsTab(){
-  await loadAppSettings();
+// Paint every control in the Settings tab from `appSettings`.
+//
+// Split out of renderSettingsTab so that "Reset to defaults" repaints
+// the WHOLE tab rather than reaching for the two controls it happened to
+// know about. It used to do the latter, which is why it reset the
+// enrichment fields and the holdings match key and silently left the
+// scoring weights, the size floor, the group TTLs, the factsheet age
+// limit and the AI toggles exactly as they were — while announcing a
+// reset, so the next Save persisted the values it claimed to have
+// cleared. One painter means a control added to this tab is reset by
+// construction.
+function renderSettingsControls(){
   renderEnrichmentFieldsBox();
   renderScoringBox();
+  renderGroupTtlInputs();
   const floorEl = document.getElementById('setSizeFloor');
   if (floorEl) floorEl.value = appSettings?.scoring?.size_floor_base ?? 0;
   const fsEl = document.getElementById('setFsStaleDays');
   if (fsEl) fsEl.value = appSettings?.factsheet?.stale_days ?? 183;
-  renderGroupTtlInputs();
   const aiEl = document.getElementById('setAiEnabled');
   if (aiEl) aiEl.checked = !!appSettings?.ai?.enabled;
   const apEl = document.getElementById('setAiEditPrompt');
   if (apEl) apEl.checked = !!appSettings?.ai?.edit_prompt;
+  const hmEl = document.getElementById('setHoldingsMatch');
+  if (hmEl) hmEl.value = appSettings?.holdings_match?.key || 'ticker';
+}
+
+async function renderSettingsTab(){
+  await loadAppSettings();
+  renderSettingsControls();
+  // Not a setting: whether the API key is present in the environment.
+  // It belongs to opening the tab, not to painting its values.
   refreshAiStatus();
-  document.getElementById('setHoldingsMatch').value =
-    appSettings?.holdings_match?.key || 'ticker';
   setSettingsStatus('');
 }
 
@@ -15238,20 +15255,20 @@ async function saveSettings(){
 }
 
 function resetSettings(){
-  // appSettingsDefaults comes from /api/settings (the server's
-  // authoritative defaults). Fall back to a local copy if the call
-  // hasn't returned yet — same shape, same default field list.
-  const defFields = appSettingsDefaults?.enrichment?.fields ||
-    ['name','country','currency','asset_class','sub_class','sector'];
-  // Temporarily mutate appSettings so renderEnrichmentFieldsBox shows
-  // the reset state; the user still has to click Save to persist it.
-  appSettings = {
-    ...(appSettings || {}),
-    enrichment: { fields: defFields.slice() },
-  };
-  renderEnrichmentFieldsBox();
-  const hmDef = appSettingsDefaults?.holdings_match || { key: 'ticker' };
-  document.getElementById('setHoldingsMatch').value = hmDef.key || 'ticker';
+  // appSettingsDefaults is the server's full default document — every
+  // section, straight from the normaliser that validates each save (see
+  // GET /api/settings). Nothing is hardcoded here: a default this
+  // frontend invented would be a second opinion about what a default is,
+  // and the wrong one the first time the server's changed.
+  if (!appSettingsDefaults) {
+    setSettingsStatus('Defaults not loaded — reopen this tab and try again',
+                      'var(--red)');
+    return;
+  }
+  // The working copy only; the user still has to click Save to persist,
+  // which is what the status line says.
+  appSettings = JSON.parse(JSON.stringify(appSettingsDefaults));
+  renderSettingsControls();
   setSettingsStatus('Reset — click Save to persist', '');
 }
 

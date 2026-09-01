@@ -3840,6 +3840,32 @@ from porxpy.breakdowns import (  # noqa: F401  (compatibility re-export)
 # by both the API (/api/settings GET) and by extractors that need to
 # decide whether to enrich top-10 holdings. The on-disk format mirrors
 # the in-memory one — DEFAULT_SETTINGS in config.py defines the shape.
+def default_settings() -> dict:
+    """The complete settings document as it stands with nothing set.
+
+    ``DEFAULT_SETTINGS`` in config is only the seed for the two oldest
+    sections; the defaults for scoring, group TTLs, the factsheet age
+    limit and the AI consent flags live in their own config constants and
+    are applied by :func:`normalise_settings`. Asking the normaliser what
+    an empty document becomes is therefore the only way to get all six
+    sections, and it cannot drift: it is the same function every save
+    goes through, so a seventh section is in the defaults the moment it
+    is normalised.
+
+    This exists because ``GET /api/settings`` hands its ``defaults`` to
+    the Settings tab's "Reset to defaults" button. While that payload was
+    the partial config constant, the button silently reset two sections
+    of six and left the scoring weights, the size floor, the group TTLs,
+    the factsheet age and the AI toggles exactly as they were — while
+    saying it had reset them.
+
+    Returns:
+        A full, validated settings dict. Safe to mutate: freshly built
+        on every call.
+    """
+    return normalise_settings({})
+
+
 def normalise_settings(raw: dict | None) -> dict:
     """Coerce a (possibly partial) settings dict into the full shape.
 
