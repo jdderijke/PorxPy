@@ -993,7 +993,31 @@ def build_fund_breakdowns(holdings_breakdowns: dict,
         # function of the coarser one.
         if src == "holdings":
             for lv in block["levels"]:
-                if lv in (facet, block["default_level"]):
+                # Skip only the level the items CAME from — grafting the
+                # rollup back over itself would be a no-op at best.
+                #
+                # This used to skip ``block["default_level"]`` as well,
+                # which was invisible for three facets and broke the
+                # fourth. sector's default level IS "sector" and
+                # country's IS "country", so for them the two names are
+                # the same and the extra condition never fired. asset's
+                # default is "super_class" (see FACET_DEFAULT_LEVEL — the
+                # asset vocabulary's old four values live at the SUPER
+                # level, so defaulting anywhere finer would silently
+                # re-grain every target). So asset_class was the one
+                # facet whose default level never received its native
+                # rollup, and it was derived from the middle level
+                # instead.
+                #
+                # What that looked like: import a bond file with no asset
+                # column and a default of "fixed income" — a super-class
+                # node — and every row states fixed income at super
+                # level with the finer levels honestly blank. The card
+                # read the middle level, found unknown, derived unknown
+                # for all three, and reported 100% unknown with every
+                # level button struck through, while the holdings table
+                # beside it showed fixed income on every row.
+                if lv == facet:
                     continue
                 native = [it for it in (hb.get(lv) or [])
                           if isinstance(it, dict) and it.get("key")]
@@ -1356,6 +1380,10 @@ _MERGE_FIELDS: tuple[str, ...] = (
     # its super sector from another and end up describing a tree that
     # does not exist. One fact wins, the rest follow from it.
     "asset_node", "sector_node", "country_node",
+    # Bond metadata that merges like any other field: two funds holding
+    # the same bond should agree on its rating, and where they disagree
+    # the same source-rank rule that settles the facets settles this.
+    "quality",
 )
 
 # The synthetic residual row's match identity. Chosen so it cannot
@@ -1421,12 +1449,19 @@ def aggregate_portfolio_holdings(funds: list[dict],
                 ...
               ],
               "match_key":          "ticker",
-              "total_base":         123456.78,
-              "covered_value":      107000.00,   # Σ real holding money
-              "covered_pct":        0.8671,      # covered / total
+              "total_base":         123456.78,  # WHOLE portfolio, incl. cash
+              "funds_base":         111456.78,  # total_base − cash_base
+              "cash_base":           12000.00,  # direct cash, excluded
+              "covered_value":      107000.00,  # Σ real holding money
+              "covered_pct":        0.9600,     # covered / funds_base
               "funds_total":        7,
               "funds_with_holdings":5,
             }
+
+        Direct cash positions are excluded from ``rows`` — they are not
+        holdings of any fund — but their money stays in ``total_base``,
+        so every ``weight_pct`` is a percentage of the whole portfolio
+        and the rows sum to the funds' share of it.
 
         ``rows`` is sorted by ``portfolio_value`` descending, with the
         synthetic residual row (when non-zero) pinned last.
@@ -1442,6 +1477,33 @@ def aggregate_portfolio_holdings(funds: list[dict],
     acc: dict[str, dict] = {}
     # Insertion order of first-seen keys, so equal-value rows sort stably.
     order: list[str] = []
+
+    # v0.89.0: cash positions the user holds directly are NOT holdings
+    # of any fund, so they are dropped before anything is counted. They
+    # arrive here because api_portfolio_view injects each one as a
+    # synthetic single-holding fund, which is what lets the X-ray add
+    # your deposits to the funds' own cash sleeves in one bucket — the
+    # right answer to "how much of my money is in cash". This table asks
+    # a different question, "what do the funds I own hold", and a bank
+    # balance is not an answer to it.
+    #
+    # `funds_total`, `covered_value` and the residual therefore all
+    # describe the fund side alone. `total_base` is deliberately NOT
+    # reduced to match: weights stay percentages of the WHOLE portfolio,
+    # so this table and the portfolio funds list agree with each other
+    # and with the X-ray, and their rows sum to the funds' share of the
+    # portfolio rather than each renormalising to 100%.
+    cash_base = 0.0
+    kept: list[dict] = []
+    for e in (funds or []):
+        if e.get("is_cash"):
+            cv = (e.get("valuation") or {}).get("value_base")
+            if cv is not None and float(cv) > 0:
+                cash_base += float(cv)
+            continue
+        kept.append(e)
+    funds = kept
+    funds_base = max(0.0, float(total_base) - cash_base)
 
     funds_total         = len(funds)
     funds_with_holdings = 0
@@ -1545,8 +1607,12 @@ def aggregate_portfolio_holdings(funds: list[dict],
         # a module-level import here would close the cycle.
         from porxpy.utils import normalise_facets
         normalise_facets(row)
+        # Against the FUND side (v0.90.0). Direct cash is reserved off the
+        # top and is not listed here, so the rows and the residual now sum
+        # to 100% of what this table actually covers, rather than to the
+        # funds' share of a total that includes money the table excludes.
         row["weight_pct"] = (
-            round(money / total_base * 100.0, 6) if total_base > 0 else 0.0)
+            round(money / funds_base * 100.0, 6) if funds_base > 0 else 0.0)
         row["portfolio_value"] = round(money, 2)
         row["fund_count"]      = len(slot["fund_ids"])
         row["is_residual"]     = False
@@ -1560,12 +1626,19 @@ def aggregate_portfolio_holdings(funds: list[dict],
     # holdings did not account for (funds with no holdings, plus the
     # un-looked-through tail of partial-coverage funds). Emitted only
     # when materially non-zero so a fully-covered portfolio stays clean.
-    residual = (total_base - covered_value) if total_base > 0 else 0.0
+    # Measured against the FUND side of the portfolio, not the whole of
+    # it. total_base still includes the direct cash positions, because
+    # that is the denominator every weight on this screen is a
+    # percentage of — but the money in your own bank accounts is not
+    # "fund holdings we failed to look through", and letting it fall
+    # into this row would report your savings as an unclassified gap and
+    # send you looking for a factsheet that would never close it.
+    residual = (funds_base - covered_value) if funds_base > 0 else 0.0
     if residual > 0.005:
         rows_out.append({
             **{fld: "" for fld in _MERGE_FIELDS},
             "name":            "Unclassified / not looked through",
-            "weight_pct":      round(residual / total_base * 100.0, 6),
+            "weight_pct":      round(residual / funds_base * 100.0, 6),
             "portfolio_value": round(residual, 2),
             "fund_count":      0,
             "is_residual":     True,
@@ -1578,10 +1651,20 @@ def aggregate_portfolio_holdings(funds: list[dict],
         "match_key":            match_key,
         "total_base":           round(total_base, 2),
         "covered_value":        round(covered_value, 2),
-        "covered_pct":          (round(covered_value / total_base, 6)
-                                 if total_base > 0 else 0.0),
+        # Against the fund side, matching the residual above: coverage
+        # answers "how much of the money held through funds did we look
+        # through", and direct cash was never a look-through candidate.
+        # Dividing by the whole portfolio made a cash-heavy portfolio
+        # report poor coverage it could do nothing about.
+        "covered_pct":          (round(covered_value / funds_base, 6)
+                                 if funds_base > 0 else 0.0),
         "funds_total":          funds_total,
         "funds_with_holdings":  funds_with_holdings,
+        # The direct-cash money excluded from `rows`, so the screen can
+        # state it as its own line rather than leaving the table's
+        # weights summing to less than 100% with nothing saying why.
+        "cash_base":            round(cash_base, 2),
+        "funds_base":           round(funds_base, 2),
     }
 
 
@@ -1634,8 +1717,12 @@ def synth_enriched_for_cash_position(pos: dict,
             position's actual currency is preserved on the breakdown.
         fx_to_base: The cash position's currency → base-currency rate
             (current spot). 1.0 when the position is already in base.
-            For historic dates, the caller (price-history aggregator)
-            applies a per-date rate separately.
+            ``None`` (or zero) means the rate could not be obtained, and
+            the entry comes back carrying ``valuation_error`` with no
+            ``value_base`` — never a zero, which would silently shrink
+            the portfolio total. For historic dates, the caller
+            (price-history aggregator) applies a per-date rate
+            separately.
         now_utc: Optional override for "now" (used by tests). When
             ``None``, uses datetime.now(timezone.utc).
 
@@ -1680,7 +1767,15 @@ def synth_enriched_for_cash_position(pos: dict,
     # the chart and the breakdown total agree to the cent.
     accrued_in_currency = principal * math.exp(rate * t_years) if t_years > 0 \
                           else principal
-    value_base = accrued_in_currency * float(fx_to_base or 0.0)
+    # v0.89.0: a missing rate is an ERROR, not a zero. It used to be
+    # coerced to 0.0 with a comment calling that the safe behaviour, and
+    # it is the opposite of safe: a zero does not merely blank a cell, it
+    # drops the position out of the portfolio total, out of the X-ray's
+    # denominator and out of every target deviation, all without a word
+    # on screen. A fund whose quote fails carries a `valuation_error`
+    # and is visibly unvalued; cash now does the same.
+    fx_ok = fx_to_base is not None and float(fx_to_base) > 0
+    value_base = (accrued_in_currency * float(fx_to_base)) if fx_ok else None
 
     pos_currency    = (pos.get("currency")    or "").upper().strip()
     pos_country     = (pos.get("country")     or "").strip()
@@ -1696,18 +1791,32 @@ def synth_enriched_for_cash_position(pos: dict,
     def _single_facet(key: str) -> list[dict]:
         return [{"key": key, "weight": 1.0}] if key else []
 
-    holdings_breakdowns = {
-        "asset_class": _single_facet(pos_asset_class),
-        "sector":      _single_facet(pos_sector),
-        "country":     _single_facet(pos_country),
-        "currency":    _single_facet(pos_currency),
+    # The value each facet is stated at. Prefer the node column — that is
+    # what the user actually picked, at whatever grain they picked it —
+    # and fall back to the derived level column for a record written
+    # before the node columns existed.
+    stated = {
+        "asset_class": (pos.get("asset_node")   or "").strip() or pos_asset_class,
+        "sector":      (pos.get("sector_node")  or "").strip() or pos_sector,
+        "country":     (pos.get("country_node") or "").strip() or pos_country,
+        "currency":    pos_currency,
     }
-    fund_breakdowns = {
-        "asset_class": {"items": _single_facet(pos_asset_class)},
-        "sector":      {"items": _single_facet(pos_sector)},
-        "country":     {"items": _single_facet(pos_country)},
-        "currency":    {"items": _single_facet(pos_currency)},
-    }
+
+    holdings_breakdowns = {f: _single_facet(v) for f, v in stated.items()}
+
+    # v0.89.0: LEVELLED blocks, built by the same function that builds a
+    # real fund's. They used to be `{"items": [ ... ]}` — a bare list with
+    # no levels — and facet_items returns a bare list for EVERY level it
+    # is asked for. So a deposit stated as "cash" (an asset_class-level
+    # node) answered "cash" at super_class level too, where the correct
+    # answer is "liquid". The X-ray then drew the user's own deposits and
+    # the funds' cash sleeves as two separate buckets at the same level,
+    # which is the one thing the cash design says must never happen: the
+    # question "how much of my money is in cash" has a single answer, and
+    # both belong in it. build_facet_block rolls the stated node up and
+    # down its tree exactly as it does for a fund, so they merge.
+    fund_breakdowns = {f: build_facet_block(f, _single_facet(v))
+                       for f, v in stated.items()}
 
     # One holdings row mirroring the position. weight_pct here is "%
     # of the synthetic one-position fund" — i.e. always 100.0 — so
@@ -1763,13 +1872,22 @@ def synth_enriched_for_cash_position(pos: dict,
         "effective_asset_class": pos_asset_class or "other",
         # Marks the entry so any fund-specific code path (e.g. the
         # /api/fund/... lookup) can skip it cleanly.
-        "valuation": {
+        "valuation": ({
             "value_base":        value_base,
             "value_native":      accrued_in_currency,
             "native_currency":   pos_currency,
             "adjusted_currency": pos_currency,
-            "fx_to_base":        float(fx_to_base or 0.0),
-        },
+            "fx_to_base":        float(fx_to_base),
+        } if fx_ok else {
+            # No value_base at all, matching the fund side: a consumer
+            # that reads it gets None and skips the position, rather than
+            # adding a confident zero to a total.
+            "value_native":      accrued_in_currency,
+            "native_currency":   pos_currency,
+            "adjusted_currency": pos_currency,
+            "valuation_error":   (f"no FX {pos_currency or '?'} -> "
+                                  f"{(base_currency or '?').upper()}"),
+        }),
         "data": {
             "ticker":              f"cash:{pos.get('id', '')}",
             "holdings_source":     "manual_upload",
@@ -2134,7 +2252,8 @@ def build_facet_block(facet: str, items: list[dict]) -> dict:
 
 
 def candidate_exposures(fund_breakdowns: dict,
-                        targets: dict) -> tuple[dict, dict]:
+                        targets: dict,
+                        fund_structure: dict | None = None) -> tuple[dict, dict]:
     """One fund's look-through exposure, per ``(facet, level, key)``.
 
     **v0.66.3.** Lifted out of the optimise endpoint, where it was an
@@ -2147,9 +2266,24 @@ def candidate_exposures(fund_breakdowns: dict,
     fund contributes to each independently: nothing is derived from
     another level's total.
 
+    **v0.89.0: the metadata facets answer here too.** They previously
+    did not, and the omission was a defect rather than a boundary: a
+    ``market_cap`` target made every candidate report empty exposure,
+    the whole facet fell into the synthetic ``__other__`` bucket, and
+    the optimiser told the user their fund universe lacked an exposure
+    that every one of their funds actually carried. ``fund_breakdowns``
+    covers the four breakdown facets only; the metadata one-hots come
+    from :func:`meta_facet_items`, which this function now calls for any
+    targeted facet in ``META_FACETS`` — both of them, because fixing one
+    member of the set and not the other is precisely the drift this
+    codebase is most exposed to.
+
     Args:
         fund_breakdowns: The fund's ``{facet: block}`` map.
         targets: ``{facet: {level: {key: fraction}}}``.
+        fund_structure: The fund's effective structure block, for the
+            metadata facets. ``None`` is safe — those facets then answer
+            nothing, exactly as a fund with no breakdown data does.
 
     Returns:
         ``(exposures, sources)`` where exposures is
@@ -2160,7 +2294,31 @@ def candidate_exposures(fund_breakdowns: dict,
     exposures: dict[str, dict[str, dict[str, float]]] = {}
     sources:   dict[str, str] = {}
 
+    # One-hots for the metadata facets, computed once rather than per
+    # targeted level — there is only ever one level, but the cost of
+    # asking is the same and the intent is clearer stated up front.
+    meta = meta_facet_items(fund_structure)
+
     for facet, per_level in (targets or {}).items():
+        if facet in META_FACETS:
+            per_level_out = {}
+            blk_meta = {it["key"]: float(it.get("weight") or 0.0)
+                        for it in (meta.get(facet) or [])
+                        if isinstance(it, dict) and it.get("key")}
+            # A flat facet's only level is its own name. Any other level
+            # in the target set cannot be answered — it should never
+            # arrive (validate_target_levels rejects it), and inventing
+            # an answer for it would be the "derive a level" mistake the
+            # facet rules exist to prevent.
+            own_levels = FACET_LEVELS.get(facet) or (facet,)
+            for level in (per_level or {}):
+                per_level_out[level] = dict(blk_meta) if level in own_levels else {}
+            exposures[facet] = per_level_out
+            sources[facet] = ("structure"
+                              if any(k not in _RESIDUAL_KEYS for k in blk_meta)
+                              else "none")
+            continue
+
         block = (fund_breakdowns or {}).get(facet) or {}
         per_level_out: dict[str, dict[str, float]] = {}
         answered = False

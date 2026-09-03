@@ -37,6 +37,10 @@ from pathlib import Path
 from typing import Any
 
 from porxpy import VERSION
+# Bundles are disk work rather than network work, but a large
+# cache makes them a multi-second wait all the same, and the rule
+# is the same: a wait says what it is waiting for.
+from porxpy.utils import progress_phase, progress_update
 from porxpy.config import (BREAKDOWN_FACETS, FACTSHEETS_DIR, FUNDS_DIR,
                            LISTINGS_DIR, OVERRIDES_FP, PORTFOLIOS_FP,
                            SETTINGS_FP)
@@ -166,7 +170,8 @@ def _factsheet_isin(filename: str) -> str:
 
 def export_funds(isins: list[str] | None = None,
                  include_price_history: bool = False,
-                 include_factsheets: bool = True) -> bytes:
+                 include_factsheets: bool = True,
+                 progress_token: str = "") -> bytes:
     """Build a pre-loaded fund bundle.
 
     Args:
@@ -202,7 +207,10 @@ def export_funds(isins: list[str] | None = None,
         # ── funds ────────────────────────────────────────────────────
         exported_isins: set[str] = set()
         if FUNDS_DIR.exists():
-            for fp in sorted(FUNDS_DIR.glob("*.json")):
+            _fund_files = sorted(FUNDS_DIR.glob("*.json"))
+            progress_phase(progress_token, "packing funds", len(_fund_files))
+            for _bi, fp in enumerate(_fund_files):
+                progress_update(progress_token, _bi, len(_fund_files), 0.0)
                 isin = fp.stem.upper()
                 if wanted is not None and isin not in wanted:
                     continue
@@ -229,7 +237,10 @@ def export_funds(isins: list[str] | None = None,
         # skipped by every path that starts from a ticker — the fund
         # would be present and unusable.
         if LISTINGS_DIR.exists():
-            for fp in sorted(LISTINGS_DIR.glob("*.json")):
+            _lst_files = sorted(LISTINGS_DIR.glob("*.json"))
+            progress_phase(progress_token, "packing listings", len(_lst_files))
+            for _bi, fp in enumerate(_lst_files):
+                progress_update(progress_token, _bi, len(_lst_files), 0.0)
                 blob = _read_json(fp)
                 if not isinstance(blob, dict):
                     continue
@@ -278,7 +289,8 @@ def export_funds(isins: list[str] | None = None,
 
         # ── factsheets ───────────────────────────────────────────────
         if include_factsheets and FACTSHEETS_DIR.exists():
-            for fp in sorted(FACTSHEETS_DIR.iterdir()):
+            progress_phase(progress_token, "packing factsheets", 0)
+        for fp in sorted(FACTSHEETS_DIR.iterdir()):
                 if not fp.is_file():
                     continue
                 isin = _factsheet_isin(fp.name)
@@ -300,7 +312,7 @@ def export_funds(isins: list[str] | None = None,
     return buf.getvalue()
 
 
-def export_portfolios() -> bytes:
+def export_portfolios(progress_token: str = "") -> bytes:
     """Build a portfolio backup: portfolios, targets, cash and settings.
 
     Separate from the fund bundle because it is personal rather than
@@ -516,7 +528,8 @@ def _alias_set(row: dict) -> list[str]:
 
 def apply_bundle(data: bytes, fund_actions: dict[str, str] | None = None,
                  default_fund_action: str = "skip",
-                 resource_action: str = "merge_aliases") -> dict:
+                 resource_action: str = "merge_aliases",
+                 progress_token: str = "") -> dict:
     """Write a bundle in, honouring the caller's conflict decisions.
 
     Args:
@@ -569,7 +582,10 @@ def apply_bundle(data: bytes, fund_actions: dict[str, str] | None = None,
         # ── funds ────────────────────────────────────────────────────
         accepted: set[str] = set()
         FUNDS_DIR.mkdir(parents=True, exist_ok=True)
-        for entry in manifest.get("funds") or []:
+        _entries = manifest.get("funds") or []
+        progress_phase(progress_token, "writing funds", len(_entries))
+        for _bi, entry in enumerate(_entries):
+            progress_update(progress_token, _bi, len(_entries), 0.0)
             isin = (entry.get("isin") or "").strip().upper()
             arc  = f"funds/{isin}.json"
             if not isin or arc not in names:
@@ -601,7 +617,10 @@ def apply_bundle(data: bytes, fund_actions: dict[str, str] | None = None,
 
         # ── listings ─────────────────────────────────────────────────
         LISTINGS_DIR.mkdir(parents=True, exist_ok=True)
-        for arc in sorted(n for n in names if n.startswith("listings/")):
+        _arcs = sorted(n for n in names if n.startswith("listings/"))
+        progress_phase(progress_token, "writing listings", len(_arcs))
+        for _bi, arc in enumerate(_arcs):
+            progress_update(progress_token, _bi, len(_arcs), 0.0)
             try:
                 blob = json.loads(z.read(arc).decode("utf-8"))
             except Exception:

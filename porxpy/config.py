@@ -1028,6 +1028,17 @@ FACET_NOT_APPLICABLE: dict[str, frozenset[str]] = {
     "super_region": frozenset({"cash"}),
 }
 
+# A `custody` facet (direct / via_fund) lived here in v0.89.0, to make
+# "cash I hold myself" a percentage target the optimiser could satisfy
+# separately from a fund's own cash sleeve. It was removed in v0.90.0
+# when that target became an AMOUNT reserved off the top instead (see
+# `cash_reserve` on the portfolio). A reservation needs no facet: the
+# reserved money is simply not in the optimiser's matrix, so no fund can
+# occupy it by construction, and the funds/cash/total figures on the
+# portfolio overview already state the split in money. The facet was the
+# right mechanism for a percentage target and the wrong one for a
+# reservation.
+
 # Which values of each meta facet may carry a target. "unknown" is a
 # data gap rather than an intention, and "n/a" duplicates the cash
 # target you would already set on asset_class — neither belongs in the
@@ -1069,6 +1080,98 @@ DEFAULT_FUND_STRUCTURE: dict[str, str] = {
     "focus_detail": "",
 }
 
+# ---------------------------------------------------------------------------
+# Credit quality (v0.93.0)
+# ---------------------------------------------------------------------------
+# A bond holding's credit rating, as the issuer's file wrote it. Two
+# agencies' scales are in circulation and a holdings file may use either,
+# or a mangled version of one: S&P and Fitch write AAA / AA+ / BBB- ,
+# Moody's writes Aaa / Aa1 / Baa3 / Caa1, and files in the wild arrive
+# uppercased ("BAA-", "CAA+"), hyphenated, suffixed ("AA (sf)") or with
+# an outlook attached ("BBB- *-").
+#
+# The RANK is what the app needs and the spelling is what the user needs.
+# So the row stores the source's own wording — like every `<facet>_raw`
+# column — and this table answers the one question the wording cannot:
+# which of two ratings is better. Without it a rating column sorts
+# alphabetically, where "AA+" lands before "AAA" and "B" before "BBB",
+# which is worse than not sorting at all because it looks sorted.
+#
+# Kept in config rather than a resource CSV for the same reason
+# MARKET_CAP_BUCKETS is: it is a closed scale of two dozen entries that
+# the agencies essentially never change. Promote it to a CSV if that
+# stops being true.
+#
+# One ordinal covers both scales because they are deliberately parallel —
+# Moody's Baa2 IS S&P's BBB, and every published mapping says so. The
+# number is an order, not a score: the gap between two adjacent ranks
+# carries no meaning and nothing should average them.
+CREDIT_QUALITY_RANK: dict[str, int] = {
+    # investment grade
+    "AAA": 1,  "AA+": 2,  "AA": 3,  "AA-": 4,
+    "A+":  5,  "A":   6,  "A-":  7,
+    "BBB+": 8, "BBB": 9,  "BBB-": 10,
+    # speculative grade
+    "BB+": 11, "BB": 12,  "BB-": 13,
+    "B+":  14, "B":  15,  "B-":  16,
+    "CCC+": 17, "CCC": 18, "CCC-": 19,
+    "CC":  20, "C":  21,
+    # in default, and the two "no rating" spellings that are an answer
+    # rather than a gap: the issuer said the holding is unrated.
+    "D":   22,
+    "NR":  23, "UNRATED": 23,
+}
+
+# Moody's spellings, mapped onto the same ordinal. Written out rather
+# than derived by a transliteration rule, because the rule has exceptions
+# (Moody's has no "Aa+", it has "Aa1") and a rule with exceptions is
+# harder to check than a table.
+CREDIT_QUALITY_ALIASES: dict[str, str] = {
+    "AAA": "AAA",
+    "AA1": "AA+",  "AA2": "AA",   "AA3": "AA-",
+    "A1":  "A+",   "A2":  "A",    "A3":  "A-",
+    "BAA1": "BBB+", "BAA2": "BBB", "BAA3": "BBB-",
+    "BA1": "BB+",  "BA2": "BB",   "BA3": "BB-",
+    "B1":  "B+",   "B2":  "B",    "B3":  "B-",
+    "CAA1": "CCC+", "CAA2": "CCC", "CAA3": "CCC-",
+    "CAA": "CCC",  "CAA+": "CCC+", "CAA-": "CCC-",
+    "BAA": "BBB",  "BAA+": "BBB+", "BAA-": "BBB-",
+    "BA":  "BB",   "CA":  "CC",
+    "N/A": "NR",   "NOT RATED": "NR", "UNRATED": "NR",
+}
+
+
+def credit_quality_rank(raw: str | None) -> int | None:
+    """Where a written rating sits on the scale, or ``None``.
+
+    Args:
+        raw: Whatever the source wrote — "BBB-", "Baa3", "AA (sf)",
+            "  bb+ ", or anything else.
+
+    Returns:
+        The ordinal (1 is best), or ``None`` when the text names no
+        rating this app recognises. ``None`` is deliberate rather than a
+        worst-case number: an unrecognised spelling is a gap in this
+        table, and sorting it to the bottom as though it were junk debt
+        would be a claim nobody made.
+    """
+    if not raw:
+        return None
+    key = str(raw).strip().upper()
+    if not key:
+        return None
+    # Strip the decorations that ride along with a rating without
+    # changing it: a structured-finance "(sf)" suffix, an outlook, and
+    # surrounding punctuation. Done before the lookup so "AA (sf)" and
+    # "AA" are one entry rather than two.
+    for cut in (" (", " *", "/", ","):
+        if cut in key:
+            key = key.split(cut, 1)[0].strip()
+    key = key.replace(" ", "")
+    key = CREDIT_QUALITY_ALIASES.get(key, key)
+    return CREDIT_QUALITY_RANK.get(key)
+
+
 # Whether a fund is offered to the optimiser at all. Stored per fund
 # (ISIN-keyed, like the rest of this block) rather than per listing,
 # since two listings of the same fund are the same investment decision.
@@ -1081,9 +1184,11 @@ DEFAULT_INCLUDE_IN_OPTIMIZER: bool = True
 #
 #   BREAKDOWN_FACETS — have breakdown *cards* on the fund page, with a
 #       selectable source (issuer / holdings look-through / CSV upload).
-#   META_FACETS      — derived from fund metadata; one-hot per fund. There
-#       is no "issuer market-cap breakdown" to choose between, so these
-#       get no card and no source selector.
+#   META_FACETS      — derived from fund metadata; one-hot per fund, read
+#       as a scalar off the fund's structure block. There is no "issuer
+#       market-cap breakdown" to choose between, so these get no source
+#       selector. Both answer at a single level, so neither has an entry
+#       in FACET_LEVELS.
 #   TARGET_FACETS    — everything you can set a target on, and therefore
 #       everything the optimiser and the deviation report work across.
 #
@@ -1094,6 +1199,7 @@ DEFAULT_INCLUDE_IN_OPTIMIZER: bool = True
 META_FACETS: tuple[str, ...] = ("market_cap", "style_box")
 
 TARGET_FACETS: tuple[str, ...] = BREAKDOWN_FACETS + META_FACETS
+
 
 
 # ---------------------------------------------------------------------------
@@ -1320,13 +1426,23 @@ RETURN_PERIODS: dict[str, int] = {
 # A peer group smaller than this cannot be ranked within.
 #
 # Peer groups are asset class x focus, which produces groups of one — the
-# only technology-sector fund, the only European bond fund. A percentile
-# within a group of one is 100 by construction, so every uniquely
-# positioned fund would score perfectly and be preferentially swapped in:
-# precisely backwards. Below this size the peer score is None and the
-# optimiser leaves the fund alone on score grounds. It stays fully
-# eligible on targets — which is why it is held anyway.
-MIN_PEER_GROUP: int = 3
+# only technology-sector fund, the only European bond fund. There is no
+# ranking to be had inside a group of one, so below this size the peer
+# score is None and the optimiser leaves the fund alone on score grounds.
+# It stays fully eligible on targets — which is why it is held anyway.
+#
+# Was 3 until v0.96.0, on the reasoning that a two-fund percentile is
+# more misleading than no percentile: under the old i/(n-1) formula the
+# pair scored 0 and 100, which reads as "worthless" and "perfect" on the
+# strength of whatever separates them, however little that is. That was
+# a defect in the FORMULA rather than a fact about pairs — one of two
+# funds really does outrank the other, and refusing to say so left every
+# such fund unrated and invisible to the optimiser. With the plotting
+# position rank/(n+1) a pair scores 33.3 and 66.7 (see
+# scoring._percentiles), which states the ordering without overstating
+# the confidence, so the gate now sits at the smallest group that HAS an
+# ordering.
+MIN_PEER_GROUP: int = 2
 
 # Fund size is a FLOOR TEST, not a percentile.
 #

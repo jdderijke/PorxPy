@@ -47,6 +47,9 @@ from porxpy.config import (
     PRICE_HISTORY_FULL_REFRESH_DAYS,
 )
 from porxpy.resolver import (
+    is_valid_cusip,
+    is_valid_isin,
+    name_query_head,
     search_name_only,
     build_ticker,
     candidate_variants,
@@ -1769,7 +1772,7 @@ _JUSTETF_REPLICATION_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 
-def lookup_fund_structure(isin: str) -> dict:
+def lookup_fund_structure(isin: str, progress_token: str = "") -> dict:
     """Best-effort lookup of replication method + style from justETF.
 
     Fetches the justETF profile page for ``isin`` and scrapes the
@@ -1783,6 +1786,13 @@ def lookup_fund_structure(isin: str) -> dict:
       * It scrapes HTML, so a justETF layout change can break parsing —
         in which case the affected facet returns ``None`` rather than a
         wrong guess.
+    ``progress_token`` (v0.92.0) names the enclosing job, if there is
+    one, and this call stamps a phase on it — "asking justETF" — so a
+    request that hangs on somebody else's website says so rather than
+    going quiet. Reported HERE rather than at each of the four call
+    sites, so a fifth caller gets it by construction: this is the single
+    place that knows it is about to leave the machine.
+
       * justETF may rate-limit or block automated requests; a failed
         fetch returns an ``ok: False`` result, not an exception.
 
@@ -1808,6 +1818,9 @@ def lookup_fund_structure(isin: str) -> dict:
         ``confidence`` is ``"high"`` (an explicit phrasing matched),
         ``"low"`` (a weak/indirect signal), or ``"none"``.
     """
+    from porxpy.utils import progress_phase
+    progress_phase(progress_token, "asking justETF")
+
     import re
     import urllib.request
     import urllib.error
@@ -2139,202 +2152,183 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False,
 
     cleaned = clean_holding_ticker_input(symbol)
 
-    # No ticker supplied — skip variant probing entirely and go straight to
-    # identifier-based search. CUSIP is tried first (US-specific, very
-    # precise), then ISIN (also an exact identifier). If neither resolves,
-    # fall through to the name-search fallback at the bottom.
-    if not cleaned:
-        for _id_label, _id_val in (("CUSIP", cusip), ("ISIN", isin)):
-            if not _id_val:
-                continue
-            id_ticker = search_id_variant(_id_val)
-            if id_ticker:
-                info = extract_symbol_info(id_ticker)
-                if info.get('_error') and not _probe_error: _probe_error = info['_error']
-                info["_found"] = _info_looks_found(info)
-                symbol_info_put(id_ticker, info)
-                if info["_found"]:
-                    info["_resolved_ticker"] = id_ticker
-                    print(f"[SymbolInfo] no ticker — resolved via {_id_label}"
-                          f" ({_id_val}) → {id_ticker}")
-                    return info
-        # Name search as last resort when no ticker and no id resolved
-        if name:
-            # Name-only: search_name_variant needs a ticker to verify a
-            # hit against and returns nothing without one, which is why
-            # this branch could never resolve anything before v0.77.0.
-            name_cand = search_name_only(name)
-            if name_cand:
-                info = extract_symbol_info(name_cand)
-                if info.get('_error') and not _probe_error: _probe_error = info['_error']
-                info["_found"] = _info_looks_found(info)
-                symbol_info_put(name_cand, info)
-                if info["_found"]:
-                    info["_resolved_ticker"] = name_cand
-                    print(f"[SymbolInfo] no ticker — resolved via name"
-                          f" search ('{name}') → {name_cand}")
-                    return info
-        if _probe_error:
-            return {"_found": False, "_error": _probe_error}
-        return {"_found": False}
+    def _probe(cand: str | None, *, via: str,
+               alias_for: str = "", note: str = "") -> dict | None:
+        """Resolve one candidate ticker, cache it, and say how we got here.
 
-    # Alias cache short-circuit. ``present`` means we've probed before;
-    # ``resolved`` is the form that worked, or ``None`` for "tried,
-    # nothing worked". Skipped under force=True.
-    # ``retry_negative`` clears a stale None entry so a re-upload that
-    # now supplies an ISIN/CUSIP gets a fresh probe instead of hitting
-    # the cached failure immediately.
-    if not force:
-        present, resolved = alias_get(cleaned)
-        if present:
-            if resolved is None:
-                if retry_negative:
-                    alias_delete(cleaned)   # clear stale negative; fall through
-                else:
-                    return {"_found": False}
-            cached = symbol_info_get(resolved)
-            if cached is not None:
-                # Backfill _found for entries written before the flag existed
-                cached.setdefault("_found", _info_looks_found(cached))
-                cached["_resolved_ticker"] = resolved
-                return cached
-            # Alias points to a resolved ticker but the info entry has
-            # expired (90-day TTL). Fall through and re-probe — it's
-            # cheap (1 Yahoo call, alias still holds).
+        Five blocks in this function did exactly this by hand — check the
+        info cache, else call Yahoo, record the result either way, write
+        an alias, stamp ``_resolved_ticker`` — and they had drifted:
+        two of them forgot the alias write, and only some carried the
+        transport error out. One helper, so the next path added gets the
+        behaviour rather than a sixth near-copy of it.
 
-    # Probe candidates in order. Skip cached negative results inline so
-    # repeat false-positive candidates (e.g. AAPL → AA.LS) don't re-hit
-    # Yahoo each time.
-    candidates = candidate_variants(cleaned)[:_VARIANT_PROBE_CAP]
-    for cand in candidates:
-        # Per-candidate cache check (independent of the input alias).
-        cached = None if force else symbol_info_get(cand)
-        if cached is not None:
-            cached.setdefault("_found", _info_looks_found(cached))
-            if cached["_found"]:
-                # Remember the alias so we can short-circuit next time
-                if cand != cleaned or candidates.index(cand) != 0:
-                    alias_put(cleaned, cand)
-                cached["_resolved_ticker"] = cand
-                return cached
-            # Negatively-cached candidate — keep going, don't re-probe Yahoo
-            continue
+        Args:
+            cand: The ticker to try. ``None`` or blank returns None.
+            via: Which identifier won — one of ``isin`` / ``ticker`` /
+                ``cusip`` / ``name``. Stamped on the result as
+                ``_resolved_via``, because the caller's decision about
+                whether to trust Yahoo's NAME over the file's depends on
+                it: an identifier match is a statement about the same
+                security, a name match is a guess that produced one.
+            alias_for: Raw input to alias to this candidate on a hit, so
+                the next probe of the same input short-circuits.
+            note: Logged on a live hit.
 
-        # Not in cache — live probe via yfinance
-        info = extract_symbol_info(cand)
-        if info.get('_error') and not _probe_error: _probe_error = info['_error']
-        info["_found"] = _info_looks_found(info)
-        symbol_info_put(cand, info)
-
-        if info["_found"]:
-            # Record the alias so subsequent probes of the same raw
-            # input skip the variant generation and go straight to this
-            # candidate's entry.
-            if cand != cleaned:
-                alias_put(cleaned, cand)
-            info["_resolved_ticker"] = cand
-            return info
-        # else: candidate didn't resolve — try the next one. Each
-        # candidate's negative result is cached above, so even if this
-        # symbol comes up across multiple uploads we won't hit Yahoo
-        # again for the same dud variant.
-
-    # All candidates exhausted. Before recording a negative alias, try the
-    # two extended fallbacks (ISIN country prefix, then name search).
-
-    # Fallback 1 — ISIN country prefix.
-    # Strip any existing suffix from cleaned, apply the ISIN-derived suffix,
-    # and probe the result once. On success, record the alias and return.
-    if isin:
-        isin_cand = isin_country_variant(cleaned, isin)
-        if isin_cand:
-            cached = None if force else symbol_info_get(isin_cand)
-            if cached is not None:
-                cached.setdefault("_found", _info_looks_found(cached))
-                if cached["_found"]:
-                    alias_put(cleaned, isin_cand)
-                    cached["_resolved_ticker"] = isin_cand
-                    return cached
-            else:
-                info = extract_symbol_info(isin_cand)
-                if info.get('_error') and not _probe_error: _probe_error = info['_error']
-                info["_found"] = _info_looks_found(info)
-                symbol_info_put(isin_cand, info)
-                if info["_found"]:
-                    alias_put(cleaned, isin_cand)
-                    info["_resolved_ticker"] = isin_cand
-                    print(f"[SymbolInfo] {cleaned} resolved via ISIN prefix"
-                          f" ({isin[:2]}) → {isin_cand}")
-                    return info
-
-    # Fallback 2 — identifier search (CUSIP / ISIN).
-    # When a ticker existed but didn't resolve, try the exact identifiers
-    # before falling back to the fuzzier name search. CUSIP first (US),
-    # then ISIN. On success, alias the resolved ticker to cleaned so the
-    # next probe of this raw ticker is fast.
-    for _id_label, _id_val in (("CUSIP", cusip), ("ISIN", isin)):
-        if not _id_val:
-            continue
-        id_ticker = search_id_variant(_id_val)
-        if not id_ticker:
-            continue
-        cached = None if force else symbol_info_get(id_ticker)
-        if cached is not None:
-            cached.setdefault("_found", _info_looks_found(cached))
-            if cached["_found"]:
-                alias_put(cleaned, id_ticker)
-                cached["_resolved_ticker"] = id_ticker
-                return cached
+        Returns:
+            The info dict on a hit, else None.
+        """
+        nonlocal _probe_error
+        if not cand:
+            return None
+        info = None if force else symbol_info_get(cand)
+        if info is not None:
+            info.setdefault("_found", _info_looks_found(info))
         else:
-            info = extract_symbol_info(id_ticker)
-            if info.get('_error') and not _probe_error: _probe_error = info['_error']
+            info = extract_symbol_info(cand)
+            if info.get("_error") and not _probe_error:
+                _probe_error = info["_error"]
             info["_found"] = _info_looks_found(info)
-            symbol_info_put(id_ticker, info)
-            if info["_found"]:
-                alias_put(cleaned, id_ticker)
-                info["_resolved_ticker"] = id_ticker
-                print(f"[SymbolInfo] {cleaned} resolved via {_id_label}"
-                      f" ({_id_val}) → {id_ticker}")
-                return info
+            symbol_info_put(cand, info)
+            if info["_found"] and note:
+                print(f"[SymbolInfo] resolved via {note} → {cand}")
+        if not info["_found"]:
+            return None
+        if alias_for and alias_for != cand:
+            alias_put(alias_for, cand)
+        info["_resolved_ticker"] = cand
+        info["_resolved_via"] = via
+        return info
 
-    # Fallback 3 — name search.
-    # Only attempted when a name was supplied. On success, probe the returned
-    # ticker (it may already be cached from a prior lookup of that symbol).
+    # ── 1. ISIN, first and by right (v0.94.0) ─────────────────────────
+    #
+    # An ISIN names one security. A ticker is ambiguous across exchanges,
+    # a CUSIP covers North America only, and a name is a guess. So where
+    # the row carries a valid ISIN it decides, even against a ticker the
+    # file also supplied — and the caller then trusts Yahoo's name over
+    # the file's, because the two are describing the same security and
+    # Yahoo's spelling is the one the rest of the app will recognise.
+    #
+    # Cached under an ``isin:`` key in the same alias store the ticker
+    # path uses. Without that this step would cost a Yahoo search on
+    # every row of every run, where the ticker path has always been one
+    # cached lookup; with it, the search is paid once per distinct ISIN
+    # and every later run is free. The key is prefixed so it cannot
+    # collide with a ticker alias.
+    if is_valid_isin(isin):
+        isin_key = f"isin:{isin.strip().upper()}"
+        isin_cand = None
+        probed_before = False
+        if not force:
+            probed_before, isin_cand = alias_get(isin_key)
+        if not probed_before:
+            isin_cand = search_id_variant(isin)
+            # The miss is cached too: an ISIN Yahoo does not list is a
+            # permanent fact about that ISIN, and re-asking on every run
+            # of an 8,000-row bond file is the cost this store exists to
+            # avoid.
+            alias_put(isin_key, isin_cand)
+        # NO alias write against the file's ticker here, deliberately.
+        #
+        # The alias store means "this raw ticker input resolves to that
+        # Yahoo ticker", and an ISIN hit says nothing of the kind: it
+        # says who the ISIN is. While the identifier search ran only
+        # AFTER the ticker's own variants had all failed, aliasing was
+        # sound — the ticker was known not to resolve. Running the ISIN
+        # first breaks that premise, and writing the alias anyway
+        # poisoned the cache for every later row: a row carrying Apple's
+        # ISIN beside a ticker of "MSFT" taught the store that MSFT
+        # resolves to AAPL, permanently and for every fund.
+        #
+        # Steps 3 and 4 still alias, and are still entitled to: they run
+        # after the ticker has been tried and failed.
+        hit = _probe(isin_cand, via="isin", note=f"ISIN {isin}")
+        if hit:
+            return hit
+
+    # ── 2. the ticker the file supplied ───────────────────────────────
+    if cleaned:
+        # Alias cache short-circuit. ``present`` means we have probed
+        # before; ``resolved`` is the form that worked, or None for
+        # "tried, nothing worked". ``retry_negative`` clears a stale None
+        # so a re-upload that now supplies an identifier gets a fresh
+        # probe rather than the cached failure.
+        if not force:
+            present, resolved = alias_get(cleaned)
+            if present:
+                if resolved is None:
+                    if retry_negative:
+                        alias_delete(cleaned)
+                    else:
+                        return {"_found": False}
+                else:
+                    cached = symbol_info_get(resolved)
+                    if cached is not None:
+                        cached.setdefault("_found", _info_looks_found(cached))
+                        cached["_resolved_ticker"] = resolved
+                        cached.setdefault("_resolved_via", "ticker")
+                        return cached
+                    # Alias holds but the info entry expired (90-day
+                    # TTL). Fall through and re-probe: one Yahoo call.
+
+        for cand in candidate_variants(cleaned)[:_VARIANT_PROBE_CAP]:
+            hit = _probe(cand, via="ticker", alias_for=cleaned)
+            if hit:
+                return hit
+
+        # The ticker with the ISIN's country suffix applied. This is a
+        # refinement of the TICKER rather than an identifier lookup —
+        # it rewrites the file's symbol rather than asking who the ISIN
+        # is — so it stays here, after the variants, and reports as a
+        # ticker resolution.
+        if isin:
+            hit = _probe(isin_country_variant(cleaned, isin), via="ticker",
+                         alias_for=cleaned, note=f"ISIN prefix {isin[:2]}")
+            if hit:
+                return hit
+
+    # ── 3. CUSIP ──────────────────────────────────────────────────────
+    # Exact like an ISIN, but North America only, so it answers after the
+    # ISIN and after the ticker the file actually wrote.
+    if cusip:
+        hit = _probe(search_id_variant(cusip), via="cusip",
+                     alias_for=cleaned, note=f"CUSIP {cusip}")
+        if hit:
+            return hit
+
+    # ── 4. the name, last ─────────────────────────────────────────────
+    # A guess, and treated as one: what it returns never overwrites the
+    # name it was derived from. Searched on the HEAD of the name, because
+    # a bond is named "US TREASURY N/B 4.25% 15/11/2034" and the coupon
+    # and maturity are precise, unsearchable, and the reason the whole
+    # string returns nothing.
     if name:
-        name_cand = search_name_variant(name, cleaned)
-        if name_cand:
-            cached = None if force else symbol_info_get(name_cand)
-            if cached is not None:
-                cached.setdefault("_found", _info_looks_found(cached))
-                if cached["_found"]:
-                    alias_put(cleaned, name_cand)
-                    cached["_resolved_ticker"] = name_cand
-                    return cached
-            else:
-                info = extract_symbol_info(name_cand)
-                if info.get('_error') and not _probe_error: _probe_error = info['_error']
-                info["_found"] = _info_looks_found(info)
-                symbol_info_put(name_cand, info)
-                if info["_found"]:
-                    alias_put(cleaned, name_cand)
-                    info["_resolved_ticker"] = name_cand
-                    print(f"[SymbolInfo] {cleaned} resolved via name search"
-                          f" ('{name}') → {name_cand}")
-                    return info
+        for query in [q for q in (name_query_head(name), name.strip())
+                      if q]:
+            cand = (search_name_variant(query, cleaned) if cleaned
+                    else search_name_only(query))
+            hit = _probe(cand, via="name", alias_for=cleaned,
+                         note=f"name search '{query}'")
+            if hit:
+                return hit
+            if query == name.strip():
+                break
 
-    # All fallbacks failed. Record a negative alias so the next probe of
-    # this raw input doesn't re-run the full loop — but ONLY when Yahoo
-    # actually answered. Caching a miss produced by an unreachable
-    # network would make the outage outlive it: every symbol probed
-    # during the outage would stay negatively aliased afterwards.
+    # Nothing resolved. Record a negative alias so the next probe of this
+    # raw input does not re-run the chain — but ONLY when Yahoo actually
+    # answered. Caching a miss produced by an unreachable network would
+    # make the outage outlive it: every symbol probed during it would
+    # stay negatively aliased afterwards.
     if _probe_error:
         return {"_found": False, "_error": _probe_error}
-    alias_put(cleaned, None)
+    if cleaned:
+        alias_put(cleaned, None)
     return {"_found": False}
 
 
 def _apply_lookup_to_row(row: dict, info: dict, fields: list[str], *,
-                          blank_only: bool) -> list[str]:
+                          blank_only: bool,
+                          overwrite: tuple[str, ...] = ()) -> list[str]:
     """Splice Yahoo per-symbol lookup data into a holdings row.
 
     The single chokepoint for "given a row and a yfinance lookup result,
@@ -2387,7 +2381,7 @@ def _apply_lookup_to_row(row: dict, info: dict, fields: list[str], *,
         if not v_s:
             continue
 
-        if blank_only:
+        if blank_only and f not in overwrite:
             # A pinned facet is a decision the user made on this row, so
             # it counts as occupied even when its raw column is empty —
             # which is the ordinary state after a by-row edit, since the
@@ -2551,11 +2545,21 @@ def enrich_holdings_rows(rows: list[dict],
     caller that could still be blocked by a negative alias the upload had
     just cached.
 
-    Blank-only, always: a value already on the row — from the file, from
-    a previous enrichment, or pinned by a by-row edit — is never
-    overwritten. That is what makes the button safe to press repeatedly
-    and keeps the upload's documented precedence (file > enrichment >
-    default) true by construction rather than by a second blank check.
+    Blank-only, with exactly one exception: a value already on the row —
+    from the file, from a previous enrichment, or pinned by a by-row edit
+    — is never overwritten. That is what makes the button safe to press
+    repeatedly and keeps the upload's documented precedence
+    (file > enrichment > default) true by construction rather than by a
+    second blank check.
+
+    The exception is ``name``, and only when an IDENTIFIER resolved the
+    row (v0.94.0). If the row carried a valid ISIN, a ticker or a CUSIP
+    and Yahoo answered on it, the two are describing the same security
+    and Yahoo's spelling is the one the rest of the app can search on
+    again — an issuer's "US TREASURY N/B 4.25% 15/11/2034" cannot be. A
+    name-search resolution never overwrites, because that path started
+    from the row's name and rewriting it would launder a guess into a
+    fact.
 
     Bond-specific columns (``duration`` / ``maturity`` / ``coupon`` /
     ``effective_date``) are not enrichable and stay untouched regardless.
@@ -2627,6 +2631,12 @@ def enrich_holdings_rows(rows: list[dict],
         # (TLS, DNS, proxy, rate limit), so nothing is known either way.
         "rows_lookup_failed":         0,
         "lookup_error":               "",
+        # Identifier columns REPLACED because what the file carried was
+        # malformed. Counted apart from rows_filled, which counts blanks
+        # being filled: "we filled 40 gaps" and "we overwrote 40 values
+        # your file supplied" are different sentences and the second is
+        # the one a user wants to see.
+        "rows_corrected":             {"ticker": 0, "isin": 0, "cusip": 0},
         "rows_with_changes":          0,
         "unrecognised":               [],
     }
@@ -2707,27 +2717,77 @@ def enrich_holdings_rows(rows: list[dict],
         # successful return site — it is the canonical Yahoo ticker
         # regardless of which path resolved it (variant rewrite, ISIN
         # country prefix, id-search, name search, or straight hit).
+        # ── Identifier columns: fill when blank, CORRECT when malformed,
+        #    and leave a well-formed value alone (v0.95.0).
+        #
+        # The middle case is the new one. A blank identifier was always
+        # filled; a present one was always kept, which meant a file
+        # carrying a corrupt ISIN — a transposed digit, a truncated
+        # field — held onto it forever, even once the row had resolved
+        # by another route and Yahoo had told us the real one. The row
+        # then looked identified and was not, and every later run
+        # re-failed on the same bad value.
+        #
+        # A VALID identifier is still never overwritten. That is the
+        # other half of trusting it: a well-formed ISIN is what decides
+        # the resolution in the first place (see get_symbol_info_cached),
+        # so second-guessing it here would contradict the priority the
+        # whole chain is built on. "Correct" means correcting garbage,
+        # not adjudicating between two plausible answers.
         resolved_ticker = (info.get("_resolved_ticker") or "").strip() or None
-        if resolved_ticker and resolved_ticker != (row.get("ticker") or ""):
+        prev_ticker = (row.get("ticker") or "").strip()
+        if resolved_ticker and resolved_ticker != prev_ticker:
             row["ticker"] = resolved_ticker
             touched_any = True
+            if prev_ticker:
+                stats["rows_corrected"]["ticker"] += 1
+
         # ISIN — read out of the Yahoo info cache; no extra HTTP call.
-        # Only fills blank, never overwrites a file-supplied ISIN.
-        if resolved_ticker and not (row.get("isin") or "").strip():
+        cur_isin = (row.get("isin") or "").strip()
+        if resolved_ticker and not is_valid_isin(cur_isin):
             fetched_isin = _isin_from_info(resolved_ticker)
-            if fetched_isin:
+            if fetched_isin and fetched_isin.upper() != cur_isin.upper():
                 row["isin"] = fetched_isin
                 touched_any = True
-        # CUSIP — derived from a US ISIN (chars 2-10). Blank-fill only.
-        if not (row.get("cusip") or "").strip():
-            isin_for_cusip = (row.get("isin") or "").strip().upper()
-            if isin_for_cusip:
-                derived = _cusip_from_isin(isin_for_cusip)
-                if derived:
-                    row["cusip"] = derived
-                    touched_any = True
+                if cur_isin:
+                    stats["rows_corrected"]["isin"] += 1
 
-        written = _apply_lookup_to_row(row, info, eff_fields, blank_only=True)
+        # CUSIP — derived from a US ISIN (chars 2-10), so it is only as
+        # good as the ISIN above and is recomputed whenever that changed.
+        cur_cusip = (row.get("cusip") or "").strip()
+        if not is_valid_cusip(cur_cusip):
+            # Derived only from an ISIN we believe. _cusip_from_isin
+            # checks the length and the "US" prefix and nothing else, so
+            # a junk twelve-character value beginning US would have
+            # yielded a junk CUSIP — replacing one bad identifier with a
+            # second, and this time one we invented ourselves.
+            _src_isin = (row.get("isin") or "").strip().upper()
+            derived = (_cusip_from_isin(_src_isin)
+                       if is_valid_isin(_src_isin) else None)
+            if derived and derived.upper() != cur_cusip.upper():
+                row["cusip"] = derived
+                touched_any = True
+                if cur_cusip:
+                    stats["rows_corrected"]["cusip"] += 1
+
+        # The one field Yahoo is allowed to overwrite, and only when an
+        # IDENTIFIER resolved the row (v0.94.0).
+        #
+        # An ISIN, ticker or CUSIP names the security; the name Yahoo
+        # returns for it is therefore a better spelling of the same
+        # thing, and the spelling the rest of the app will recognise —
+        # issuer files write "US TREASURY N/B 4.25% 15/11/2034" where
+        # Yahoo writes something a search can find again.
+        #
+        # Never on a NAME resolution: that path started from the row's
+        # name, so rewriting the name with what it found would launder a
+        # guess into a fact and make the next run's guess a different
+        # one. And never unless the user asked for `name` in the
+        # enrichment fields — the setting is the consent.
+        _via = (info.get("_resolved_via") or "")
+        _overwrite = ("name",) if _via in ("isin", "ticker", "cusip") else ()
+        written = _apply_lookup_to_row(row, info, eff_fields,
+                                       blank_only=True, overwrite=_overwrite)
         if written:
             touched_any = True
             stats["rows_with_changes"] += 1
@@ -2838,13 +2898,15 @@ def get_category(yf_sym: str, isin: str, category: str, cache_cfg: dict,
             :func:`porxpy.utils.normalise_cache_config`).
         extractor: Zero-argument callable invoked on cache miss.
         force: If True, bypass the cache and always invoke ``extractor``.
-        commit: v0.21.0 explicit-save model. When False AND the cache
-            entry does not already exist, the extractor still runs but
-            the result is NOT written to disk -- it is returned in
-            memory only. When True (default), or when an entry already
-            exists (refresh of an already-saved fund), writes happen as
-            before. Rationale: the file's presence in ``cache/listings/``
-            IS the marker that the fund is saved to the pre-loaded list.
+        commit: v0.21.0 explicit-save model. When False AND the fund is
+            not already saved, the extractor still runs but the result is
+            NOT written to disk -- it is returned in memory only. When
+            True (default), when this entry already exists, or when the
+            fund's listing exists and this is a fund-scope category,
+            writes happen as before. Rationale: the file's presence in
+            ``cache/listings/`` IS the marker that the fund is saved to
+            the pre-loaded list — so it governs BOTH halves of that
+            fund's cache, not just the listing half (v0.95.2).
 
     Returns:
         ``(value, meta)``. ``meta.source`` is ``"cache"`` or ``"live"``.
@@ -2864,10 +2926,48 @@ def get_category(yf_sym: str, isin: str, category: str, cache_cfg: dict,
     value = extractor()
     print(f"[Live] {yf_sym}/{category} in {time.time() - t0:.2f}s")
 
-    # Decide whether to persist. Write if either the caller explicitly
-    # committed, or the entry already exists on disk (refresh of an
-    # already-saved fund). Otherwise the data flows back in memory only.
-    if enabled and (commit or bool(_cache_read(key, category))):
+    # Decide whether to persist. Write if the caller explicitly
+    # committed, if this entry already exists on disk (refresh of an
+    # already-saved fund), or — for a FUND-scope category — if the fund
+    # is saved at all. Otherwise the data flows back in memory only.
+    #
+    # That third condition closes a hole that produced permanently
+    # half-saved funds (v0.95.2). The gate used to be per-CATEGORY, but
+    # "saved" is a property of the FUND: its listing file is the marker
+    # (v0.21.0). So a fund whose listing existed while its fund file did
+    # not — one interrupted commit is enough to make that — could never
+    # recover. Every later uncommitted read topped up the categories that
+    # happened to exist and skipped the ones that did not, because a
+    # category that has never been written never becomes "already on
+    # disk". The fund appeared in the pre-loaded list, looked saved, and
+    # had no asset class, no sectors and no holdings; the visible symptom
+    # was a peer group of one, since peer_key reads a primary asset class
+    # that was permanently "unknown".
+    #
+    # Asked only for fund-scope categories, and only when the cheaper
+    # tests have already failed, so the common paths cost nothing extra.
+    from porxpy.utils import cache_has_category, listing_is_saved
+    # Three ways this may be written, in increasing cost to answer:
+    #   1. the caller committed;
+    #   2. this exact category is already stored (a refresh);
+    #   3. the FUND is saved, and this is one of its fund-scope
+    #      categories that has never been written.
+    #
+    # (2) tests the CATEGORY, not the file. It used to be
+    # `bool(_cache_read(key, category))`, which returns the whole blob
+    # for that file — so a listing holding only its identity stamp
+    # answered "already cached" for profile and price history, and an
+    # unsaved fund quietly began persisting them on its second view.
+    #
+    # (3) is what stops a fund being half-saved for good: "saved" is a
+    # property of the fund, so a fund whose listing carries real data
+    # while its fund file was never written fills that file on the next
+    # read instead of staying broken until someone presses Save again.
+    should_write = commit or cache_has_category(key, category)
+    if not should_write and category in FUND_CATEGORIES:
+        should_write = listing_is_saved(yf_sym)
+
+    if enabled and should_write:
         meta = cache_put(key, category, value)
         return value, {
             "source": "live", "cache_enabled": True,
@@ -2921,7 +3021,12 @@ def get_price_history_cached(yf_sym: str, ticker: yf.Ticker,
     # v0.21.0 explicit-save: only write to disk when commit=True OR an
     # entry already exists (refresh of saved fund).
     from porxpy.utils import cache_read as _cache_read
-    should_write = commit or bool(_cache_read(yf_sym, "price_history"))
+    # cache_has_category, not bool(_cache_read(...)): the latter returns
+    # the whole listing blob, so an identity stamp alone answered "already
+    # cached" and an unsaved fund began persisting its price history on
+    # its second view (v0.95.3). Same test, same reason, as get_category.
+    from porxpy.utils import cache_has_category as _has_cat
+    should_write = commit or _has_cat(yf_sym, "price_history")
 
     cat_cfg = cache_cfg.get("price_history", {})
     enabled = bool(cat_cfg.get("enabled"))
@@ -3461,7 +3566,12 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
         # OR a holdings cache already exists for this ISIN. Otherwise the
         # blob is returned in memory only (consistent with the listing).
         from porxpy.utils import cache_read as _cache_read
-        if commit or bool(_cache_read(isin, "holdings")):
+        # Fund-scope, so it follows the same three-way rule as
+        # get_category: an explicit commit, this category already stored,
+        # or the fund being saved at all.
+        from porxpy.utils import (cache_has_category as _has_cat2,
+                                  listing_is_saved as _saved2)
+        if commit or _has_cat2(isin, "holdings") or _saved2(yf_sym):
             meta = holdings_put(isin, holdings_blob, "yahoo",
                                 store=holdings_store)
             hmeta = {
@@ -3690,9 +3800,12 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
     # profile cache file exists on disk. This is the truth-of-state for
     # the pre-loaded list (no separate flag — the file's presence IS
     # the marker). The frontend uses this to drive the Save button.
-    from porxpy.utils import (listing_exists as _listing_exists,
+    from porxpy.utils import (listing_is_saved as _listing_is_saved,
                               override_get)
-    saved = _listing_exists(yf_sym)
+    # Real cached data, not merely a file: every fetch stamps an identity
+    # block into the listing, so file presence answers "has this fund
+    # ever been looked at" rather than "has it been saved".
+    saved = _listing_is_saved(yf_sym)
     # v0.27.0 — optimiser opt-out, ISIN-keyed. Surfaced on every fund
     # response so the fund page and the pre-loaded list can both show it.
     include_opt = bool(override_get(isin, "include_in_optimizer",

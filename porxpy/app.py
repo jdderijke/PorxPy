@@ -21,6 +21,7 @@ import json
 from datetime import datetime
 import math
 import re
+import time
 import uuid
 from pathlib import Path
 
@@ -32,6 +33,8 @@ from flask_cors import CORS
 
 from porxpy import NAME, VERSION, BUILD_DATE
 from porxpy.config import (
+    CREDIT_QUALITY_ALIASES,
+    CREDIT_QUALITY_RANK,
     FACET_LEVELS,
     FACET_DISPLAY_LEVELS,
     facet_level_field,
@@ -71,6 +74,7 @@ from porxpy.extractors import (
     load_fund_data,
 )
 from porxpy.resolver import (
+    ISIN_RE,
     build_ticker,
     resolve_mode1_listings,
     split_yahoo_ticker,
@@ -79,6 +83,7 @@ from porxpy.resolver import (
 from porxpy.upload import (
     UploadCancelled,
     commit_breakdown_upload,
+    enrichment_progress_hook,
     get_upload_prefs,
     list_canonical_values,
     remembered_upload_source,
@@ -88,8 +93,17 @@ from porxpy.upload import (
     upload_commit,
     upload_preview_from_source,
 )
+# The progress store proper lives in utils since v0.91.0; upload re-exports
+# it for its own callers, but everything else imports it from its home.
+from porxpy.utils import (
+    progress_finish,
+    progress_get,
+    progress_phase,
+    progress_scope,
+    progress_start,
+    progress_update,
+)
 from porxpy.breakdowns import (
-    _key_at_level,
     candidate_exposures,
     facet_items,
     resolve_facet_node,
@@ -518,7 +532,9 @@ def create_app() -> Flask:
     # -----------------------------------------------------------------------
     # An ISIN is 12 chars: 2-letter country code, 9 alphanumerics, 1
     # check digit. Anything not matching this is treated as a ticker.
-    _ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")
+    # The pattern itself lives in resolver.ISIN_RE — one definition, so
+    # this and upload.py cannot disagree about what an ISIN looks like.
+    _ISIN_RE = ISIN_RE
 
     @app.route("/api/fund")
     def api_fund() -> Response:
@@ -578,6 +594,14 @@ def create_app() -> Flask:
             if looks_like_ticker:
                 ticker_q = isin
                 isin = ""
+
+        # The Explore fetch: OpenFIGI to resolve an ISIN, probes on Yahoo
+        # to confirm each candidate ticker, then a full fund load. On a
+        # cold cache that is several seconds and occasionally much more.
+        # It cannot count itself — the number of probes is not known until
+        # OpenFIGI answers — so it reports phases and the bar sweeps.
+        _f_tok = _job_token()
+        progress_start(_f_tok, 0, "resolving the fund", "steps")
 
         cache_cfg = DEFAULT_CACHE_CONFIG
         portfolio_name = None
@@ -752,6 +776,8 @@ def create_app() -> Flask:
 
         # Load with the fully-resolved ticker (known_ticker bypasses the
         # resolver's own OpenFIGI path — we have already resolved).
+        progress_phase(_f_tok, f"loading {resolved_tkr or resolved_isin} "
+                               f"from Yahoo")
         data = load_fund_data(
             resolved_isin, resolved_mic, cache_cfg,
             force_refresh=force, known_ticker=resolved_tkr,
@@ -803,6 +829,7 @@ def create_app() -> Flask:
               f"sectors={len(data['sectors'])}  "
               f"asset={data['asset_class'].get('class')}  "
               f"isin={resolved_isin}  cur={resolved_cur}")
+        progress_finish(_f_tok)
         return jsonify(data)
 
     # -----------------------------------------------------------------------
@@ -821,6 +848,14 @@ def create_app() -> Flask:
             "cache_categories":  CACHE_CATEGORIES,
             "default_cache_cfg": DEFAULT_CACHE_CONFIG,
             "asset_classes":     list(primary_asset_classes()),
+            # The credit-rating scale, so the holdings tables can sort a
+            # quality column by rating rather than alphabetically. Served
+            # rather than mirrored in the frontend: a second copy of a
+            # scale is a second thing to keep in step, and this one is
+            # small enough to send with the config the page already
+            # fetches once.
+            "credit_quality_rank": dict(CREDIT_QUALITY_RANK),
+            "credit_quality_aliases": dict(CREDIT_QUALITY_ALIASES),
         })
 
     @app.route("/api/portfolios", methods=["POST"])
@@ -952,7 +987,7 @@ def create_app() -> Flask:
         """
         from porxpy.optimizer import optimise_portfolio
         # Local imports, matching the pattern used by the other endpoints.
-        from porxpy.utils import cash_positions_get
+        from porxpy.utils import cash_positions_get, cash_reserve_get
         # Country targets are region-keyed while fund breakdowns are
         # country-keyed; this maps one to the other.
         from porxpy.resources import MSTAR_TO_REGION
@@ -1008,7 +1043,21 @@ def create_app() -> Flask:
                              for fp in LISTINGS_DIR.glob("*.json")}
 
         candidates, skipped = [], []
-        for tk in sorted(universe):
+        # The candidate pass loads every pre-loaded fund, so on a cold
+        # cache it is as slow as a portfolio view and for the same reason.
+        # Reported under the caller's token so the same bar covers it.
+        # Plain start/update/finish rather than the context manager: the
+        # loop body uses `continue` in half a dozen places, and indenting
+        # ninety lines into a `with` to gain exception-safety we do not
+        # need would be the wrong trade. If this raises, the request
+        # returns an error, the browser stops polling on that response,
+        # and the record ages out of the store on its own.
+        _uni = sorted(universe)
+        _opt_tok = _job_token()
+        _opt_t0 = time.time()
+        progress_start(_opt_tok, len(_uni), "reading candidate funds", "funds")
+        for _ci, tk in enumerate(_uni):
+            progress_update(_opt_tok, _ci, len(_uni), time.time() - _opt_t0)
             ident = listing_identity_get(tk)
             isin  = (ident.get("isin") or "").strip().upper()
             if not isin:
@@ -1072,8 +1121,11 @@ def create_app() -> Flask:
             # breakdowns.candidate_exposures. Lifted out of here in
             # v0.66.3: as an inline block it could not be tested against
             # a real fund block without a live fetch.
+            # fund_structure carries the metadata facets (market_cap,
+            # style_box), which fund_breakdowns does not.
             exposures, fund_src = candidate_exposures(
-                data.get("fund_breakdowns") or {}, targets)
+                data.get("fund_breakdowns") or {}, targets,
+                data.get("fund_structure") or {})
 
             candidates.append({
                 "ticker":         tk,
@@ -1103,11 +1155,18 @@ def create_app() -> Flask:
                 "focus_detail":   (data.get("fund_structure") or {}).get("focus_detail") or "",
             })
 
-        # Cash: aggregate to base currency, and take its exposure from the
-        # positions themselves (a EUR savings account is not the same
-        # exposure as a USD one).
+        progress_finish(_opt_tok)
+
+        # Cash the user holds, aggregated to base currency (v0.90.0).
+        #
+        # Only the AMOUNT is needed now. Until v0.89.0 this block also
+        # built a per-(facet, level) exposure for cash, because cash was a
+        # column of the solver's matrix and a EUR deposit could help
+        # satisfy a EUR currency target. Cash is a reservation taken off
+        # the top now: the money is not in the matrix at all, and every
+        # target describes the fund side alone. An exposure for it would
+        # have nowhere to go.
         cash_total = 0.0
-        cash_exp: dict[str, dict[str, dict[str, float]]] = {}
         for c in cash_positions_get(pid):
             amt = float(c.get("amount") or 0.0)
             if amt <= 0:
@@ -1119,42 +1178,10 @@ def create_app() -> Flask:
                 if not rate:
                     continue
                 fx = rate
-            v = amt * fx
-            cash_total += v
-            # v0.65.0: per (facet, level), the same shape a candidate's
-            # exposures now have. The cash position states one value per
-            # facet; each level it can reach is derived from it, exactly
-            # as a fund's is. The country -> region remap that used to
-            # live here is gone: region is a level, so a cash position in
-            # Germany contributes to germany at country level AND to
-            # europeDeveloped at region level, rather than being
-            # rewritten as one or the other.
-            for facet, field in (("asset_class", "asset_class"),
-                                 ("sector", "sector"),
-                                 ("country", "country"),
-                                 ("currency", "currency")):
-                raw = cur if facet == "currency" else (c.get(field) or "").strip()
-                if not raw:
-                    continue
-                node, _miss = resolve_facet_node(facet, raw)
-                if not node:
-                    continue
-                for level in FACET_LEVELS.get(facet, (facet,)):
-                    key = _key_at_level(facet, node, level)
-                    if not key or key in ("unknown", "n/a"):
-                        continue
-                    cash_exp.setdefault(facet, {}).setdefault(level, {})
-                    cash_exp[facet][level][key] = \
-                        cash_exp[facet][level].get(key, 0.0) + v
+            cash_total += amt * fx
 
-        for facet, per_level in cash_exp.items():
-            for blk in per_level.values():
-                tot = sum(blk.values())
-                if tot > 0:
-                    for k in blk:
-                        blk[k] /= tot
-        if not cash_exp:
-            cash_exp = {"asset_class": {"asset_class": {"cash": 1.0}}}
+        # How much of the portfolio must stay as cash the user holds.
+        cash_reserve = cash_reserve_get(pid)
 
         # A targeted facet for which NO candidate has any exposure data is a
         # different failure from "targets unreachable", and needs a different
@@ -1242,8 +1269,28 @@ def create_app() -> Flask:
                     f"{mix['none']} fund(s) have no {facet} data — they can "
                     f"only be used for the untargeted part of {facet}.")
 
+        # The reserve, stated in money, said in the response's own terms.
+        # It is not a target the solver tries to hit — it is removed from
+        # the budget before the solver runs — so it never appears in the
+        # deviation table, and without a line here the user would have no
+        # confirmation that the number they set was the number applied.
+        if cash_reserve > 0:
+            shortfall = cash_reserve - cash_total
+            if shortfall > 0.005:
+                facet_warnings.append(
+                    f"Cash reserve {cash_reserve:,.0f} {base_cur} is "
+                    f"{shortfall:,.0f} above the {cash_total:,.0f} you hold, "
+                    f"so the design sells that much to raise it before "
+                    f"investing the rest.")
+            elif shortfall < -0.005:
+                facet_warnings.append(
+                    f"Cash reserve {cash_reserve:,.0f} {base_cur} is "
+                    f"{-shortfall:,.0f} below the {cash_total:,.0f} you hold, "
+                    f"so the difference is invested and every target below "
+                    f"is a percentage of what remains.")
+
         result = optimise_portfolio(
-            candidates, targets, cash_total, cash_exp,
+            candidates, targets, cash_total, cash_reserve,
             max_funds=int(body.get("max_funds") or 10),
             min_weight=float(body.get("min_weight") or 0.01),
             # Default 100, not 0 — a zero minimum lets the optimiser emit
@@ -1554,7 +1601,12 @@ def create_app() -> Flask:
         """
         if not find_portfolio(pid):
             return jsonify({"error": f"no portfolio with id {pid!r}"}), 404
-        return jsonify({"targets": portfolio_targets_get(pid)})
+        # The cash reserve travels with the targets: it is set in the same
+        # dialog and saved by the same button, and returning it separately
+        # would let the screen show a stale one beside fresh targets.
+        from porxpy.utils import cash_reserve_get
+        return jsonify({"targets":      portfolio_targets_get(pid),
+                        "cash_reserve": cash_reserve_get(pid)})
 
     @app.route("/api/portfolios/<pid>/targets", methods=["PUT"])
     def api_portfolio_targets_put(pid: str) -> Response:
@@ -1588,9 +1640,19 @@ def create_app() -> Flask:
 
         try:
             persisted = portfolio_targets_put(pid, raw if isinstance(raw, dict) else {})
+            # Saved in the same call as the targets, since the two are
+            # edited together and a partial save would leave the screen
+            # describing a portfolio that does not exist. Absent from the
+            # body means "leave it alone", which is what a client that
+            # predates the field sends.
+            from porxpy.utils import cash_reserve_get, cash_reserve_set
+            if "cash_reserve" in body:
+                reserve = cash_reserve_set(pid, body.get("cash_reserve") or 0.0)
+            else:
+                reserve = cash_reserve_get(pid)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 404
-        return jsonify({"targets": persisted})
+        return jsonify({"targets": persisted, "cash_reserve": reserve})
 
     @app.route("/api/targets/meta/<facet>", methods=["GET"])
     def api_targets_meta(facet: str) -> Response:
@@ -1672,8 +1734,69 @@ def create_app() -> Flask:
     # -----------------------------------------------------------------------
     # Shared portfolio enrichment
     # -----------------------------------------------------------------------
+    def _job_token() -> str:
+        """The progress token the current request carries, if any.
+
+        One reader rather than one per endpoint (v0.92.0). A token can
+        arrive as a query parameter or in a JSON body depending on the
+        verb, and an endpoint that checked only one of the two would
+        silently report nothing for callers using the other — a bar that
+        never appears, with nothing to say why. Anything that wants to
+        report progress asks this instead of remembering where to look.
+
+        Returns:
+            The token, or ``""`` when the request carries none — which
+            every progress function treats as "report nothing", so no
+            caller needs a branch of its own.
+        """
+        tok = (request.args.get("progress_token") or "").strip()
+        if tok:
+            return tok
+        if request.method in ("POST", "PUT", "PATCH"):
+            # A multipart upload (the bundle import) carries it as a form
+            # field; a JSON post carries it in the body. Checked in that
+            # order because get_json on a multipart request is None.
+            tok = (request.form.get("progress_token") or "").strip()
+            if tok:
+                return tok
+            body = request.get_json(force=True, silent=True)
+            if isinstance(body, dict):
+                return str(body.get("progress_token") or "").strip()
+        return ""
+
+    @app.after_request
+    def _close_job_progress(resp):
+        """Close out whatever job this request was reporting on.
+
+        Endpoints have early returns — the fund fetch alone has half a
+        dozen, one per way the identity can fail to resolve — and an
+        endpoint that returns through one of them leaves its progress
+        record open. The record then shows a bar frozen at the step it
+        reached, which is the exact "it is still working" impression the
+        whole mechanism exists to remove.
+
+        Rather than ask every exit of every handler to remember, the
+        request boundary closes it: whatever token came in, the job is
+        over by the time a response goes out. That is true by
+        construction, and it is true for handlers written later.
+
+        ``progress_finish`` keeps the record readable for its TTL, so the
+        client's last poll still sees a finished bar rather than a bar
+        that vanished.
+        """
+        try:
+            tok = _job_token()
+            if tok:
+                progress_finish(tok)
+        except Exception:
+            # Never let bookkeeping break a response that is otherwise
+            # fine — least of all one carrying the user's data.
+            pass
+        return resp
+
     def _build_enriched_funds(p: dict, cache_cfg: dict, force: bool,
-                              base_cur: str) -> tuple[list[dict], float]:
+                              base_cur: str,
+                              progress_token: str = "") -> tuple[list[dict], float]:
         """Run load_fund_data + valuation for every fund in a portfolio.
 
         Shared by ``/view`` and ``/holdings_rollup`` so the two endpoints
@@ -1681,115 +1804,147 @@ def create_app() -> Flask:
         ``enriched`` list (each entry carrying ``valuation``, ``data``,
         ``effective_asset_class``, a derived ``weight``, etc.) and the
         portfolio total in base currency.
+
+        Args:
+            progress_token: Optional job token (v0.91.0). This loop calls
+                ``load_fund_data`` once per fund, and a cache miss on any
+                of them is a live Yahoo fetch — so a portfolio of thirty
+                funds on a cold cache is the longest wait in the app, and
+                the request that does the work cannot report on itself.
+                Passing a token records per-fund progress the browser can
+                poll while it waits. Blank means report nothing, which is
+                what an internal caller wants.
         """
+        fund_rows = [f for f in p.get("funds", [])
+                     if (f.get("ticker") or "").strip()]
         enriched: list[dict] = []
-        for f in p.get("funds", []):
-            ticker_q = (f.get("ticker") or "").strip().upper()
-            if not ticker_q:
-                continue
+        with progress_scope(progress_token, len(fund_rows),
+                            "loading funds", "funds") as _pr:
+            for _fi, f in enumerate(fund_rows, 1):
+                _pr.step(_fi - 1)
+                enriched.append(_enrich_one_fund(f, cache_cfg, force, base_cur))
+            _pr.step(len(fund_rows))
 
-            # Identity (ISIN, exchange) comes from the listings cache —
-            # portfolios only store {ticker, shares} in 0.12.0+. A
-            # missing identity means the listings cache for this ticker
-            # was purged: the row needs a refetch to be usable.
-            ident = listing_identity_get(ticker_q)
-            isin     = (ident.get("isin")     or "").strip().upper()
-            exchange = (ident.get("exchange") or "").strip().upper() or None
+        # Cash positions and totals, unchanged below.
+        return _finish_enriched(p, enriched, base_cur)
 
-            if not isin:
-                # Soft-fail this fund: surface "needs refetch" through
-                # the enriched entry so the UI can render a placeholder
-                # row with a prompt rather than crashing the whole view.
-                data = {"error": "needs_refetch", "profile": {},
+    def _enrich_one_fund(f: dict, cache_cfg: dict, force: bool,
+                         base_cur: str) -> dict:
+        """Value one portfolio fund. Lifted out of _build_enriched_funds
+        in v0.91.0 so the loop around it could carry a progress scope
+        without the body being indented into it."""
+        ticker_q = (f.get("ticker") or "").strip().upper()
+
+        # Identity (ISIN, exchange) comes from the listings cache —
+        # portfolios only store {ticker, shares} in 0.12.0+. A
+        # missing identity means the listings cache for this ticker
+        # was purged: the row needs a refetch to be usable.
+        ident = listing_identity_get(ticker_q)
+        isin     = (ident.get("isin")     or "").strip().upper()
+        exchange = (ident.get("exchange") or "").strip().upper() or None
+
+        if not isin:
+            # Soft-fail this fund: surface "needs refetch" through
+            # the enriched entry so the UI can render a placeholder
+            # row with a prompt rather than crashing the whole view.
+            data = {"error": "needs_refetch", "profile": {},
+                    "holdings_rows": [], "holdings_source": "none",
+                    "holdings_breakdowns": {}, "breakdowns_source": "none",
+                    "fund_breakdowns": {}, "breakdown_overrides": {},
+                    "asset_allocation": [], "sectors": [],
+                    "asset_class": {"class": "other"}, "price_history": []}
+        else:
+            try:
+                # Portfolio members are already saved (they have a
+                # cache entry by definition); commit=True is the
+                # default but stated explicitly.
+                data = load_fund_data(
+                    isin, exchange, cache_cfg,
+                    force_refresh=force, known_ticker=ticker_q,
+                    commit=True,
+                )
+            except Exception as exc:
+                print(f"[Portfolio view] error for {ticker_q}/{isin}: {exc}")
+                data = {"error": str(exc), "profile": {},
                         "holdings_rows": [], "holdings_source": "none",
                         "holdings_breakdowns": {}, "breakdowns_source": "none",
                         "fund_breakdowns": {}, "breakdown_overrides": {},
                         "asset_allocation": [], "sectors": [],
                         "asset_class": {"class": "other"}, "price_history": []}
-            else:
-                try:
-                    # Portfolio members are already saved (they have a
-                    # cache entry by definition); commit=True is the
-                    # default but stated explicitly.
-                    data = load_fund_data(
-                        isin, exchange, cache_cfg,
-                        force_refresh=force, known_ticker=ticker_q,
-                        commit=True,
-                    )
-                except Exception as exc:
-                    print(f"[Portfolio view] error for {ticker_q}/{isin}: {exc}")
-                    data = {"error": str(exc), "profile": {},
-                            "holdings_rows": [], "holdings_source": "none",
-                            "holdings_breakdowns": {}, "breakdowns_source": "none",
-                            "fund_breakdowns": {}, "breakdown_overrides": {},
-                            "asset_allocation": [], "sectors": [],
-                            "asset_class": {"class": "other"}, "price_history": []}
 
-            # ``data["asset_class"]["class"]`` is already the effective
-            # class — load_fund_data applies any per-fund override on top
-            # of Yahoo detection — so no extra resolution is needed here.
-            effective_class = (data.get("asset_class") or {}).get("class") or "other"
+        # ``data["asset_class"]["class"]`` is already the effective
+        # class — load_fund_data applies any per-fund override on top
+        # of Yahoo detection — so no extra resolution is needed here.
+        effective_class = (data.get("asset_class") or {}).get("class") or "other"
 
-            # Valuation: shares × latest close in native cur → base cur
-            shares_raw = f.get("shares")
-            if shares_raw is None:
-                shares = None
-            else:
-                try:
-                    shares = float(shares_raw)
-                    if shares < 0:
-                        shares = None
-                except (TypeError, ValueError):
+        # Valuation: shares × latest close in native cur → base cur
+        shares_raw = f.get("shares")
+        if shares_raw is None:
+            shares = None
+        else:
+            try:
+                shares = float(shares_raw)
+                if shares < 0:
                     shares = None
+            except (TypeError, ValueError):
+                shares = None
 
-            ph = data.get("price_history") or []
-            last_close = ph[-1]["close"]   if ph else None
-            last_date  = ph[-1]["date"]    if ph else None
+        ph = data.get("price_history") or []
+        last_close = ph[-1]["close"]   if ph else None
+        last_date  = ph[-1]["date"]    if ph else None
 
-            native_cur = (data.get("profile") or {}).get("currency") or ""
-            canon_cur, divisor = normalise_currency(native_cur)
+        native_cur = (data.get("profile") or {}).get("currency") or ""
+        canon_cur, divisor = normalise_currency(native_cur)
 
-            valuation: dict = {
-                "shares":             shares,
-                "last_close":         last_close,
-                "last_close_date":    last_date,
-                "native_currency":    native_cur,
-                "adjusted_currency":  canon_cur or native_cur,
-                "pence_divisor":      divisor,
-                "value_native":       None,
-                "value_base":         None,
-                "fx_rate":            None,
-                "fx_note":            "",
-                "valuation_error":    None,
-            }
+        valuation: dict = {
+            "shares":             shares,
+            "last_close":         last_close,
+            "last_close_date":    last_date,
+            "native_currency":    native_cur,
+            "adjusted_currency":  canon_cur or native_cur,
+            "pence_divisor":      divisor,
+            "value_native":       None,
+            "value_base":         None,
+            "fx_rate":            None,
+            "fx_note":            "",
+            "valuation_error":    None,
+        }
 
-            if shares is None:
-                valuation["valuation_error"] = "no shares entered"
-            elif last_close is None:
-                valuation["valuation_error"] = "no price available"
+        if shares is None:
+            valuation["valuation_error"] = "no shares entered"
+        elif last_close is None:
+            valuation["valuation_error"] = "no price available"
+        else:
+            adj_close = last_close / divisor
+            valuation["value_native"] = round(adj_close * shares, 6)
+            base_px, meta = price_in_base(last_close, native_cur, base_cur)
+            valuation["fx_rate"] = meta.get("fx_rate")
+            valuation["fx_note"] = meta.get("fx_note")
+            if base_px is None:
+                valuation["valuation_error"] = meta.get("error") or "fx conversion failed"
             else:
-                adj_close = last_close / divisor
-                valuation["value_native"] = round(adj_close * shares, 6)
-                base_px, meta = price_in_base(last_close, native_cur, base_cur)
-                valuation["fx_rate"] = meta.get("fx_rate")
-                valuation["fx_note"] = meta.get("fx_note")
-                if base_px is None:
-                    valuation["valuation_error"] = meta.get("error") or "fx conversion failed"
-                else:
-                    valuation["value_base"] = round(base_px * shares, 6)
+                valuation["value_base"] = round(base_px * shares, 6)
 
-            enriched.append({
-                "isin":                  isin or None,
-                "exchange":              exchange,
-                "ticker":                ticker_q,
-                "shares":                shares,
-                "effective_asset_class": effective_class,
-                "valuation":             valuation,
-                "data":                  data,
-                "needs_refetch":         not isin,
-                "holdings_status":       holdings_status_from_cache(isin),
-            })
+        return {
+            "isin":                  isin or None,
+            "exchange":              exchange,
+            "ticker":                ticker_q,
+            "shares":                shares,
+            "effective_asset_class": effective_class,
+            "valuation":             valuation,
+            "data":                  data,
+            "needs_refetch":         not isin,
+            "holdings_status":       holdings_status_from_cache(isin),
+        }
 
+    def _finish_enriched(p: dict, enriched: list[dict],
+                         base_cur: str) -> tuple[list[dict], float]:
+        """Add the cash positions and derive totals and weights.
+
+        The second half of the old _build_enriched_funds, separated in
+        v0.91.0 only so the fund loop could be wrapped in a progress
+        scope. Nothing about the behaviour changed.
+        """
         # ──────────────────────────────────────────────────────────────
         # Cash positions (v0.14.0). Inject one synthetic enriched-fund
         # entry per cash position so the existing rollups (asset class
@@ -1812,9 +1967,16 @@ def create_app() -> Flask:
             # variants. Cash positions don't have a pence convention
             # so divisor is normally 1.0 and we just use rate.
             from porxpy.utils import fx_history
-            distinct_curs = sorted({(pos.get("currency") or "").upper()
-                                     for pos in positions
-                                     if pos.get("currency")})
+            # A position with no currency stated is in the BASE currency.
+            # This used to filter blanks out of the rate table entirely,
+            # so such a position found no rate, and the missing rate was
+            # then coerced to 0.0 — which is why a cash position with an
+            # empty currency field showed up in the portfolio reading
+            # zero. The `or base_cur` here is the same default the
+            # optimise endpoint already applied to the same field; the
+            # two readers of one piece of data now agree.
+            distinct_curs = sorted({(pos.get("currency") or base_cur).upper()
+                                     for pos in positions})
             fx_per_currency: dict[str, float] = {}
             for cur in distinct_curs:
                 if not cur or cur == base_cur:
@@ -1822,23 +1984,25 @@ def create_app() -> Flask:
                     continue
                 try:
                     # fx_history returns a date-indexed series; latest
-                    # value is the current spot. fall back to 0.0 on
-                    # any failure (position then contributes nothing,
-                    # which is the safe behaviour — better than crashing
-                    # the portfolio view).
+                    # value is the current spot. On failure the rate is
+                    # None, NOT 0.0 — see synth_enriched_for_cash_position:
+                    # a zero rate silently removed the position from the
+                    # portfolio total and every breakdown denominator,
+                    # while reading on screen as a position worth nothing.
+                    # None makes it an explicit valuation error instead.
                     rates = fx_history(cur, base_cur) or {}
                     if rates:
                         latest = max(rates.keys())
                         fx_per_currency[cur] = float(rates[latest])
                     else:
-                        fx_per_currency[cur] = 0.0
+                        fx_per_currency[cur] = None
                 except Exception as exc:
                     print(f"[Cash] FX {cur}->{base_cur} error: {exc}")
-                    fx_per_currency[cur] = 0.0
+                    fx_per_currency[cur] = None
 
             for pos in positions:
-                cur = (pos.get("currency") or "").upper()
-                fx  = fx_per_currency.get(cur, 0.0)
+                cur = (pos.get("currency") or base_cur).upper()
+                fx  = fx_per_currency.get(cur)
                 enriched.append(
                     synth_enriched_for_cash_position(pos, base_cur, fx))
 
@@ -1849,9 +2013,30 @@ def create_app() -> Flask:
             if v is not None:
                 total_base += float(v)
 
+        # Weights are a share of the FUND side, not of the grand total
+        # (v0.90.0). Cash the user holds is reserved off the top — it is
+        # not part of what the percentages describe — so a portfolio of
+        # 50k funds and 50k cash has its funds summing to 100%, not 50%.
+        # This reverses v0.89.0, where the denominator was funds + cash
+        # and every fund read at half its weight in the design.
+        #
+        # A cash entry gets no weight at all rather than a share of some
+        # other denominator: it is excluded from the funds list and the
+        # holdings table, and inventing a number for it would only invite
+        # a caller to add it to something it does not belong to.
+        funds_base = 0.0
+        for e in enriched:
+            if e.get("is_cash"):
+                continue
+            v = e["valuation"].get("value_base")
+            if v is not None:
+                funds_base += float(v)
+
         for e in enriched:
             v = e["valuation"].get("value_base")
-            e["weight"] = (v / total_base) if (v is not None and total_base > 0) else None
+            e["weight"] = (None if e.get("is_cash")
+                           else ((v / funds_base)
+                                 if (v is not None and funds_base > 0) else None))
 
         return enriched, total_base
 
@@ -1934,8 +2119,14 @@ def create_app() -> Flask:
         force     = request.args.get("refresh") == "1"
         base_cur  = (p.get("base_currency") or "USD").upper()
 
+        # The browser invents a token, sends it here, and polls
+        # /api/progress with it while this request is in flight — this
+        # one cannot report on itself, because it does not return until
+        # the work is done, which is the whole reason the wait needs
+        # explaining.
         enriched, total_base = _build_enriched_funds(
-            p, cache_cfg, force, base_cur)
+            p, cache_cfg, force, base_cur,
+            progress_token=_job_token())
 
         # ──────────────────────────────────────────────────────────────
         # Fund/ETF-level breakdown cards. Each fund's data.fund_breakdowns
@@ -1950,6 +2141,32 @@ def create_app() -> Flask:
         fl = rollup_portfolio_fundlevel(enriched, total_base)
         fundlevel_breakdowns = fl["fundlevel_breakdowns"]
         fundlevel_coverage   = fl["fundlevel_coverage"]
+
+        # The same rollup over the FUND SIDE alone (v0.91.0) — every cash
+        # position dropped, and each fund weighted against a total that
+        # excludes them. Two blocks rather than one because two different
+        # questions are being asked of the same data:
+        #
+        #   * "where is all my money?" — the X-ray's default, and the
+        #     answer that must add your deposits to the funds' own cash
+        #     sleeves in one bucket;
+        #   * "how is the invested part built?" — what a target describes,
+        #     now that the reserve is taken off the top and every target
+        #     percentage is a share of what remains.
+        #
+        # Computed here rather than fetched twice: rollup_portfolio_fundlevel
+        # is pure, so the second pass costs no I/O, and shipping both lets
+        # the X-ray's include-cash toggle switch instantly instead of
+        # re-running a portfolio load the user would sit and wait for.
+        funds_only = [e for e in enriched if not e.get("is_cash")]
+        funds_base = 0.0
+        for e in funds_only:
+            v = e["valuation"].get("value_base")
+            if v is not None:
+                funds_base += float(v)
+        fl_ex = rollup_portfolio_fundlevel(funds_only, funds_base)
+        fundlevel_breakdowns_ex_cash = fl_ex["fundlevel_breakdowns"]
+        fundlevel_coverage_ex_cash   = fl_ex["fundlevel_coverage"]
 
         # asset_class_breakdown / sector_breakdown / currency_breakdown
         # were removed in v0.61.0. They were the original response keys,
@@ -2003,13 +2220,48 @@ def create_app() -> Flask:
         # and therefore in the deviation calculation automatically;
         # we don't add them again here.
         targets = portfolio_targets_get(p.get("id") or "")
+        # Measured against the FUND SIDE (v0.91.0). Since v0.90.0 the cash
+        # the user holds is reserved off the top and every target is a
+        # percentage of what is left — so measuring achievement against a
+        # denominator that still included that cash made the Targets tab
+        # and the optimiser answer the same question two ways, the tab
+        # reporting a shortfall on a design the optimiser called met.
         target_deviations = compute_target_deviations(
-            fundlevel_breakdowns, targets)
+            fundlevel_breakdowns_ex_cash, targets)
+        # The cash reserve rides along with the targets it belongs to, so
+        # the Targets tab and its editor can render without a second call.
+        from porxpy.utils import cash_reserve_get
+        cash_reserve = cash_reserve_get(p.get("id") or "")
+
+        # Three totals, not one (v0.89.0). The portfolio funds list no
+        # longer carries the cash rows — a cash position is not a fund —
+        # so its own values would sum to less than the portfolio and
+        # nothing on screen would say where the difference went. Splitting
+        # the total here is what lets the overview state it: funds, cash,
+        # and the whole. All three are in the base currency, and
+        # `total_value_base` keeps its meaning as the whole portfolio so
+        # every weight already computed against it stays correct.
+        cash_total_base = 0.0
+        for e in enriched:
+            if not e.get("is_cash"):
+                continue
+            v = e["valuation"].get("value_base")
+            if v is not None:
+                cash_total_base += float(v)
 
         return jsonify({
             "portfolio":             p,
             "base_currency":         base_cur,
             "total_value_base":      round(total_base, 2),
+            # total_value_base minus the direct cash positions. Weights
+            # everywhere stay percentages of total_value_base — these two
+            # are for display, never a denominator.
+            "funds_value_base":      round(total_base - cash_total_base, 2),
+            "cash_value_base":       round(cash_total_base, 2),
+            # How much of the portfolio must stay as cash the user holds
+            # (base currency). Read by the Targets tab; the optimiser
+            # reads it from storage directly.
+            "cash_reserve":          round(cash_reserve, 2),
             # Slimmed: price_history and holdings_rows are dropped here
             # (see _slim_fund_data_for_view). Every aggregate above was
             # computed from the full ``enriched`` before this point.
@@ -2022,6 +2274,11 @@ def create_app() -> Flask:
             # fundlevel_coverage[facet][level].
             "fundlevel_breakdowns":  fundlevel_breakdowns,
             "fundlevel_coverage":    fundlevel_coverage,
+            # The same, over the fund side alone. The X-ray's "include
+            # cash held by me" toggle chooses between the two without a
+            # round-trip; the Targets tab always reads this one.
+            "fundlevel_breakdowns_ex_cash": fundlevel_breakdowns_ex_cash,
+            "fundlevel_coverage_ex_cash":   fundlevel_coverage_ex_cash,
             # Trading-currency exposure of the fund wrappers themselves
             # (distinct from the look-through currency breakdown).
             "trading_currency_breakdown": trading_currency_breakdown,
@@ -2578,10 +2835,16 @@ def create_app() -> Flask:
         """
         from porxpy.bundles import export_funds
         body = request.get_json(force=True, silent=True) or {}
-        data = export_funds(
-            isins=body.get("isins"),
-            include_price_history=bool(body.get("include_price_history")),
-            include_factsheets=body.get("include_factsheets", True))
+        _tok = _job_token()
+        progress_start(_tok, 0, "building the bundle", "files")
+        try:
+            data = export_funds(
+                isins=body.get("isins"),
+                include_price_history=bool(body.get("include_price_history")),
+                include_factsheets=body.get("include_factsheets", True),
+                progress_token=_tok)
+        finally:
+            progress_finish(_tok)
         stamp = datetime.now().strftime("%Y%m%d")
         return Response(
             data, mimetype="application/zip",
@@ -2594,7 +2857,7 @@ def create_app() -> Flask:
         from porxpy.bundles import export_portfolios
         stamp = datetime.now().strftime("%Y%m%d")
         return Response(
-            export_portfolios(), mimetype="application/zip",
+            export_portfolios(_job_token()), mimetype="application/zip",
             headers={"Content-Disposition":
                      f'attachment; filename="porxpy_portfolios_{stamp}.zip"'})
 
@@ -2630,11 +2893,17 @@ def create_app() -> Flask:
             decisions = json.loads(request.form.get("decisions") or "{}")
         except Exception:
             decisions = {}
-        report = apply_bundle(
-            f.read(),
-            fund_actions=decisions.get("fund_actions") or {},
-            default_fund_action=decisions.get("default_fund_action") or "skip",
-            resource_action=decisions.get("resource_action") or "merge_aliases")
+        _tok = _job_token()
+        progress_start(_tok, 0, "reading the bundle", "files")
+        try:
+            report = apply_bundle(
+                f.read(),
+                fund_actions=decisions.get("fund_actions") or {},
+                default_fund_action=decisions.get("default_fund_action") or "skip",
+                resource_action=decisions.get("resource_action") or "merge_aliases",
+                progress_token=_tok)
+        finally:
+            progress_finish(_tok)
         return jsonify(report)
 
     @app.route("/api/resources/facet_alias_targets/<facet>")
@@ -3166,10 +3435,17 @@ def create_app() -> Flask:
         same underlying holding (matched on the app-level
         ``holdings_match.key`` setting — name / ticker / isin) into one
         row, with that row's weight expressed against the whole
-        portfolio. A synthetic "Unclassified" row absorbs the portfolio
-        value not covered by real holdings so the Portfolio Value column
-        reconciles to the total. The actual aggregation is a pure
-        function — :func:`porxpy.breakdowns.aggregate_portfolio_holdings`.
+        portfolio. A synthetic "Unclassified" row absorbs the fund-held
+        value not covered by real holdings, so the Portfolio Value column
+        reconciles to the funds' share of the portfolio. The actual
+        aggregation is a pure function —
+        :func:`porxpy.breakdowns.aggregate_portfolio_holdings`.
+
+        Direct cash positions are excluded: they are held by the user,
+        not by any fund, so they are not holdings this table can list.
+        Their money is reported separately as ``cash_base`` and stays in
+        ``total_base``, which keeps every weight a percentage of the
+        whole portfolio.
 
         Lazy by design: the frontend fetches this only when the Holdings
         sub-tab is opened, so a plain portfolio view never pays the
@@ -3191,7 +3467,8 @@ def create_app() -> Flask:
         base_cur  = (p.get("base_currency") or "USD").upper()
 
         enriched, total_base = _build_enriched_funds(
-            p, cache_cfg, force, base_cur)
+            p, cache_cfg, force, base_cur,
+            progress_token=_job_token())
 
         match_key = (load_settings().get("holdings_match") or {}).get("key", "ticker")
         result = aggregate_portfolio_holdings(enriched, total_base, match_key)
@@ -3447,6 +3724,13 @@ def create_app() -> Flask:
 
         out_funds = []
         portfolio_values = [0.0] * len(dates_sorted)
+        # The same series with the cash positions left out (v0.91.0), for
+        # the History chart's "include cash held by me" toggle. Summed in
+        # the SAME pass, under the same carry-forward and inception rules,
+        # so the two lines can never disagree about method — a client-side
+        # subtraction would have had to re-implement those rules and
+        # would drift the first time one of them changed.
+        portfolio_values_ex_cash = [0.0] * len(dates_sorted)
 
         for fund in per_fund:
             d2v = fund["date_to_val"]
@@ -3466,6 +3750,8 @@ def create_app() -> Flask:
 
             for i, v in enumerate(values):
                 portfolio_values[i] += v
+                if not fund.get("is_cash"):
+                    portfolio_values_ex_cash[i] += v
 
             out_funds.append({
                 "ticker":          fund["ticker"],
@@ -3484,6 +3770,8 @@ def create_app() -> Flask:
             "dates":            dates_sorted,
             "funds":            out_funds,
             "portfolio_values": [round(v, 4) for v in portfolio_values],
+            "portfolio_values_ex_cash": [round(v, 4)
+                                         for v in portfolio_values_ex_cash],
             "warnings":         warnings,
         })
 
@@ -3813,7 +4101,7 @@ def create_app() -> Flask:
 
         if source == "justetf":
             from porxpy.extractors import lookup_fund_structure
-            res = lookup_fund_structure(isin) or {}
+            res = lookup_fund_structure(isin, _job_token()) or {}
             blk = res.get(field)
             if isinstance(blk, dict):
                 v = blk.get("value")
@@ -3964,10 +4252,19 @@ def create_app() -> Flask:
                             "value": value, "pinned": bool(env),
                             "persisted": persist})
 
+        # One field from one source, but the source can be justETF or
+        # Yahoo — both over the network, both able to hang. Sweeping bar
+        # with a phase; lookup_fund_structure stamps "asking justETF" on
+        # top when that is where it goes.
+        _ff_tok = _job_token()
+        progress_start(_ff_tok, 0, f"asking {src}", "steps")
         try:
             value, note = fetch_field_from_source(ticker, isin, field, src)
         except (RuntimeError, ValueError) as exc:
+            progress_finish(_ff_tok)
             return jsonify({"error": str(exc)}), 502
+        finally:
+            progress_finish(_ff_tok)
 
         # Yahoo is the default, so choosing it WITHDRAWS the pin rather
         # than recording one — the same rule the breakdown-source
@@ -4128,6 +4425,15 @@ def create_app() -> Flask:
         values: dict = {}
         notes:  dict = {}
 
+        # Yahoo and justETF are both network calls, one per field, so a
+        # ticked-everything fetch is a run of them. Counted, since the
+        # field list is the denominator; lookup_fund_structure stamps its
+        # own phase on top when justETF is the source.
+        _sf_tok = _job_token()
+        progress_start(_sf_tok, len(fields),
+                       f"asking {source}", "fields")
+        _sf_t0 = time.time()
+
         # Numeric fields answer None rather than the string "unknown" —
         # they have no such vocabulary, and None is what "no value" means
         # everywhere else in the profile.
@@ -4148,6 +4454,7 @@ def create_app() -> Flask:
                 ac_block = detect_asset_class(t, prof) or {}
                 seed, origins = _seed_fund_structure(prof, ac_block.get("class"))
                 for f in fields:
+                    progress_update(_sf_tok, fields.index(f), len(fields), time.time() - _sf_t0)
                     if f == "primary_asset_class":
                         values[f] = ac_block.get("class") or "unknown"
                         # Every other field in this loop reports its
@@ -4180,6 +4487,7 @@ def create_app() -> Flask:
                 return jsonify({"error": "this factsheet has not been "
                                          "extracted yet"}), 409
             for f in fields:
+                progress_update(_sf_tok, fields.index(f), len(fields), time.time() - _sf_t0)
                 blk = got.get(f)
                 if isinstance(blk, dict) and blk.get("value") is not None:
                     values[f] = blk["value"]
@@ -4189,6 +4497,7 @@ def create_app() -> Flask:
             # Citations travel with the values so the dialog can show
             # what each was read from — the whole guard against a
             # confident wrong number.
+            progress_finish(_sf_tok)
             return jsonify({"ticker": ticker, "isin": isin, "source": source,
                             "values": values, "notes": notes,
                             "citations": {f: {k: v for k, v in (got.get(f) or {}).items()
@@ -4201,10 +4510,11 @@ def create_app() -> Flask:
                                          "is on record for this ticker"}), 404
             try:
                 from porxpy.extractors import lookup_fund_structure
-                res = lookup_fund_structure(isin) or {}
+                res = lookup_fund_structure(isin, _job_token()) or {}
                 got = {k: (res.get(k) or {}).get("value")
                        for k in ("replication", "style", "distribution")}
                 for f in fields:
+                    progress_update(_sf_tok, fields.index(f), len(fields), time.time() - _sf_t0)
                     v = got.get(f)
                     values[f] = v if v else _unknown(f)
                     if v:
@@ -4214,6 +4524,7 @@ def create_app() -> Flask:
             except Exception as exc:
                 return jsonify({"error": f"justETF lookup failed: {exc}"}), 502
 
+        progress_finish(_sf_tok)
         return jsonify({"ticker": ticker, "isin": isin, "source": source,
                         "values": values, "notes": notes})
 
@@ -4406,11 +4717,20 @@ def create_app() -> Flask:
         if custom and not (settings.get("ai") or {}).get("edit_prompt"):
             return jsonify({"error": "prompt editing is switched off"}), 409
 
+        # Reading a factsheet is a single opaque call to the Anthropic
+        # API and routinely takes half a minute. It cannot count itself,
+        # so it reports PHASES instead and the bar sweeps — which still
+        # answers "what is it doing", which is the whole point.
+        ptok = _job_token()
+        progress_start(ptok, 0, "reading the document", "steps")
         try:
+            progress_phase(ptok, "asking the model to read it")
             raw = _ai.extract_from_document(fp.read_bytes(), meta.get("ext") or "",
                                             prompt=custom or None)
         except (RuntimeError, ValueError) as exc:
+            progress_finish(ptok)
             return jsonify({"error": str(exc)}), 502
+        progress_phase(ptok, "checking what came back")
 
         # The API call has already succeeded and been paid for by this
         # point, so everything after it is wrapped: a bug in our own
@@ -4424,6 +4744,7 @@ def create_app() -> Flask:
         except Exception as exc:
             import traceback
             traceback.print_exc()
+            progress_finish(ptok)
             return jsonify({
                 "error": f"the factsheet was read, but processing the reply "
                          f"failed: {type(exc).__name__}: {exc}",
@@ -4544,14 +4865,17 @@ def create_app() -> Flask:
         result["prompt"] = custom or _ai.build_extraction_prompt()
         result["prompt_edited"] = bool(custom)
 
+        progress_phase(ptok, "storing the result")
         try:
             stored = factsheet_set_extraction(isin, result)
         except Exception as exc:
             import traceback
             traceback.print_exc()
+            progress_finish(ptok)
             return jsonify({"error": f"extraction succeeded but could not be "
                                      f"stored: {exc}",
                             "extraction": result}), 500
+        progress_finish(ptok)
         return jsonify({"ticker": ticker, "isin": isin,
                         "extraction": result,
                         "factsheet": stored})
@@ -4653,6 +4977,12 @@ def create_app() -> Flask:
         isin   = (request.args.get("isin") or "").strip().upper()
         if not ticker and not isin:
             return jsonify({"error": "provide ticker and/or isin"}), 400
+
+        # This asks OpenFIGI, Yahoo and justETF in turn, so it is several
+        # network round-trips deep and cannot count itself. A sweeping bar
+        # with a phase; each source stamps its own name as it is reached.
+        _ins_tok = _job_token()
+        progress_start(_ins_tok, 0, "inspecting sources", "steps")
 
         # Fill in the ISIN when only a ticker was given, so the OpenFIGI
         # and justETF blocks are not silently skipped. Cache first, then
@@ -4861,7 +5191,8 @@ def create_app() -> Flask:
         if isin:
             try:
                 from porxpy.extractors import lookup_fund_structure
-                out["sources"]["justetf"] = lookup_fund_structure(isin)
+                out["sources"]["justetf"] = lookup_fund_structure(
+                    isin, _job_token())
             except Exception as exc:
                 out["sources"]["justetf"] = {"ok": False, "error": str(exc)}
         else:
@@ -4873,6 +5204,7 @@ def create_app() -> Flask:
         # Sanitised once, at the boundary, rather than at each of the
         # dozen places that add data to `out` — a single missed spot
         # breaks the whole response.
+        progress_finish(_ins_tok)
         return jsonify(_json_safe(out))
 
     @app.route("/api/scores", methods=["GET"])
@@ -5517,6 +5849,39 @@ def create_app() -> Flask:
             })
         return jsonify({"rows": out})
 
+    @app.route("/api/progress/<token>", methods=["GET"])
+    @app.route("/api/enrichment/progress/<token>", methods=["GET"])
+    def api_enrichment_progress(token: str) -> Response:
+        """How far a running job has got.
+
+        ONE endpoint for every slow job in the app (v0.91.0), not just
+        enrichment: portfolio loads, the optimiser's candidate pass,
+        factsheet extraction, justETF lookups, bundle imports. They all
+        answer the same question and the browser draws one bar, so a
+        second endpoint would only be a second way to describe the same
+        wait. The old ``/api/enrichment/progress`` path is kept as an
+        alias so nothing that already polls it has to change.
+
+        The caller invents the token and sends it with the work request;
+        this reads whatever that work has recorded under it.
+
+        Polled while the enriching request is in flight — that request
+        does not return until the work is done, which is the whole reason
+        a second one is needed to ask about it.
+
+        Returns:
+            ``{token, progress}`` where progress is
+            ``{phase, unit, done, total, elapsed_s, eta_s, finished,
+            note}``. ``total`` of 0 means the job cannot count itself —
+            a single opaque call — and the bar should sweep rather than
+            sit at 0%,
+            or null when nothing is (or recently was) running under that
+            token. Null is not an error: it is the answer between the
+            client generating a token and the server reaching the loop,
+            and again once the record has aged out.
+        """
+        return jsonify({"token": token, "progress": progress_get(token)})
+
     @app.route("/api/upload/prefs", methods=["GET"])
     def api_upload_prefs() -> Response:
         """Return the saved upload-dialog prefs for a fund.
@@ -5940,6 +6305,12 @@ def create_app() -> Flask:
         (raw Yahoo top-10, enriched top-10, or full user upload).
 
         Body (JSON, optional):
+            progress_token: Opaque id the caller invents so it can
+                watch the run through
+                ``GET /api/enrichment/progress/<token>``. Optional: the
+                enrichment is identical without one, it just cannot be
+                watched. The upload commit needs no equivalent because
+                its preview token already names the job.
             row_ids: ``["<row id>", ...]`` — enrich ONLY these rows.
                 This is the holdings table's tick boxes: on a 2,000-row
                 fund, enriching everything to fix the four rows the user
@@ -6002,7 +6373,26 @@ def create_app() -> Flask:
                    if isinstance(raw_ids, list) and raw_ids else None)
 
         rows = hold.get("rows") or []
-        rows, stats = enrich_holdings_rows(rows, fields, row_ids=row_ids)
+
+        # Progress, on the same store and the same hook the upload commit
+        # uses. The two are one operation on one row shape (see
+        # enrich_holdings_rows) and should not report themselves two
+        # different ways. The count is what the loop will actually look
+        # up, so the bar is honest from the first poll rather than
+        # denominated by a total the run will never reach.
+        ptoken = str(body.get("progress_token") or "").strip()
+        n_total = len(row_ids) if row_ids else len(rows)
+        progress_start(ptoken, n_total, "enriching")
+        try:
+            rows, stats = enrich_holdings_rows(
+                rows, fields, row_ids=row_ids,
+                on_progress=enrichment_progress_hook(ptoken, "Enrich"))
+        finally:
+            # Unlike the commit, nothing here can cancel mid-run, so the
+            # record is closed whatever happened — a failed enrichment
+            # that left the bar spinning would be the same silence this
+            # endpoint exists to end.
+            progress_finish(ptoken, "enrichment complete")
 
         # Recompute the weight sum (rows may have been re-coerced, which
         # round-trips weight_pct through float — no actual change, but
@@ -6882,7 +7272,17 @@ def create_app() -> Flask:
                     if isin:
                         break
 
-        result = lookup_fund_structure(isin)
+        # justETF is scraped over the network and can hang for as long as
+        # their site feels like taking. One opaque call, so the bar sweeps
+        # with a phase rather than counting; the phase itself is stamped
+        # inside lookup_fund_structure, which is the one place that knows
+        # it is about to leave the machine.
+        _jtok = _job_token()
+        progress_start(_jtok, 0, "asking justETF", "steps")
+        try:
+            result = lookup_fund_structure(isin, _jtok)
+        finally:
+            progress_finish(_jtok)
         result["ticker"] = ticker
         return jsonify(result)
 

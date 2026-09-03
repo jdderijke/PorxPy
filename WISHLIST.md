@@ -17,24 +17,6 @@ re-deriving it.
 
 ## Upload and enrichment
 
-### A progress bar for upload enrichment
-
-**Wanted.** The commit prints progress to the terminal every 25 rows and
-the dialog carries a static warning, which was enough to stop a slow
-commit reading as a hung one (v0.72.3). It is not enough to watch. A
-bar in the dialog, moving, with the row count and remaining time, is
-what the operation actually calls for — you are staring at that dialog
-for the whole of it.
-
-**Why not yet.** The commit is a single synchronous POST that returns
-only when every row is done, so there is nothing for a bar to read. It
-needs either progress streamed from the server (SSE, or chunked
-responses) or the commit split into a start call plus a pollable status
-endpoint. The second fits the existing cancel-token machinery well: the
-token already identifies an in-flight commit and already carries a
-cancel flag, so a `GET /api/upload/progress/<token>` would have
-somewhere natural to live.
-
 ### One answer to "which fields does enrichment fill"
 
 Enrichment reads its field list from two different places. The automatic
@@ -163,6 +145,25 @@ is fed to the AI to extract data from. However some funds have more documentatio
 then just a factsheet. For instance a list of holdings, an analyst report etc.
 Uploading more documents enabled the extraction of more meaningfull data, but at
 the cost of more tokens.
+
+## Tools
+
+### Show the resource fingerprints without pressing Reload
+
+**Wanted.** The Tools tab's resource-files card is the only place that
+says which definition files are loaded and what content each was read
+at. That table is populated from the response to **Reload resource
+files**, so on opening the tab it is empty: the answer to "is the app
+seeing my edit?" is available only by taking an action, and the action
+is the one thing the card tells you that you usually do not need.
+
+**Why not yet.** The fingerprints ride on `POST /api/resources/reload`,
+and calling that on tab open would mean a side-effecting request fired
+by navigation — the wrong shape, even though a reload is harmless. It
+wants a plain `GET /api/resources/fingerprints` returning the same map,
+called when the tab opens, with the reload response continuing to
+refresh the table it already renders. Small, but it is a new endpoint
+rather than a rewiring, which is why it is here rather than done.
 
 ## fund_explorer.html
 

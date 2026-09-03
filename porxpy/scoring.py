@@ -20,6 +20,11 @@ alongside the size of the field — rank 12 is excellent out of 200 and
 poor out of 13. A preset tuned against today's 35 funds keeps its meaning
 when the list reaches 50.
 
+The percentile is the plotting position ``rank / (n + 1)``, so how much
+a field can support is built into the number: two funds separate to 33.3
+and 66.7 rather than 0 and 100. See :func:`_percentiles` for why the
+endpoints are deliberately unreachable.
+
 Two scores, and only one of them is for the optimiser
 ----------------------------------------------------
 ``score_all`` ranks a fund against every other fund. It answers "is this
@@ -137,26 +142,57 @@ def trailing_returns(price_history: list[dict],
 def _percentiles(values: dict[str, float], *, higher_is_better: bool) -> dict[str, float]:
     """Map ``{key: raw}`` to ``{key: percentile 0-100}``, higher = better.
 
+    The formula is the plotting position ``rank / (n + 1)``, with rank
+    counted 1-based from the WORST value. Two funds land on 33.3 and
+    66.7, three on 25/50/75, fifty-one on 1.9 … 98.1.
+
+    Why not ``i / (n - 1)``, which is what this did until v0.96.0
+    ----------------------------------------------------------------
+    That formula stretches whatever field it is given across the full
+    0-100 range, which is a statement the field usually cannot support.
+    In a group of two it is absurd on its face — one fund is *perfect*
+    on cost and the other *worthless*, on the strength of a single
+    basis point between them — and it is barely less absurd in a group
+    of three. The distortion is entirely a small-n effect: across the
+    whole 51-fund universe the two formulas differ by under two points,
+    so nothing of value is lost at the sizes where the old one was
+    defensible.
+
+    It also made the score jump discontinuously as a group grew. Under
+    ``i / (n - 1)`` a pair's leader scores 100; load one more fund of
+    the same kind and it scores 67, having changed in no way itself.
+    ``rank / (n + 1)`` moves it 66.7 -> 75 instead: the group got more
+    informative, so the leader's standing firmed up slightly.
+
+    The consequence to know about: 0 and 100 are no longer reachable
+    from a ranked component. Nothing is best-in-class against a field
+    that might yet grow. (The size component is a floor test rather
+    than a ranking and still scores exactly 0 or 100 — see
+    :data:`porxpy.config.DEFAULT_SIZE_FLOOR_BASE`.)
+
     Ties share the average percentile of the positions they span, so two
     identical TERs cannot be separated by an accident of sort order.
-    A single value scores 100 — there is nothing to be worse than.
+
+    A single value scores 50, which falls straight out of the formula
+    with no special case: a fund that is the only one in its group with
+    a TER on record has not beaten anybody, and the 100 this used to
+    return let a lone measured fund look best-in-class on the strength
+    of its neighbours' missing data.
     """
     if not values:
         return {}
     n = len(values)
-    if n == 1:
-        return {k: 100.0 for k in values}
 
     ordered = sorted(values.items(), key=lambda kv: kv[1],
                      reverse=not higher_is_better)
-    # ordered[0] is the WORST, so index i maps to percentile i/(n-1)*100.
+    # ordered[0] is the WORST, so index i carries 1-based rank i+1.
     out: dict[str, float] = {}
     i = 0
     while i < n:
         j = i
         while j + 1 < n and ordered[j + 1][1] == ordered[i][1]:
             j += 1
-        pct = (i + j) / 2.0 / (n - 1) * 100.0
+        pct = ((i + 1) + (j + 1)) / 2.0 / (n + 1) * 100.0
         for k in range(i, j + 1):
             out[ordered[k][0]] = round(pct, 4)
         i = j + 1
@@ -334,10 +370,11 @@ def score_universe(funds: list[dict],
         if key in peer_component_pct:
             score_peer, _p, _h = _blend(tk, peer_component_pct[key])
         else:
-            # Too few peers to rank against. Not a failure — a fund with
-            # no peers genuinely cannot be best in class, and scoring it
-            # 100 by default would make every uniquely positioned fund
-            # look ideal.
+            # Too few peers to rank against — with min_peer_group at 2
+            # (v0.96.0) that means a group of ONE. Not a failure: there
+            # is no ordering inside a group of one, so any number here
+            # would be invented. A pair is a different case and IS
+            # ranked, 33.3 against 66.7.
             score_peer = None
 
         out[tk] = {

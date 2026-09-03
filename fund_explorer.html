@@ -75,6 +75,17 @@
     transition:background .15s,color .15s;display:inline-flex;align-items:center;gap:8px;}
   .subtab:hover{color:var(--text);}
   .subtab.active{background:var(--surface2);color:var(--accent);}
+  .subtab-group{display:inline-flex;gap:2px;}
+  /* A hairline, not a gap. Whitespace alone inside a pill bar reads as a
+     layout bug; a rule reads as a boundary somebody drew. */
+  .subtab-sep{width:1px;align-self:stretch;margin:2px 7px;
+    background:var(--border2);flex:0 0 auto;}
+  .pcash-toggle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    margin:-0.9rem 0 1.4rem;font-family:var(--mono);font-size:.68rem;}
+  .pcash-toggle label{display:inline-flex;align-items:center;gap:7px;
+    color:var(--text);cursor:pointer;}
+  .pcash-toggle input{accent-color:var(--accent);cursor:pointer;}
+  .pcash-toggle-note{color:var(--muted);}
   .sub-badge{font-size:.62rem;padding:1px 6px;border-radius:4px;background:rgba(79,142,247,.15);color:var(--accent);
     font-family:var(--mono);letter-spacing:0;}
   .sub-badge:empty{display:none;}
@@ -321,10 +332,17 @@
      max-width keeps it anchored to the trigger and the same size either
      way. Height is capped by FT_PANEL_MAX_H for the same reason — see
      ftPosition, which only ever shrinks it below that. */
-  .ftree-panel{position:absolute;z-index:60;left:0;top:calc(100% + 2px);
+  /* position:FIXED, not absolute (v0.89.0). The picker is now mounted in
+     table cells as well as dialogs, and an absolutely-positioned panel is
+     clipped by the first scrolling ancestor — in the cash table that is
+     the table's own wrapper, which cut the tree off after two rows. Fixed
+     takes it out of every clipping context; ftPosition sets left/top/width
+     from the trigger's rect, and the scroll/resize listeners that already
+     existed keep it attached to the trigger. */
+  .ftree-panel{position:fixed;z-index:60;
     background:var(--surface);border:1px solid var(--border2);border-radius:4px;
     box-shadow:0 6px 18px rgba(0,0,0,.45);padding:4px;
-    width:max(100%, 220px);max-width:280px;box-sizing:border-box;}
+    max-width:280px;box-sizing:border-box;}
   /* Scoped under .ftree-panel deliberately. The picker is mounted inside
      `.field` in the holdings editor, and `.field input` — specificity
      (0,1,1) — outranks a bare `.ftree-search` (0,1,0), so the filter box
@@ -379,7 +397,11 @@
   #ufDialog .dtwrap,
   #ufDialog .hfullwrap{max-height:none;overflow:visible;}
   /* Opened upwards when there is more room above than below. */
-  .ftree-panel.ft-up{top:auto;bottom:calc(100% + 3px);}
+  /* ft-up is now cosmetic only — ftPosition sets `top` in both
+     directions, because a fixed panel has no offset parent to measure
+     `bottom` against. Kept as a hook so a flipped panel can still be
+     styled differently if it ever needs to be. */
+  .ftree-panel.ft-up{}
   .ftree-empty{padding:8px;text-align:center;color:var(--muted);
     font-family:var(--mono);font-size:.63rem;}
   .ftree-row{display:flex;align-items:center;gap:5px;padding:1px 4px;
@@ -1116,6 +1138,27 @@
   .et{font-family:var(--mono);font-size:.79rem;letter-spacing:.05em;}
 
   /* Modal */
+  /* Enrichment progress popover. z-index above .modal-bg (100) on
+     purpose: the upload dialog is still open while its commit enriches,
+     and a bar hidden behind the dialog it belongs to would report on a
+     wait nobody can see. */
+  .eprog{position:fixed;right:1.25rem;bottom:1.25rem;z-index:200;width:320px;
+         max-width:calc(100vw - 2.5rem);background:var(--surface);
+         border:1px solid var(--border2);border-radius:10px;
+         padding:.85rem 1rem .9rem;box-shadow:0 8px 28px rgba(0,0,0,.45);}
+  .eprog[hidden]{display:none;}
+  .eprog-title{font-family:var(--mono);font-size:.7rem;color:var(--text);
+               margin-bottom:.55rem;}
+  .eprog-track{height:6px;border-radius:3px;background:var(--surface2);
+               border:1px solid var(--border);overflow:hidden;}
+  .eprog-fill{height:100%;width:0;background:var(--accent);
+              transition:width .25s linear;}
+  /* Before the first poll lands there is no denominator, so the bar
+     sweeps instead of lying about a position. */
+  .eprog.indet .eprog-fill{width:35%;animation:eprogSweep 1.1s ease-in-out infinite;}
+  @keyframes eprogSweep{0%{margin-left:-35%}100%{margin-left:100%}}
+  .eprog-sub{font-family:var(--mono);font-size:.64rem;color:var(--muted);
+             margin-top:.5rem;display:flex;justify-content:space-between;gap:.6rem;}
   .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;display:none;align-items:flex-start;justify-content:center;padding:4rem 1rem;overflow-y:auto;}
   .modal-bg.show{display:flex;}
   .modal{background:var(--surface);border:1px solid var(--border2);border-radius:12px;max-width:620px;width:100%;padding:1.75rem 1.75rem 1.5rem;}
@@ -1186,8 +1229,32 @@
   .wsum{font-family:var(--mono);font-size:.75rem;margin-top:.75rem;}
   .wsum.ok{color:var(--green);}
   .wsum.bad{color:var(--amber);}
+  .tge-reserve{border:1px solid var(--border2);border-radius:6px;padding:10px 12px;
+    margin:0 0 1rem;background:var(--surface2);}
+  .tge-reserve-h{display:flex;align-items:baseline;justify-content:space-between;
+    margin-bottom:6px;}
+  .tge-reserve-h label{font-family:var(--mono);font-size:.72rem;color:var(--text);
+    text-transform:uppercase;letter-spacing:.06em;}
+  .tge-reserve-cur{font-family:var(--mono);font-size:.66rem;color:var(--muted);}
+  .tge-reserve input{width:100%;box-sizing:border-box;background:var(--surface);
+    color:var(--text);border:1px solid var(--border2);border-radius:4px;
+    padding:6px 8px;font-family:var(--mono);font-size:.8rem;}
+  .tge-reserve input:focus{border-color:var(--accent);outline:none;}
+  .tge-reserve-note{font-family:var(--mono);font-size:.64rem;color:var(--muted);
+    margin-top:6px;line-height:1.45;min-height:1.1em;}
   .pvalue{display:inline-block;background:rgba(79,142,247,.1);border:1px solid rgba(79,142,247,.3);
     border-radius:6px;padding:4px 10px;font-family:var(--mono);font-size:.75rem;color:var(--accent);margin-top:6px;}
+  /* The funds/cash halves of the portfolio total (v0.89.0). Same pill as
+     .pvalue but in the muted palette, so the eye reads the whole as the
+     figure and the two parts as its working. */
+  .pvalue-part{display:inline-block;background:var(--surface2);border:1px solid var(--border2);
+    border-radius:6px;padding:4px 10px;font-family:var(--mono);font-size:.75rem;
+    color:var(--muted);margin-top:6px;}
+  .pvalue-sep{display:inline-block;font-family:var(--mono);font-size:.75rem;
+    color:var(--muted);margin:0 6px;}
+  /* The share of the grand total, set slightly back from the money so the
+     amount stays the thing you read first. */
+  .pvalue-pct{opacity:.75;margin-left:4px;}
 
 </style>
 </head>
@@ -1513,18 +1580,49 @@
         </div>
       </div>
 
-      <!-- Portfolio sub-tabs. Funds = the fund list; History = the
-           portfolio price chart; X-ray = the four breakdown cards;
-           Holdings = the aggregated per-holding list across all funds.
-           Same switching pattern as the Explore sub-tabs. -->
+      <!-- Portfolio sub-tabs, in three groups (v0.91.0). The grouping is
+           the answer to "what am I looking at?", which the flat row of
+           seven did not give: the first group is WHAT YOU HOLD, the
+           second is HOW IT HAS BEHAVED AND WHERE IT IS EXPOSED, the third
+           is WHAT YOU WANT AND HOW TO GET THERE. Holdings moved up beside
+           Funds, where it belongs — it is the same question one level
+           deeper — instead of sitting between Targets and Optimizer.
+
+           The separators are drawn, not spaced, because pure whitespace
+           inside a pill bar reads as a rendering accident. -->
       <div class="subtabs" id="pSubTabs">
-        <button class="subtab active" id="pSubTabFunds"    onclick="switchPortfolioSubTab('funds')">Funds</button>
-        <button class="subtab"        id="pSubTabCash"     onclick="switchPortfolioSubTab('cash')">Cash</button>
-        <button class="subtab"        id="pSubTabHistory"  onclick="switchPortfolioSubTab('history')">History</button>
-        <button class="subtab"        id="pSubTabXray"     onclick="switchPortfolioSubTab('xray')">X-ray</button>
-        <button class="subtab"        id="pSubTabTargets"  onclick="switchPortfolioSubTab('targets')">Targets</button>
-        <button class="subtab"        id="pSubTabHoldings" onclick="switchPortfolioSubTab('holdings')">Holdings</button>
-        <button class="subtab"        id="pSubTabOptimizer" onclick="switchPortfolioSubTab('optimizer')">Optimizer</button>
+        <span class="subtab-group" title="What the portfolio contains">
+          <button class="subtab active" id="pSubTabFunds"    onclick="switchPortfolioSubTab('funds')">Funds</button>
+          <button class="subtab"        id="pSubTabHoldings" onclick="switchPortfolioSubTab('holdings')">Holdings</button>
+          <button class="subtab"        id="pSubTabCash"     onclick="switchPortfolioSubTab('cash')">Cash</button>
+        </span>
+        <span class="subtab-sep" aria-hidden="true"></span>
+        <span class="subtab-group" title="Performance and exposure">
+          <button class="subtab"        id="pSubTabHistory"  onclick="switchPortfolioSubTab('history')">History</button>
+          <button class="subtab"        id="pSubTabXray"     onclick="switchPortfolioSubTab('xray')">X-ray</button>
+        </span>
+        <span class="subtab-sep" aria-hidden="true"></span>
+        <span class="subtab-group" title="Maintenance and optimisation">
+          <button class="subtab"        id="pSubTabTargets"  onclick="switchPortfolioSubTab('targets')">Targets</button>
+          <button class="subtab"        id="pSubTabOptimizer" onclick="switchPortfolioSubTab('optimizer')">Optimizer</button>
+        </span>
+      </div>
+
+      <!-- Shown only for the "performance and exposure" group, because it
+           is the only pair the answer changes for. History and X-ray both
+           describe where your money is; whether the cash in your own
+           accounts counts as part of that is a real question with two
+           honest answers, so it is asked once here and both views obey
+           it. This is a VIEW choice — it changes what is on screen, never
+           what any position means — so it lives in the browser, like the
+           facet level selector, and is remembered per portfolio. -->
+      <div id="pCashToggleRow" class="pcash-toggle" style="display:none">
+        <label>
+          <input type="checkbox" id="pIncludeCash" checked
+                 onchange="onIncludeCashToggle()">
+          <span>Include cash held by me</span>
+        </label>
+        <span class="pcash-toggle-note" id="pCashToggleNote"></span>
       </div>
 
       <!-- ===== X-ray sub-tab : the four breakdown cards ===== -->
@@ -2335,6 +2433,22 @@
   </div>
 </div>
 
+<!-- ================================================================ -->
+<!--  ENRICHMENT PROGRESS POPOVER                                     -->
+<!-- ================================================================ -->
+<!-- One popover for both enrichment callers: the holdings tile's
+     "Enrich through Yahoo" and the holdings upload's commit. They run
+     the same loop server-side (enrich_holdings_rows) and report through
+     the same store, so they should not grow two different ways of
+     showing the same wait. -->
+<div class="eprog" id="enrichProgress" hidden>
+  <div class="eprog-title" id="eprogTitle">Enriching through Yahoo</div>
+  <div class="eprog-track"><div class="eprog-fill" id="eprogFill"></div></div>
+  <div class="eprog-sub">
+    <span id="eprogCount">starting…</span><span id="eprogEta"></span>
+  </div>
+</div>
+
 <div class="modal-bg" id="resetModal">
   <div class="modal" style="max-width:520px">
     <h2 id="resetModalTitle">Confirm reset</h2>
@@ -2692,6 +2806,11 @@
         <label class="mfl">Maturity</label>
         <input id="heMaturity" type="text" autocomplete="off"
                placeholder="DD/mmm/YYYY">
+      </div>
+      <div class="field">
+        <label class="mfl">Quality <span style="color:var(--muted)">(credit rating)</span></label>
+        <input id="heQuality" type="text" autocomplete="off"
+               placeholder="e.g. BBB- or Baa3">
       </div>
       <div class="field">
         <label class="mfl">Effective date <span style="color:var(--muted)">(issue / first settle)</span></label>
@@ -3105,6 +3224,14 @@
       </p>
       <p style="font-family:var(--mono);font-size:.66rem;color:var(--muted);
                 line-height:1.5;margin:0 0 .9rem">
+        <b>Cash held by me</b> is an amount, not a percentage, and it is
+        reserved before anything else: the optimiser leaves exactly that
+        much in your own accounts, selling positions to raise it if you
+        hold less. Every percentage below is then a share of what is
+        left — reserve 50,000 of 100,000 and "50% equity" means 25,000.
+      </p>
+      <p style="font-family:var(--mono);font-size:.66rem;color:var(--muted);
+                line-height:1.5;margin:0 0 .9rem">
         The figure beside each heading is what those targets
         <b>commit</b>, not the levels added up. Targets nest, so a target
         set at a finer level counts inside the one that contains it:
@@ -3113,7 +3240,20 @@
         category really is over-committed.
       </p>
 
-      <!-- Four facet sections, each with a "+ Add" picker and the
+      <!-- Cash reserve (v0.90.0). An AMOUNT, not a percentage, and
+           deliberately above the facet sections: it is taken off the top,
+           and everything below is a percentage of what remains. -->
+      <div class="tge-reserve">
+        <div class="tge-reserve-h">
+          <label for="tgCashReserve">Cash held by me</label>
+          <span class="tge-reserve-cur" id="tgReserveCur"></span>
+        </div>
+        <input type="number" min="0" step="any" id="tgCashReserve"
+               placeholder="0" oninput="onTgReserveChange()">
+        <div class="tge-reserve-note" id="tgReserveNote"></div>
+      </div>
+
+      <!-- Facet sections, each with a "+ Add" picker and the
            list of already-added rows. -->
       <div id="targetsEditorBody"></div>
 
@@ -3137,7 +3277,8 @@ const AC_COLOURS = {
 };
 
 // ── State ──────────────────────────────────────────────────────────────────
-let config = { cache_categories:[], default_cache_cfg:{}, asset_classes:[] };
+let config = { cache_categories:[], default_cache_cfg:{}, asset_classes:[],
+               credit_quality_rank:{}, credit_quality_aliases:{} };
 let portfolios = [];
 let activePid = localStorage.getItem('activePortfolioId') || '';
 let currentTab = 'explore';
@@ -3236,7 +3377,7 @@ let portfolioHoldingsState = {
   sortDir: 'desc',
   search:  '',
   filters: {sector:'', asset_class:'', sub_class:'', country:'', currency:'',
-            maturity:'', effective_date:'', duration:'', coupon:''},
+            maturity:'', effective_date:'', quality:'', duration:'', coupon:''},
   showBondCols: false,
 };
 
@@ -3466,6 +3607,10 @@ async function refreshConfigAndPortfolios(){
     cache_categories:  data.cache_categories  || [],
     default_cache_cfg: data.default_cache_cfg || {},
     asset_classes:     data.asset_classes     || [],
+    // The credit-rating scale, owned by config.py and served rather than
+    // copied here — see creditQualityRank.
+    credit_quality_rank:    data.credit_quality_rank    || {},
+    credit_quality_aliases: data.credit_quality_aliases || {},
   };
   populatePortfolioSelect();
   // Validate activePid still exists
@@ -3481,6 +3626,237 @@ async function refreshConfigAndPortfolios(){
 
 // ── Cached funds (Pre-Loaded sub-tab) ──────────────────────────────────────
 let cacheListData = [];
+
+// ── Job progress ────────────────────────────────────────────
+// The standard treatment for every slow external call (v0.91.0), not
+// just Yahoo enrichment: whenever the app contacts something outside
+// itself and the wait can run past a couple of seconds, this bar says
+// what it is doing. A silent request is indistinguishable from a hung
+// one, and a terminal log line is no help to somebody watching a browser.
+//
+// The shape is always the same. The caller invents a token, sends it
+// with the work request, and starts this poller; the server records its
+// progress under that token; one endpoint reads it. The request doing
+// the work cannot report on itself, because it does not return until the
+// work is done — which is the whole reason a second request is needed to
+// ask about it.
+//
+// The bar labels itself from the record: `phase` says which stage is
+// running and `unit` says what the counts are of, so one popover serves
+// funds, holdings, rows and files without hardcoding a noun. A job that
+// cannot count itself sends total 0 and gets a sweeping bar with its
+// phase — still better than a frozen button.
+//
+// Whether to show it at all stays the CALLER's decision, because the
+// caller is where the counts are: a two-row enrichment is over before a
+// bar could render and should not show one.
+let _eprogTimer = null;
+
+function jobProgressToken(){
+  // crypto.randomUUID is unavailable on http:// origins in some
+  // browsers; the fallback only has to be unique among this user's
+  // in-flight jobs, of which there is realistically one.
+  return (window.crypto && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+}
+
+function _jobProgRender(p){
+  const box  = document.getElementById('enrichProgress');
+  const fill = document.getElementById('eprogFill');
+  const cnt  = document.getElementById('eprogCount');
+  const eta  = document.getElementById('eprogEta');
+  if (!box) return;
+  // No record yet (the request has not reached the loop) or no total:
+  // sweep rather than sit at 0%, which reads as stuck.
+  if (!p || !p.total){
+    box.classList.add('indet');
+    fill.style.width = '';
+    // Three distinct states, because they mean different things: no
+    // record yet (the request has not reached the work), a record with
+    // no denominator (a job that cannot count itself), and a counted job
+    // mid-run. Only the last can honestly draw a percentage.
+    cnt.textContent = p ? (p.phase || 'working…') : 'contacting…';
+    eta.textContent = p && p.elapsed_s ? `${Math.round(p.elapsed_s)}s` : '';
+    return;
+  }
+  box.classList.remove('indet');
+  const pct = Math.max(0, Math.min(100, Math.round(100 * p.done / p.total)));
+  fill.style.width = pct + '%';
+  cnt.textContent = `${p.done} / ${p.total} ${p.unit || 'items'} · ${pct}%`;
+  eta.textContent = p.finished ? 'done'
+    : (p.eta_s == null ? '' : `~${Math.max(1, Math.round(p.eta_s))}s left`);
+}
+
+// Show the popover and start polling. Returns nothing; call
+// jobProgressStop() when the request that owns it settles.
+function jobProgressStart(token, title){
+  const box = document.getElementById('enrichProgress');
+  if (!box) return;
+  jobProgressStop();                      // never two pollers at once
+  document.getElementById('eprogTitle').textContent =
+    title || 'Working…';
+  _jobProgRender(null);
+  box.hidden = false;
+  const poll = async () => {
+    try {
+      const r = await fetch(
+        `${API}/progress/${encodeURIComponent(token)}`);
+      if (!r.ok) return;
+      _jobProgRender((await r.json()).progress);
+    } catch(_e){
+      // A failed poll is not a failed job — the request doing the work
+      // is a different one. Keep the bar and try again.
+    }
+  };
+  poll();
+  // 700ms: fast enough that a row-per-second loop visibly moves, slow
+  // enough not to add a request per row to a run that is already
+  // network-bound.
+  _eprogTimer = setInterval(poll, 700);
+}
+
+function jobProgressStop(){
+  if (_eprogTimer){ clearInterval(_eprogTimer); _eprogTimer = null; }
+  const box = document.getElementById('enrichProgress');
+  if (box) box.hidden = true;
+}
+
+// ── Credit quality ──────────────────────────────────────────────────
+// Stored as `quality`, which is what issuers' holdings files call it and
+// what the upload maps from — but displayed as "Rating", because this app
+// already has a Quality column and it means something else entirely: the
+// five data-quality dots on the funds list, which say how completely a
+// FUND is described. Two columns headed "Quality" one tab apart, meaning
+// a bond's creditworthiness in one and our own data coverage in the
+// other, is a trap worth one word to avoid.
+// The rating a bond holding carries, as its source wrote it. Two scales
+// are in circulation — S&P/Fitch write AAA / BBB-, Moody's writes Aaa /
+// Baa3 — and a holdings file may use either, often mangled by whatever
+// produced it ("BAA-", "CAA+", "AA (sf)").
+//
+// The rank table is SERVED, not mirrored here: config.py owns the scale
+// and /api/config sends it with the rest of the config the page fetches
+// once. A copy in this file would be a second thing to keep in step with
+// the agencies, and drift between the two would show up as a table that
+// sorts differently from the one the backend would have produced.
+function creditQualityRank(raw){
+  if (!raw) return null;
+  let key = String(raw).trim().toUpperCase();
+  if (!key) return null;
+  // The decorations that ride along with a rating without changing it.
+  // Same list as the backend's, for the same reason: "AA (sf)" and "AA"
+  // are one rating, and a table that sorted them apart would be wrong in
+  // a way nobody would think to check.
+  for (const cut of [' (', ' *', '/', ',']){
+    const i = key.indexOf(cut);
+    if (i >= 0) key = key.slice(0, i).trim();
+  }
+  key = key.replace(/\s+/g, '');
+  const aliases = (config.credit_quality_aliases || {});
+  const ranks   = (config.credit_quality_rank || {});
+  key = aliases[key] || key;
+  const r = ranks[key];
+  return (r == null) ? null : r;
+}
+
+// The ratings present in a row set, best first.
+//
+// Ordered by RANK rather than alphabetically, because this feeds a filter
+// dropdown and a list reading "AA, AA+, AAA, B, BB, BBB" is a list nobody
+// can scan. Unrecognised spellings keep their place at the end, sorted
+// among themselves, so a file using a scale this app does not know still
+// offers its values rather than hiding them.
+function distinctQuality(rows){
+  const seen = new Set();
+  (rows || []).forEach(r => {
+    const v = (r.quality || '').trim();
+    if (v) seen.add(v);
+  });
+  return Array.from(seen).sort((a, b) => {
+    const ra = creditQualityRank(a), rb = creditQualityRank(b);
+    if (ra == null && rb == null) return a.localeCompare(b);
+    if (ra == null) return 1;
+    if (rb == null) return -1;
+    return ra - rb;
+  });
+}
+
+// One comparator for both holdings tables (v0.93.0).
+//
+// They had a copy each, identical but for which keys counted as numeric,
+// and a third rule was about to be added to both. Rating order is exactly
+// the kind of rule that gets applied to one table and not the other: it
+// changes nothing visible in the cells, so a table still sorting AA+
+// before AAA looks like it is working.
+//
+// Three kinds of column, in order of specificity:
+//   numeric        — compared as numbers, blanks last
+//   credit quality — compared by RANK, because alphabetical order puts
+//                    AA+ before AAA and B before BBB
+//   everything else — locale string compare, which is also what the date
+//                    columns get (stored DD/mmm/YYYY, and good enough)
+const HOLDINGS_NUMERIC_SORT_KEYS = new Set([
+  'weight_pct', 'portfolio_value', 'fund_count', 'duration', 'coupon',
+]);
+
+function holdingsRowCompare(a, b, sortKey, sortDir){
+  const va = a[sortKey], vb = b[sortKey];
+  if (HOLDINGS_NUMERIC_SORT_KEYS.has(sortKey)){
+    const da = (va == null || va === '') ? -Infinity : Number(va);
+    const db = (vb == null || vb === '') ? -Infinity : Number(vb);
+    return sortDir === 'asc' ? da - db : db - da;
+  }
+  if (sortKey === 'quality'){
+    // Unrecognised and blank ratings sort together, at the end, in both
+    // directions — they are an absence, and letting an absence lead the
+    // "best first" order would read as a claim that it is the best.
+    const ra = creditQualityRank(va), rb = creditQualityRank(vb);
+    if (ra == null && rb == null){
+      const sa = (va == null) ? '' : String(va);
+      const sb = (vb == null) ? '' : String(vb);
+      return sa.localeCompare(sb, undefined, {sensitivity:'base'});
+    }
+    if (ra == null) return 1;
+    if (rb == null) return -1;
+    return sortDir === 'asc' ? ra - rb : rb - ra;
+  }
+  const sa = (va == null) ? '' : String(va);
+  const sb = (vb == null) ? '' : String(vb);
+  const cmp = sa.localeCompare(sb, undefined, {sensitivity:'base'});
+  return sortDir === 'asc' ? cmp : -cmp;
+}
+
+// Run one request with the bar up, and take it down whichever way the
+// request ends (v0.92.0).
+//
+// The three lines this replaces — mint a token, start the bar, stop it in
+// a finally — were about to be written out at a dozen call sites, and the
+// one that forgot the `finally` would leave a bar running forever after a
+// failed request. Written once, that cannot happen.
+async function withJobProgress(title, fn){
+  const tok = jobProgressToken();
+  jobProgressStart(tok, title);
+  try { return await fn(tok); }
+  finally { jobProgressStop(); }
+}
+
+// The Explore fund fetch, in all seven places that make it. Every caller
+// builds its own URLSearchParams and then makes the identical request, so
+// the token plumbing lives here rather than seven times over — and a new
+// caller gets the bar by using the same helper, not by remembering to.
+async function fetchFundWithProgress(params, title){
+  return withJobProgress(title || 'Fetching fund data', (tok) => {
+    params.set('progress_token', tok);
+    return fetch(`${API}/fund?${params}`);
+  });
+}
+
+// The enrichment callers predate the generalisation and read better in
+// their own terms; they are the same three functions.
+const enrichProgressToken = jobProgressToken;
+const enrichProgressStart = jobProgressStart;
+const enrichProgressStop  = jobProgressStop;
 
 // ── Modal visibility and busy action buttons ──────────────────
 // An action button that kicks off a request puts itself into a busy
@@ -3727,7 +4103,7 @@ function renderCachePanel(){
             <!-- title set by applyQualityHeaderTips() from QUALITY_TIP -->
             <th data-key="quality" onclick="onCacheSort('quality')">Quality<span class="sortarr" data-arr="quality"></span></th>
             <th data-key="score" onclick="onCacheSort('score')"
-                title="Best-in-class score, 0–100. Left: rank against every saved fund. Right: rank within this fund's peer group (same asset class and focus) — the number the optimiser uses. '—' means the peer group is too small to rank within. Weights come from the model chosen below.">score<span class="sortarr" data-arr="score"></span></th>
+                title="Best-in-class score, 0–100. Left: rank against every saved fund. Right: rank within this fund's peer group (same asset class and focus) — the number the optimiser uses. '—' means the fund is alone in its peer group, so there is nothing to rank it against; a group of two ranks 33 and 67. Weights come from the model chosen below.">score<span class="sortarr" data-arr="score"></span></th>
             <th class="nosort"
                 title="The funds this one is ranked against — same asset class and focus. Includes itself. Each row shows the peer score; click one to bring it into view. '—' means the group is too small to rank within.">Peers</th>
             <th class="nosort">Portfolios</th>
@@ -4441,6 +4817,19 @@ function scoreCellHtml(c){
        + `<span>${fmt(b.score_peer)}</span>${thin}`;
 }
 
+// Why a fund has no peer score, in one phrasing shared by the fund-list
+// tooltip and the fund-page score sub-line. The two say the same thing
+// about the same block, and said it differently until v0.96.0.
+//
+// Since MIN_PEER_GROUP dropped to 2 this only ever describes a group of
+// ONE: a pair now ranks 33 against 67. So the old "only N fund(s) — too
+// few to rank within" is retired; it rendered as "only 1 fund(s)" and
+// left the reader to work out that a lone fund has no ordering.
+function scoreNoPeerText(b){
+  const key = (b && b.peer_key) ? ` ${b.peer_key}` : '';
+  return `alone in peer group${key} — nothing to rank it against`;
+}
+
 function scoreTitleFor(c){
   const b = cacheScores[(c.ticker || '').toUpperCase()];
   if (!b) return 'Not scored';
@@ -4457,7 +4846,7 @@ function scoreTitleFor(c){
     })
     .join(' · ');
   const peer = b.score_peer == null
-    ? `peer group ${b.peer_key} has only ${b.peer_n} fund(s) — too few to rank within`
+    ? scoreNoPeerText(b)
     : `peer group ${b.peer_key} (${b.peer_n} funds)`;
   const thin = b.covered < 3
     ? `\nOnly ${b.covered} of 3 components have data — this score is thin.` : '';
@@ -4743,7 +5132,7 @@ async function loadCachedFund(ticker, isin, exchange, currency){
   document.getElementById('fetchBtn').disabled = true;
   setStatus('spin', `Loading ${ticker || isin}…`);
   try {
-    const r = await fetch(`${API}/fund?${params}`);
+    const r = await fetchFundWithProgress(params, 'Fetching fund data');
     const d = await r.json();
     if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
     curISIN = d.isin || ''; curTicker = d.ticker || ''; curExchange = d.resolved_mic || '';
@@ -4916,7 +5305,10 @@ async function runInspector(){
     const qs = new URLSearchParams();
     if (ticker) qs.set('ticker', ticker);
     if (isin)   qs.set('isin', isin);
-    const r = await fetch(`${API}/tools/inspect?${qs}`);
+    const r = await withJobProgress('Inspecting sources', (tok) => {
+      qs.set('progress_token', tok);
+      return fetch(`${API}/tools/inspect?${qs}`);
+    });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
     renderInspector(d);
@@ -5184,6 +5576,11 @@ async function runOptimizer(){
       score_preset: (document.getElementById('optScorePreset') || {}).value || '',
       substitutions: Object.keys(optSubs).length ? optSubs : undefined,
     };
+    // The candidate pass reads every pre-loaded fund, so on a cold cache
+    // it is as slow as a portfolio load and deserves the same bar.
+    const ptok = jobProgressToken();
+    body.progress_token = ptok;
+    jobProgressStart(ptok, 'Designing the portfolio');
     const r = await fetch(`${API}/portfolios/${activePid}/optimize`, {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify(body),
@@ -5286,6 +5683,7 @@ async function runOptimizer(){
   } catch(e){
     status.textContent = `Failed: ${e.message || e}`;
   } finally {
+    jobProgressStop();
     btn.disabled = false;
   }
 }
@@ -5597,6 +5995,61 @@ async function applyOptimizerTrades(){
   }
 }
 
+// ---------------------------------------------------------------------------
+// "Include cash held by me" — the History / X-ray view toggle (v0.91.0)
+// ---------------------------------------------------------------------------
+// A view choice, not an assertion: it changes which positions the two
+// exposure views describe, never what any position means. So it lives in
+// the browser and is remembered per portfolio, the same way the facet
+// level selectors are. The server ships both answers with the portfolio
+// payload, so flipping it is instant — re-fetching would make a question
+// about presentation cost a portfolio reload.
+//
+// Default ON, which is the behaviour that existed before the toggle: the
+// X-ray's whole point is that your deposits and the funds' cash sleeves
+// add up to one honest answer about how much of your money is in cash.
+function includeCashKey(){ return `pIncludeCash:${activePid || ''}`; }
+
+function includeCashEnabled(){
+  try {
+    const v = localStorage.getItem(includeCashKey());
+    return v === null ? true : v === '1';
+  } catch(e){ return true; }
+}
+
+function updateIncludeCashRow(){
+  const row = document.getElementById('pCashToggleRow');
+  if (!row) return;
+  const inGroup2 = (portfolioSubTab === 'history' || portfolioSubTab === 'xray');
+  const view     = currentPortfolioView;
+  const cash     = Number(view?.cash_value_base || 0);
+  // Hidden when there is no cash to include or exclude: a checkbox whose
+  // two states look identical is worse than no checkbox.
+  row.style.display = (inGroup2 && cash > 0) ? '' : 'none';
+  if (row.style.display === 'none') return;
+
+  const box = document.getElementById('pIncludeCash');
+  if (box) box.checked = includeCashEnabled();
+  const note = document.getElementById('pCashToggleNote');
+  if (note){
+    const cur = view?.base_currency || view?.portfolio?.base_currency || '';
+    note.textContent = includeCashEnabled()
+      ? `${fmtMoney(cash, cur)} of cash is counted in these two views.`
+      : `${fmtMoney(cash, cur)} of cash is left out — showing the funds only.`;
+  }
+}
+
+function onIncludeCashToggle(){
+  const box = document.getElementById('pIncludeCash');
+  try { localStorage.setItem(includeCashKey(), box && box.checked ? '1' : '0'); }
+  catch(e){ /* private window: the toggle still works for this session */ }
+  updateIncludeCashRow();
+  // Both views re-render from data already in hand.
+  try { renderAllBreakdowns(currentPortfolioView); } catch(e){}
+  try { renderPortfolioFundToggles(); } catch(e){}
+  try { renderPortfolioChart(); } catch(e){}
+}
+
 function switchPortfolioSubTab(name){
   // If the user has unsaved cash changes and is moving away from the
   // Cash sub-tab, confirm before navigating — otherwise it's far too
@@ -5628,6 +6081,14 @@ function switchPortfolioSubTab(name){
     const el = document.getElementById(id);
     if (el) el.style.display = (k === name) ? '' : 'none';
   });
+
+  // The include-cash toggle belongs to the performance-and-exposure
+  // group and only to it: those two views answer "where is my money",
+  // and whether that includes the cash in your own accounts is a real
+  // question. The other five have no such ambiguity — Funds and Holdings
+  // never list it, Cash lists only it, and Targets and Optimizer measure
+  // the fund side by definition since the reserve is taken off the top.
+  updateIncludeCashRow();
 
   // The portfolio price chart sizes itself to its canvas; when the
   // History panel was display:none at render time the canvas had no
@@ -5713,9 +6174,14 @@ async function loadCashPositions(){
       `<div class="spin" style="display:inline-block;margin-right:8px"></div>` +
       `Loading cash positions…</td></tr>`;
   }
-  // Kick the reference fetch in parallel so the datalists populate
-  // alongside the data.
-  loadHoldingClassResources().then(populateCashDatalists);
+  // Kick the reference fetch in parallel so the vocabulary is there when
+  // the rows land. If it arrives second, re-render: the facet pickers
+  // cannot draw a tree they have not been given, and a row mounted
+  // before the vocabulary would sit on "loading…" forever.
+  loadHoldingClassResources().then(() => {
+    populateCashDatalists();
+    if (cashPositions.length) renderCashTable();
+  }).catch(() => {});
 
   try {
     const r = await fetch(`${API}/portfolios/${encodeURIComponent(activePid)}/cash`);
@@ -5753,52 +6219,12 @@ function populateCashDatalists(){
 }
 
 
-// Cash country dropdown — strict <select> built from the same
-// canonical mstar_country list the edit-holding modal uses. Blank
-// is allowed (a position needn't have a country). For legacy values
-// not in the canonical list, a deprecated option is prepended so
-// the user sees and can replace it.
-function cashCountryOptions(current){
-  if (!RES_COUNTRIES) {
-    return `<option value="${escapeAttr(current || '')}">${escapeHtml(current || '')}</option>`;
-  }
-  const list = (RES_COUNTRIES.rows || []).map(r => r.value);
-  const canon = current && list.find(c =>
-    c.toLowerCase() === String(current).toLowerCase());
-  let html = `<option value="" ${current ? '' : 'selected'}></option>`;
-  if (current && !canon) {
-    html += `<option value="${escapeAttr(current)}" selected style="color:var(--red)">` +
-            `⚠ ${escapeHtml(current)} (legacy — please update)</option>`;
-  }
-  html += list.map(c => {
-    const sel = (canon === c) ? ' selected' : '';
-    return `<option value="${escapeAttr(c)}"${sel}>${escapeHtml(c)}</option>`;
-  }).join('');
-  return html;
-}
-
-// Cash currency dropdown — strict <select> built from currencies.csv.
-// Same legacy-option treatment as countries; label shows the ISO
-// code followed by the human name so type-to-search works on either.
-function cashCurrencyOptions(current){
-  if (!RES_CURRENCIES) {
-    return `<option value="${escapeAttr(current || '')}">${escapeHtml(current || '')}</option>`;
-  }
-  const rows = RES_CURRENCIES.rows || [];
-  const canon = current && rows.find(r =>
-    r.code.toLowerCase() === String(current).toLowerCase());
-  let html = `<option value="" ${current ? '' : 'selected'}></option>`;
-  if (current && !canon) {
-    html += `<option value="${escapeAttr(current)}" selected style="color:var(--red)">` +
-            `⚠ ${escapeHtml(current)} (legacy — please update)</option>`;
-  }
-  html += rows.map(r => {
-    const sel = (canon && canon.code === r.code) ? ' selected' : '';
-    return `<option value="${escapeAttr(r.code)}"${sel}>${escapeHtml(r.code)}` +
-           (r.name ? ` — ${escapeHtml(r.name)}` : '') + `</option>`;
-  }).join('');
-  return html;
-}
+// cashCountryOptions and cashCurrencyOptions lived here until v0.89.0.
+// Both built a flat <select> over one facet's vocabulary — the country
+// one over 250 names with no indication which region any of them sat in.
+// Both cells now mount the shared facet tree picker (see
+// mountCashFacetPickers), which is the same control the holdings editor
+// and the Resolve dialog use, so all three ask the question the same way.
 
 // Render the cash positions table from the cashPositions list. Rows
 // flagged _deleted: true are shown with a strike-through preview so
@@ -5842,21 +6268,12 @@ function renderCashTable(){
             value="${escapeAttr(pos.name || '')}"
             placeholder="e.g. ING savings 12345"
             oninput="onCashCellInput('${id}','name',this)"></td>
-      <td><select class="pccell" data-field="country"
-            onchange="onCashCellInput('${id}','country',this)">
-            ${cashCountryOptions(pos.country)}
-          </select></td>
+      <td><div id="pcPick_country_${id}"></div></td>
       <td><input type="number" step="any" class="pccell r" data-field="amount"
             value="${escapeAttr(pos.amount != null ? pos.amount : '')}"
             oninput="onCashCellInput('${id}','amount',this)"></td>
-      <td><select class="pccell" data-field="currency"
-            onchange="onCashCellInput('${id}','currency',this)">
-            ${cashCurrencyOptions(pos.currency)}
-          </select></td>
-      <td colspan="2"><select class="pccell" data-field="asset_node"
-            onchange="onCashAssetChange('${id}',this)">
-            ${cashAssetOptions(pos.asset_node || pos.sub_class || pos.asset_class)}
-          </select></td>
+      <td><div id="pcPick_currency_${id}"></div></td>
+      <td colspan="2"><div id="pcPick_asset_class_${id}"></div></td>
       <td><input type="text" class="pccell" data-field="effective_date"
             value="${escapeAttr(pos.effective_date || '')}"
             placeholder="DD/mmm/YYYY"
@@ -5869,31 +6286,116 @@ function renderCashTable(){
     </tr>`;
   }).join('');
 
+  mountCashFacetPickers();
   renderCashFooter();
 }
 
-// Handle asset-class change in a cash row. The sub-class <select>
-// options depend on asset_class, so we rebuild it; we also commit
-// pos.sub_class to whatever ends up selected, so the new dropdown's
-// visible value and the stored value agree.
-// One picker per position, not two. The value is the node the user
-// named; asset_node carries it and the backend derives the levels, so
-// there is no second dropdown to keep in step and no "the sub class is
-// now invalid" case to correct.
-function onCashAssetChange(posId, el){
+// Facets in the cash table, and where each one's stated value lives on
+// the position. The same pair every levelled facet uses elsewhere: the
+// node field holds what the user asserted, and the backend derives the
+// level columns from it. currency is one level deep, so its node field
+// IS `currency` — which is why this is a lookup rather than a rule.
+const CASH_PICK_FACETS = ['country', 'currency', 'asset_class'];
+
+// Mount the facet tree picker into every cash row (v0.89.0).
+//
+// These three cells were flat <select>s until now, which made the cash
+// table the last place in the app where a facet value was picked from a
+// list rather than from the tree it actually lives in. The comment that
+// stood beside cashAssetOptions gave the reason it had been left — a
+// drop panel inside a scrolling table row — and that is fixed at the
+// component instead: .ftree-panel is position:fixed now, so it escapes
+// every clipping ancestor and the picker works in a table cell exactly
+// as it does in a dialog.
+function mountCashFacetPickers(){
+  for (const pos of cashPositions){
+    const id = pos.id || '';
+    for (const facet of CASH_PICK_FACETS){
+      const mount = document.getElementById(`pcPick_${facet}_${id}`);
+      if (!mount) continue;
+      if (!(RES_FACET_NODES || {})[facet]){
+        // Vocabulary not loaded yet — say so rather than drawing an
+        // empty control that looks like "this position has no value".
+        mount.innerHTML = `<span style="font-family:var(--mono);font-size:.62rem;
+          color:var(--muted)">loading…</span>`;
+        continue;
+      }
+      ftMount(mount, {
+        id:    `pcPickV_${facet}_${id}`,
+        facet,
+        value: cashFacetValue(pos, facet),
+        placeholder: '— none —',
+        // The asset picker is restricted; the other two are not. See
+        // cashAssetFilter for why the restriction is a branch test.
+        filterFn: (facet === 'asset_class') ? cashAssetFilter : null,
+        onchange: (val) => onCashFacetPick(id, facet, val),
+      });
+    }
+  }
+}
+
+// The value a cash position currently asserts for a facet: its node
+// field, falling back to the derived level columns for a position
+// stored before the node fields existed.
+function cashFacetValue(pos, facet){
+  const nodeField = FACET_NODE_FIELD[facet];
+  const v = (pos[nodeField] || '').trim();
+  if (v) return v;
+  for (const lvl of (LEVELLED_FACETS[facet] || [])){
+    const lv = (pos[lvl] || '').trim();
+    if (lv) return lv;
+  }
+  return '';
+}
+
+// Which asset nodes a cash position may be: something liquid, or an
+// interest-bearing debt instrument. Tested on the node's BRANCH rather
+// than on its name — which closes the limitation the flat list carried.
+// That version matched node names against /cash|money market|bond|.../
+// and then had to un-match /future|swap|option|.../ by name too, because
+// "bond future" is a derivative under other financial products and reads
+// like a deposit. The tree knows where a node actually sits, so the
+// question is asked properly: is this node inside `liquid` or inside
+// `fixed income`?
+const CASH_ASSET_ROOTS = new Set(['liquid', 'fixed income']);
+function cashAssetFilter(t){
+  if (!t) return false;
+  if (CASH_ASSET_ROOTS.has(String(t.key).toLowerCase())) return true;
+  for (const aid of ftAncestorIds('asset_class', ftId(t.level, t.key))){
+    const anc = (ftIndex('asset_class').byId[aid] || {}).key || '';
+    if (CASH_ASSET_ROOTS.has(String(anc).toLowerCase())) return true;
+  }
+  return false;
+}
+
+// One handler for all three pickers, replacing the per-facet
+// onCashAssetChange / onCashCellInput('country') / ('currency') trio.
+// They were the same operation written three ways: record what the user
+// asserted, and drop the derived columns so a stale level cannot survive
+// the edit and be read back as though the user had asserted it. The
+// derived values are the server's answer, never ours.
+function onCashFacetPick(posId, facet, value){
   const pos = cashPositions.find(p => p.id === posId);
   if (!pos) return;
-  pos.asset_node = el.value;
-  // The derived columns are the server's answer, not ours. Blanked
-  // rather than guessed so a stale level cannot survive the edit and
-  // be read back as though the user had asserted it.
-  pos.asset_class = '';
-  pos.sub_class   = '';
-  pos.super_class = '';
-  const tr = el.closest('tr.pcrow');
+  pos[FACET_NODE_FIELD[facet]] = value || '';
+  for (const lvl of (LEVELLED_FACETS[facet] || [])){
+    // currency's only level IS its node field — blanking it would
+    // discard the value just written.
+    if (lvl === FACET_NODE_FIELD[facet]) continue;
+    pos[lvl] = '';
+  }
+  const tr = document.querySelector(
+    `#pcBody tr.pcrow[data-pos-id="${CSS.escape(posId)}"]`);
   if (tr) tr.classList.toggle('dirty', _isPositionDirty(pos));
   recomputeCashDirty();
+  renderCashFooter();
 }
+
+// onCashAssetChange lived here until v0.89.0. It is now one of the three
+// facets onCashFacetPick handles, parameterised rather than copied — the
+// operation (record the asserted node, drop the derived levels) was
+// identical for country and currency and had simply been written out
+// three times.
 
 // Footer row — totals per currency. Excludes rows flagged _deleted
 // so the totals reflect what would persist on Save.
@@ -5927,8 +6429,15 @@ function _isPositionDirty(pos){
   if (!pos.id || String(pos.id).startsWith('new-')) return true;
   const snap = cashServerSnapshot.find(s => s.id === pos.id);
   if (!snap) return true;
+  // The stated node fields count too (v0.89.0). Editing a facet writes
+  // the node and blanks the derived level columns, so a change is
+  // usually visible in both — but not always: re-picking a value at a
+  // different level of the same branch can leave a derived column
+  // identical while the assertion itself has changed, and without these
+  // the row would not show as dirty and Save would look like a no-op.
   const fields = ['name','country','amount','currency','effective_date',
-                  'interest','asset_class','sub_class','sector'];
+                  'interest','asset_class','sub_class','sector',
+                  'asset_node','country_node','sector_node'];
   for (const f of fields) {
     const a = pos[f]  == null ? '' : pos[f];
     const b = snap[f] == null ? '' : snap[f];
@@ -6246,6 +6755,9 @@ async function loadPortfolioHoldings(forceRefresh){
   try {
     const params = new URLSearchParams();
     if (forceRefresh) params.set('refresh','1');
+    const ptok = jobProgressToken();
+    params.set('progress_token', ptok);
+    jobProgressStart(ptok, 'Reading every fund’s holdings');
     const r = await fetch(`${API}/portfolios/${activePid}/holdings_rollup?${params}`);
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
@@ -6262,6 +6774,11 @@ async function loadPortfolioHoldings(forceRefresh){
         `<div style="padding:24px;text-align:center;color:var(--red)">` +
         `Error: ${escapeHtml(e.message)}</div>`;
     }
+  } finally {
+    // In a finally, not after the await: the bar must come down when the
+    // request fails too, or a failed load leaves a bar that will never
+    // move and reads as "still working".
+    jobProgressStop();
   }
 }
 
@@ -6288,13 +6805,25 @@ function renderPortfolioHoldings(){
   }
   const covEl = document.getElementById('phCoverage');
   if (covEl) {
-    const pct = ((data.covered_pct || 0) * 100);
-    const cur = data.base_currency || '';
+    // v0.89.0: coverage is measured against the FUND side. Direct cash
+    // positions are not holdings of any fund and are no longer listed
+    // here, so counting them in the denominator made a cash-heavy
+    // portfolio report a coverage gap it could do nothing about — there
+    // is no factsheet that would ever close it.
+    const pct  = ((data.covered_pct || 0) * 100);
+    const cur  = data.base_currency || '';
+    const cash = Number(data.cash_base || 0);
+    const fundsBase = (data.funds_base != null)
+      ? data.funds_base : (data.total_base || 0);
     covEl.textContent =
-      `Real holdings cover ${pct.toFixed(1)}% of portfolio value` +
-      ` (${fmtMoney(data.covered_value, cur)} of ${fmtMoney(data.total_base, cur)}).` +
-      ` The remainder is shown as an “Unclassified” row so the Portfolio` +
-      ` Value column sums to the portfolio total.`;
+      `Real holdings cover ${pct.toFixed(1)}% of the value held through funds` +
+      ` (${fmtMoney(data.covered_value, cur)} of ${fmtMoney(fundsBase, cur)}).` +
+      ` The remainder is shown as an “Unclassified” row, so the weights` +
+      ` here sum to 100% of the fund side.` +
+      (cash > 0
+        ? ` Cash you hold yourself — ${fmtMoney(cash, cur)} — is reserved`
+          + ` off the top and lives on the Cash sub-tab; it is not counted here.`
+        : '');
   }
 
   // Distinct non-empty values for the filter dropdowns. The synthetic
@@ -6311,10 +6840,12 @@ function renderPortfolioHoldings(){
   const anyBond = rows.some(r =>
     (r.maturity && r.maturity.trim()) ||
     (r.effective_date && r.effective_date.trim()) ||
+    (r.quality && r.quality.trim()) ||
+    (r.quality && r.quality.trim()) ||
     Number(r.duration || 0) > 0 ||
     Number(r.coupon || 0) > 0);
   const bondTip = anyBond
-    ? 'Toggle the bond-specific columns (Duration, Maturity, Coupon, Effective Date).'
+    ? 'Toggle the bond-specific columns (Duration, Maturity, Coupon, Effective Date, Rating).'
     : 'Toggle the bond-specific columns. No bond metadata in this portfolio\u2019s holdings.';
 
   wrap.innerHTML = `
@@ -6343,6 +6874,7 @@ function renderPortfolioHoldings(){
             ${phTh('maturity',       'Maturity',  {width:110, bond:true})}
             ${phTh('coupon',         'Coupon %',  {right:true, width:80,  bond:true})}
             ${phTh('effective_date', 'Eff. Date', {width:110, bond:true})}
+            ${phTh('quality',        'Rating',    {width:80,  bond:true})}
             ${phTh('fund_count',      '# Funds', {right:true, width:80})}
             ${phTh('weight_pct',      'Weight', {right:true, width:120})}
             ${phTh('portfolio_value', 'Portfolio Value', {right:true, width:160})}
@@ -6359,6 +6891,7 @@ function renderPortfolioHoldings(){
             <th class="bondcol"><select id="phfMaturity"      onchange="onPortfolioHoldingsFilterChange()">${optsHtml(distinct('maturity'))}</select></th>
             <th class="bondcol"></th>
             <th class="bondcol"><select id="phfEffectiveDate" onchange="onPortfolioHoldingsFilterChange()">${optsHtml(distinct('effective_date'))}</select></th>
+            <th class="bondcol"><select id="phfQuality"       onchange="onPortfolioHoldingsFilterChange()">${optsHtml(distinctQuality(rows))}</select></th>
             <th></th>
             <th></th>
             <th></th>
@@ -6451,6 +6984,7 @@ function onPortfolioHoldingsFilterChange(){
     currency:       val('phfCurrency'),
     maturity:       val('phfMaturity'),
     effective_date: val('phfEffectiveDate'),
+    quality:        val('phfQuality'),
     duration:       '',
     coupon:         '',
   };
@@ -6459,14 +6993,14 @@ function onPortfolioHoldingsFilterChange(){
 
 function clearPortfolioHoldingsFilters(){
   ['phfSector','phfAssetClass','phfCountry','phfCurrency',
-   'phfMaturity','phfEffectiveDate'].forEach(id => {
+   'phfMaturity','phfEffectiveDate','phfQuality'].forEach(id => {
     const el = document.getElementById(id); if (el) el.value = '';
   });
   const s = document.getElementById('phSearch');
   if (s) s.value = '';
   portfolioHoldingsState.filters =
     {sector:'', asset_class:'', country:'', currency:'',
-     maturity:'', effective_date:'', duration:'', coupon:''};
+     maturity:'', effective_date:'', quality:'', duration:'', coupon:''};
   portfolioHoldingsState.search = '';
   renderPortfolioHoldingsBody();
 }
@@ -6492,6 +7026,8 @@ function renderPortfolioHoldingsBody(){
     if (s.filters.currency       && (r.currency       || '') !== s.filters.currency)       return false;
     if (s.filters.maturity       && (r.maturity       || '') !== s.filters.maturity)       return false;
     if (s.filters.effective_date && (r.effective_date || '') !== s.filters.effective_date) return false;
+    if (s.filters.quality && (r.quality || '') !== s.filters.quality) return false;
+    if (s.filters.quality && (r.quality || '') !== s.filters.quality) return false;
     if (s.search) {
       // Every level of every tree, as on the fund table.
       const hay = ((r.name||'')+' '+(r.ticker||'')+' '+(r.isin||'')+' '+(r.cusip||'')+' '+
@@ -6503,22 +7039,8 @@ function renderPortfolioHoldingsBody(){
     return true;
   });
 
-  const NUMERIC_SORT_KEYS = new Set([
-    'weight_pct', 'portfolio_value', 'fund_count', 'duration', 'coupon',
-  ]);
   rows = rows.slice();
-  rows.sort((a,b) => {
-    const va = a[s.sortKey], vb = b[s.sortKey];
-    if (NUMERIC_SORT_KEYS.has(s.sortKey)) {
-      const da = (va==null || va==='') ? -Infinity : Number(va);
-      const db = (vb==null || vb==='') ? -Infinity : Number(vb);
-      return s.sortDir === 'asc' ? da - db : db - da;
-    }
-    const sa = (va==null) ? '' : String(va);
-    const sb = (vb==null) ? '' : String(vb);
-    const cmp = sa.localeCompare(sb, undefined, {sensitivity:'base'});
-    return s.sortDir === 'asc' ? cmp : -cmp;
-  });
+  rows.sort((a, b) => holdingsRowCompare(a, b, s.sortKey, s.sortDir));
 
   // Header sort indicators.
   document.querySelectorAll('#phTableWrap thead tr.htitles th').forEach(th => {
@@ -6535,7 +7057,8 @@ function renderPortfolioHoldingsBody(){
   const filterMap = {phfSector:'sector', phfAssetClass:'asset_class',
                      phfCountry:'country',
                      phfCurrency:'currency',
-                     phfMaturity:'maturity', phfEffectiveDate:'effective_date'};
+                     phfMaturity:'maturity', phfEffectiveDate:'effective_date',
+                     phfQuality:'quality'};
   Object.entries(filterMap).forEach(([id, key]) => {
     const sel = document.getElementById(id);
     if (sel) sel.classList.toggle('active', !!s.filters[key]);
@@ -6543,7 +7066,7 @@ function renderPortfolioHoldingsBody(){
 
   const anyFilter = s.search || s.filters.sector || s.filters.asset_class ||
     s.filters.country || s.filters.currency ||
-    s.filters.maturity || s.filters.effective_date;
+    s.filters.maturity || s.filters.effective_date || s.filters.quality;
   const realCount = s.rows.filter(r => !r.is_residual).length;
   const cntEl = document.getElementById('phCount');
   if (cntEl) {
@@ -6597,6 +7120,7 @@ function renderPortfolioHoldingsBody(){
       bondCell(isResidual ? '' : r.maturity) +
       bondRCell(coupon_or_interest == null ? '—' : coupon_or_interest.toFixed(2) + '%') +
       bondCell(isResidual ? '' : r.effective_date) +
+      bondCell(isResidual || r.is_cash ? '' : r.quality) +
       rcell(isResidual ? '—' : (r.fund_count || 0)) +
       rcell(wpct(r.weight_pct)) +
       rcell(fmtMoney(r.portfolio_value, cur)) +
@@ -6611,7 +7135,7 @@ function renderPortfolioHoldingsBody(){
     html += rowHtml(residual, true);
   }
   if (!html) {
-    html = `<tr><td colspan="14" style="padding:20px;text-align:center;color:var(--muted)">` +
+    html = `<tr><td colspan="15" style="padding:20px;text-align:center;color:var(--muted)">` +
            `No holdings match the current filters.</td></tr>`;
   }
   body.innerHTML = html;
@@ -6966,7 +7490,7 @@ async function runFundFetch(forceRefresh=false, currencyOverride=''){
   setStatus('spin', statusMsg);
 
   try {
-    const resp = await fetch(`${API}/fund?${params}`);
+    const resp = await fetchFundWithProgress(params, 'Fetching fund data');
     const data = await resp.json();
 
     // Mode 1 found several currencies — let the user pick one.
@@ -7134,7 +7658,7 @@ async function retryWithManualIsin(){
   document.getElementById('fetchBtn').disabled = true;
   setStatus('spin', `Loading ${escapeHatchState.ticker} with ISIN ${isin}…`);
   try {
-    const resp = await fetch(`${API}/fund?${params}`);
+    const resp = await fetchFundWithProgress(params, 'Fetching fund data');
     const data = await resp.json();
     if (!resp.ok || data.error) throw new Error(data.error || `HTTP ${resp.status}`);
 
@@ -7586,7 +8110,7 @@ async function saveToPreloaded(){
   if (activePid) params.set('portfolio', activePid);
   params.set('commit', '1');
   try {
-    const r = await fetch(`${API}/fund?${params}`);
+    const r = await fetchFundWithProgress(params, 'Fetching fund data');
     const d = await r.json();
     if (!r.ok || d.error){
       alert(`Save failed: ${d.error || 'unknown error'}`);
@@ -8486,7 +9010,7 @@ function fundScoreSub(data){
   const model = scoreModelLabel();
   const via = model ? ` · ${model}` : '';
   if (b.score_peer == null){
-    return `${all} overall · only ${b.peer_n} fund(s) in its peer group${via}`;
+    return `${all} overall · ${scoreNoPeerText(b)}${via}`;
   }
   const thin = b.covered < 3 ? ` · ${b.covered}/3 components have data` : '';
   return `${all} overall · ${b.peer_n} peers${thin}${via}`;
@@ -9703,6 +10227,24 @@ function ftPosition(id){
   panel.classList.toggle('ft-up', up);
   const room = Math.max(MIN, (up ? above : below) - CHROME);
   body.style.maxHeight = Math.min(MAX, room) + 'px';
+
+  // Horizontal placement. The panel is at least as wide as its trigger
+  // (so a wide cell gets a wide tree) but never wider than the CSS cap,
+  // and it is nudged back inside the viewport rather than running off the
+  // right edge — which is what a picker in the last table column would
+  // otherwise do.
+  const w = Math.max(220, Math.min(280, r.width));
+  panel.style.width = w + 'px';
+  const left = Math.max(4, Math.min(r.left, window.innerWidth - w - 4));
+  panel.style.left = left + 'px';
+
+  // Vertical placement, measured rather than computed: the panel's height
+  // depends on the maxHeight just applied and on how many rows the filter
+  // left visible, so it is read back after the fact.
+  panel.style.top = '0px';
+  const h = panel.offsetHeight;
+  panel.style.top = (up ? Math.max(4, r.top - 3 - h)
+                        : r.bottom + 2) + 'px';
 }
 
 function ftClose(id){
@@ -10266,7 +10808,7 @@ async function reloadCurrentFund(forceRefresh=false){
   clearFundView();
   setStatus('spin', `Reloading…`);
   try {
-    const r = await fetch(`${API}/fund?${params}`);
+    const r = await fetchFundWithProgress(params, 'Fetching fund data');
     const d = await r.json();
     if (!r.ok || d.error) return false;
     renderLoadedFund(d, `Reloaded ${d.ticker}`);
@@ -10316,7 +10858,6 @@ function openBdUploadModal(facet) {
     unresolvedKeys:   [],
     summary:          {},
     // Per-facet canonical-value cache, fetched lazily.
-    canonicalCache: {},
   };
   // Reset visual state.
   document.getElementById('bdUploadTitle').textContent =
@@ -10456,25 +10997,14 @@ async function renderBdUploadResolution() {
   facetList.innerHTML = '';
   keyList.innerHTML   = '';
 
-  // Pre-fetch canonical values for the four facets so the dropdowns
-  // render instantly. (One round-trip per facet, parallel.)
-  const facetsNeeded = new Set();
-  // Unresolved-facet dropdowns offer all four canonical facets — no
-  // canonical-value fetch needed there. Unresolved-key dropdowns
-  // need the canonical-value list for the row's facet.
-  for (const u of _bdUploadState.unresolvedKeys) {
-    facetsNeeded.add(u.facet);
-  }
-  await Promise.all([...facetsNeeded].map(async f => {
-    if (_bdUploadState.canonicalCache[f]) return;
-    try {
-      const r = await fetch(`${API}/uploaded_breakdowns/canonical/${f}`);
-      const d = await r.json();
-      _bdUploadState.canonicalCache[f] = (d.values || []);
-    } catch(e) {
-      _bdUploadState.canonicalCache[f] = [];
-    }
-  }));
+  // v0.89.0: one vocabulary load, not one round-trip per facet. The
+  // canonical-value column is the facet tree picker now, and the picker
+  // reads RES_FACET_NODES — the same levelled vocabulary the holdings
+  // editor, the Resolve popover and the cash table draw from. The
+  // per-facet /uploaded_breakdowns/canonical fetches this dialog used to
+  // make described the same nodes as a flat list, so they were a second
+  // copy of one authority; the endpoint stays for other callers.
+  await loadHoldingClassResources().catch(() => {});
 
   // Render unresolved facet column values.
   if (_bdUploadState.unresolvedFacets.length) {
@@ -10509,29 +11039,49 @@ async function renderBdUploadResolution() {
     // The four breakdown-card facets only — an uploaded CSV resolves
     // sector/country/currency/asset_class keys. The metadata facets are
     // not uploadable and have no unresolved-key concept.
+    // v0.89.0: the tree picker, not a flat <select>. This is a facet
+    // VALUE being chosen from a facet's own vocabulary — the same
+    // question the holdings editor, the Resolve popover and the cash
+    // table all ask — so it is asked with the same control. The wrapper
+    // carries the data-* attributes the collectors read, because the
+    // picker's own element is a hidden input it builds itself.
+    //
+    // (The "pick a facet" dropdown above stays a <select> on purpose: it
+    // chooses WHICH facet a column means, from a list of four. That is
+    // not a value in a vocabulary and has no tree to draw.)
+    const _bdMounts = [];
     for (const facet of BD_FACETS) {
       if (!byFacet[facet]) continue;
-      const canon = _bdUploadState.canonicalCache[facet] || [];
-      const opts  = canon.map(c =>
-        `<option value="${escapeHtml(c.key)}">${escapeHtml(c.label)}</option>`).join('');
-      const optsOrEmpty = opts
-        || `<option value="" disabled>(no canonical values loaded — check the resources/ folder)</option>`;
       const head = `<div class="bd-resolve-facet-head">${escapeHtml(facetLabel(facet))}</div>`;
-      const rows = byFacet[facet].map(u => {
+      const rows = byFacet[facet].map((u, i) => {
         const escRaw = u.raw.replace(/"/g, '&quot;');
+        const mid = `bdKeyPick_${facet}_${i}`;
+        _bdMounts.push({ mid, facet, raw: u.raw });
         return `
           <div class="bd-resolve-row">
             <div class="bd-resolve-cell bd-resolve-raw" title="${escRaw}">${escapeHtml(u.raw)}</div>
             <div class="bd-resolve-cell bd-resolve-count">${u.rows} row(s)</div>
             <div class="bd-resolve-cell">
-              <select data-kind="key" data-facet="${facet}" data-raw="${escRaw}" onchange="bdUploadOnChange()">
-                <option value="">— pick a canonical value —</option>
-                ${optsOrEmpty}
-              </select>
+              <div class="bd-keypick" data-kind="key" data-facet="${facet}"
+                   data-raw="${escRaw}" id="${mid}"></div>
             </div>
           </div>`;
       }).join('');
       keyList.insertAdjacentHTML('beforeend', head + rows);
+    }
+    for (const m of _bdMounts) {
+      const el = document.getElementById(m.mid);
+      if (!el) continue;
+      if (!(RES_FACET_NODES || {})[m.facet]) {
+        el.innerHTML = `<span style="font-family:var(--mono);font-size:.62rem;color:var(--red)">`
+          + `vocabulary not loaded — check the resources/ folder</span>`;
+        continue;
+      }
+      ftMount(el, {
+        id: m.mid + '_v', facet: m.facet, value: '',
+        placeholder: '— pick a canonical value —',
+        onchange: () => bdUploadOnChange(),
+      });
     }
   }
 
@@ -10555,11 +11105,16 @@ function facetLabel(f) {
 // select has a non-empty value.
 function bdUploadOnChange() {
   if (!_bdUploadState) return;
-  const selects = [
-    ...document.querySelectorAll('#bdUploadFacetList select'),
-    ...document.querySelectorAll('#bdUploadKeyList   select'),
+  // Two control types now: the facet column is still a <select>, the
+  // canonical-value column is the facet tree picker (a wrapper div whose
+  // hidden input holds the value). Both must be answered before Commit.
+  const chosen = [
+    ...[...document.querySelectorAll('#bdUploadFacetList select')]
+      .map(el => el.value),
+    ...[...document.querySelectorAll('#bdUploadKeyList .bd-keypick')]
+      .map(el => (el.querySelector('input[type=hidden]') || {}).value || ''),
   ];
-  const ready = selects.length === 0 || selects.every(s => s.value);
+  const ready = chosen.length === 0 || chosen.every(Boolean);
   document.getElementById('bdUploadCommitBtn').disabled = !ready;
 }
 
@@ -10577,11 +11132,10 @@ async function bdUploadCommit() {
     if (s.value) facet_map[s.getAttribute('data-raw')] = s.value;
   });
   const key_map = { asset_class: {}, sector: {}, country: {}, currency: {} };
-  document.querySelectorAll('#bdUploadKeyList select').forEach(s => {
-    if (s.value) {
-      const facet = s.getAttribute('data-facet');
-      const raw   = s.getAttribute('data-raw');
-      key_map[facet][raw] = s.value;
+  document.querySelectorAll('#bdUploadKeyList .bd-keypick').forEach(el => {
+    const val = (el.querySelector('input[type=hidden]') || {}).value || '';
+    if (val) {
+      key_map[el.getAttribute('data-facet')][el.getAttribute('data-raw')] = val;
     }
   });
 
@@ -10956,7 +11510,7 @@ function renderHoldingsTable(rows, data, note) {
   fullHoldingsState.sortDir = 'desc';
   fullHoldingsState.filters = {sector:'', asset_class:'', sub_class:'',
                                 country:'', currency:'',
-                                maturity:'', effective_date:'',
+                                maturity:'', effective_date:'', quality:'',
                                 duration:'', coupon:''};
   fullHoldingsState.search  = '';
   fullHoldingsState.showBondCols = prevShowBond;
@@ -10993,10 +11547,11 @@ function renderHoldingsTable(rows, data, note) {
   const anyBond = rows.some(r =>
     (r.maturity && r.maturity.trim()) ||
     (r.effective_date && r.effective_date.trim()) ||
+    (r.quality && r.quality.trim()) ||
     Number(r.duration || 0) > 0 ||
     Number(r.coupon || 0) > 0);
   const bondTip = anyBond
-    ? 'Toggle the bond-specific columns (Duration, Maturity, Coupon, Effective Date).'
+    ? 'Toggle the bond-specific columns (Duration, Maturity, Coupon, Effective Date, Rating).'
     : 'Toggle the bond-specific columns. No bond metadata found in this fund\u2019s holdings.';
 
   document.getElementById('hTableWrap').innerHTML = `
@@ -11028,6 +11583,7 @@ function renderHoldingsTable(rows, data, note) {
             ${fhTh('maturity',       'Maturity',  {width:110, bond:true})}
             ${fhTh('coupon',         'Coupon %',  {right:true, width:80,  bond:true})}
             ${fhTh('effective_date', 'Eff. Date', {width:110, bond:true})}
+            ${fhTh('quality',        'Rating',    {width:80,  bond:true, edit:'quality'})}
             ${fhTh('weight_pct',  'Weight', {right:true, width:160})}
           </tr>
           <tr class="hfilterrow">
@@ -11044,6 +11600,7 @@ function renderHoldingsTable(rows, data, note) {
             <th class="bondcol"><select id="hfMaturity"      onchange="onFullHoldingsFilterChange()">${optsHtml(distinct('maturity'))}</select></th>
             <th class="bondcol"></th>
             <th class="bondcol"><select id="hfEffectiveDate" onchange="onFullHoldingsFilterChange()">${optsHtml(distinct('effective_date'))}</select></th>
+            <th class="bondcol"><select id="hfQuality"       onchange="onFullHoldingsFilterChange()">${optsHtml(distinctQuality(rows))}</select></th>
             <th></th>
           </tr>
         </thead>
@@ -11171,6 +11728,7 @@ function onFullHoldingsFilterChange() {
     currency:       val('hfCurrency'),
     maturity:       val('hfMaturity'),
     effective_date: val('hfEffectiveDate'),
+    quality:        val('hfQuality'),
     duration:       '',
     coupon:         '',
   };
@@ -11179,14 +11737,14 @@ function onFullHoldingsFilterChange() {
 
 function clearFullHoldingsFilters() {
   ['hfSector','hfAssetClass','hfCountry','hfCurrency',
-   'hfMaturity','hfEffectiveDate'].forEach(id => {
+   'hfMaturity','hfEffectiveDate','hfQuality'].forEach(id => {
     const el = document.getElementById(id); if (el) el.value = '';
   });
   const s = document.getElementById('hfSearch');
   if (s) s.value = '';
   fullHoldingsState.filters = {sector:'', asset_class:'',
                                 country:'', currency:'',
-                                maturity:'', effective_date:'',
+                                maturity:'', effective_date:'', quality:'',
                                 duration:'', coupon:''};
   fullHoldingsState.search = '';
   renderFullHoldingsBody();
@@ -11521,6 +12079,7 @@ function openHoldingEditor(rowId){
   document.getElementById('heCoupon').value        = numOrBlank(row.coupon);
   document.getElementById('heMaturity').value      = row.maturity || '';
   document.getElementById('heEffectiveDate').value = row.effective_date || '';
+  document.getElementById('heQuality').value = row.quality || '';
 
   // Stash each facet's CURRENT node — the deepest level actually in force
   // (v0.82.1).
@@ -11761,6 +12320,10 @@ async function saveHoldingEditor(){
     coupon:         couponRaw,
     maturity:       document.getElementById('heMaturity').value.trim(),
     effective_date: document.getElementById('heEffectiveDate').value.trim(),
+    // Stored as typed. The rating scale is only consulted for ORDER —
+    // rewriting "Baa3" to "BBB-" on save would silently restate what the
+    // issuer's file said, which is the one thing the row must not do.
+    quality:        document.getElementById('heQuality').value.trim(),
   };
 
   // One value per facet: the node the user picked, at whatever level
@@ -12217,10 +12780,12 @@ async function efChangeSource(field, source){
   pin.note = `asking ${efState.sourceLabels[source] || source}…`;
   renderEfGroups();
   try {
-    const r = await fetch(
-      `${API}/funds/${encodeURIComponent(efState.ticker)}/fields/${field}/source`,
-      { method:'PUT', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ source, persist: false }) });
+    const r = await withJobProgress(
+      `Asking ${efState.sourceLabels[source] || source}`, (tok) => fetch(
+        `${API}/funds/${encodeURIComponent(efState.ticker)}/fields/${field}/source`,
+        { method:'PUT', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ source, persist: false,
+                                 progress_token: tok }) }));
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
     pin.value   = d.value;
@@ -12299,8 +12864,33 @@ async function saveEditFundModal(){
       }
     }
     const ticker = efState.ticker;
+    // Saving an edit on an UNSAVED fund commits it too (v0.95.3).
+    //
+    // You cannot meaningfully assert "this fund's focus is thematic"
+    // about a fund you have not kept: the assertion lands in
+    // overrides.json keyed by ISIN while the fund itself is in nobody's
+    // pre-loaded list. That orphaned override is exactly the state that
+    // produced a fund with an edited focus, no cached asset class, and a
+    // peer group of one.
+    //
+    // Done here rather than silently inside the override endpoint,
+    // because this is where the user's intent is unambiguous — they
+    // opened the dialog and pressed Save — and where it can be said out
+    // loud in the status line.
+    const wasUnsaved = !!(lastFundData && lastFundData.saved === false);
     closeEditFundModal();
-    setStatus('ok', `Saved ${ticker}`);
+    if (wasUnsaved){
+      try {
+        const sp = fundIdentityParams(lastFundData);
+        sp.set('commit', '1');
+        await fetchFundWithProgress(sp, 'Saving fund to pre-loaded');
+      } catch(_e){
+        // The edit itself succeeded. Say so, and leave the Save button
+        // showing so the fund can still be kept by hand.
+      }
+    }
+    setStatus('ok', wasUnsaved ? `Saved ${ticker} and added it to pre-loaded`
+                               : `Saved ${ticker}`);
     // The pins land in overrides.json, which the scoring pass reads as a
     // view over the cached profile. So a TER pinned to the factsheet is a
     // TER the fund now HAS: the fund-data dot must stop reporting it
@@ -12457,6 +13047,7 @@ function renderFullHoldingsBody() {
     if (s.filters.currency       && (r.currency       || '') !== s.filters.currency)       return false;
     if (s.filters.maturity       && (r.maturity       || '') !== s.filters.maturity)       return false;
     if (s.filters.effective_date && (r.effective_date || '') !== s.filters.effective_date) return false;
+    if (s.filters.quality && (r.quality || '') !== s.filters.quality) return false;
     if (s.search) {
       // Search spans every level of every tree, not just the displayed
       // one: typing "japan" should find a row stated at region level
@@ -12472,24 +13063,10 @@ function renderFullHoldingsBody() {
     return true;
   });
 
-  // Sort — weight, duration, coupon are numeric; everything else is
-  // string-style (including the date columns, since they're stored as
-  // DD/mmm/YYYY strings — locale-compare gives sensible ordering for
-  // most users without us having to parse them).
-  const NUMERIC_SORT_KEYS = new Set(['weight_pct', 'duration', 'coupon']);
+  // Sort through the shared comparator — see holdingsRowCompare for how
+  // the three kinds of column are ordered.
   rows = rows.slice();
-  rows.sort((a,b) => {
-    const va = a[s.sortKey];  const vb = b[s.sortKey];
-    if (NUMERIC_SORT_KEYS.has(s.sortKey)) {
-      const da = (va==null || va==='') ? -Infinity : Number(va);
-      const db = (vb==null || vb==='') ? -Infinity : Number(vb);
-      return s.sortDir === 'asc' ? da - db : db - da;
-    }
-    const sa = (va==null) ? '' : String(va);
-    const sb = (vb==null) ? '' : String(vb);
-    const cmp = sa.localeCompare(sb, undefined, {sensitivity:'base'});
-    return s.sortDir === 'asc' ? cmp : -cmp;
-  });
+  rows.sort((a, b) => holdingsRowCompare(a, b, s.sortKey, s.sortDir));
 
   // Header indicators
   // #hfullwrap, not .hfullwrap: the portfolio table carries the same
@@ -12509,7 +13086,8 @@ function renderFullHoldingsBody() {
   // Highlight filter dropdowns that have a non-empty selection
   const filterMap = {hfSector:'sector', hfAssetClass:'asset_class',
                      hfCountry:'country', hfCurrency:'currency',
-                     hfMaturity:'maturity', hfEffectiveDate:'effective_date'};
+                     hfMaturity:'maturity', hfEffectiveDate:'effective_date',
+                     hfQuality:'quality'};
   Object.entries(filterMap).forEach(([id, key]) => {
     const sel = document.getElementById(id);
     if (sel) sel.classList.toggle('active', !!s.filters[key]);
@@ -12519,7 +13097,7 @@ function renderFullHoldingsBody() {
   const anyFilter = s.search ||
     s.filters.sector || s.filters.asset_class ||
     s.filters.country || s.filters.currency ||
-    s.filters.maturity || s.filters.effective_date;
+    s.filters.maturity || s.filters.effective_date || s.filters.quality;
   const cntEl = document.getElementById('hfCount');
   if (cntEl) {
     cntEl.textContent = anyFilter
@@ -12586,6 +13164,7 @@ function renderFullHoldingsBody() {
       <td class="bondcol">${escapeHtml(dateCell(r.maturity))}</td>
       <td class="r bondcol">${numCell(r.coupon, '%')}</td>
       <td class="bondcol">${escapeHtml(dateCell(r.effective_date))}</td>
+      <td class="bondcol">${escapeHtml(r.quality || '')}</td>
       <td class="wcell">
         <div class="ww">
           <span class="wn">${pct == null ? '—' : pct.toFixed(2) + '%'}</span>
@@ -12601,7 +13180,7 @@ function renderFullHoldingsBody() {
 
   if (rows.length > cap) {
     body.innerHTML +=
-      `<tr><td colspan="14" style="text-align:center;color:var(--muted);` +
+      `<tr><td colspan="15" style="text-align:center;color:var(--muted);` +
       `font-family:var(--mono);font-size:.7rem;padding:1rem 0">` +
       `… showing first ${cap} of ${rows.length}. Use filters to narrow.` +
       `</td></tr>`;
@@ -13018,7 +13597,7 @@ async function confirmAddToPortfolio(){
     const params = fundIdentityParams(lastFundData);
     params.set('commit', '1');
     try {
-      const sr = await fetch(`${API}/fund?${params}`);
+      const sr = await fetchFundWithProgress(params, 'Fetching fund data');
       const sd = await sr.json();
       if (!sr.ok || sd.error){
         alert(`Save failed: ${sd.error || 'unknown error'}`);
@@ -13477,10 +14056,17 @@ async function extractFactsheet(){
     const custom = (aiStatus.edit_prompt && box
                     && box.value.trim() && box.value.trim() !== (aiStatus.prompt || '').trim())
                    ? box.value : '';
+    // Reading a factsheet is one long call to the model — routinely half
+    // a minute, and the button alone cannot say whether it is thinking or
+    // stuck. It reports phases rather than a count, which the bar handles.
+    const ptok = jobProgressToken();
+    jobProgressStart(ptok, 'Reading the factsheet');
+    const _bd = custom ? { prompt: custom } : {};
+    _bd.progress_token = ptok;
     const r = await fetch(`${API}/funds/${encodeURIComponent(ticker)}/factsheet/extract`,
                           { method: 'POST',
                             headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify(custom ? { prompt: custom } : {}) });
+                            body: JSON.stringify(_bd) });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
     factsheetMeta = d.factsheet || factsheetMeta;
@@ -13497,6 +14083,8 @@ async function extractFactsheet(){
     setStatus('err', `Extraction failed: ${e.message}`);
     const b = document.getElementById('exRunBtn');
     if (b){ b.disabled = false; b.textContent = '✨ Extract now'; }
+  } finally {
+    jobProgressStop();
   }
 }
 
@@ -14154,6 +14742,11 @@ const MAP_FIELDS = [
     aliases:['coupon','coupon rate','coupon %','interest rate','rate'] },
   { key:'effective_date', label:'Effective date', required:false, defaultable:true, bond:true,
     aliases:['effective date','issue date','first settlement','settlement date','issued','dated date'] },
+  { key:'quality',        label:'Quality',        required:false, defaultable:true, bond:true,
+    aliases:['quality','credit quality','rating','credit rating','sp rating',
+             's&p rating','moodys','moody\u2019s','moodys rating','fitch',
+             'fitch rating','issue rating','issuer rating','avg rating',
+             'average rating','composite rating'] },
 ];
 
 // The asset vocabulary is Asset_definitions.csv, read through
@@ -14165,53 +14758,21 @@ const MAP_FIELDS = [
 // is not a node in the tree at all; it is an alias of the super class
 // "fixed income".
 //
-// These two helpers still build flat <option> lists, and that is
-// DELIBERATE for now: the cash positions table edits facets in table
-// CELLS, where the tree picker's drop panel would open inside a scrolling
-// row. The dialogs named in the v0.82.0 change — the holdings editor, the
-// Resolve popover and the upload defaults — are the ones that moved to
-// facetTreeHtml. Converting these too is the obvious next step and the
-// component already takes the `filterFn` the cash asset list needs; it is
-// left until the tree has been seen working in the dialogs.
+// The note that stood here said these helpers "still build flat <option>
+// lists, and that is DELIBERATE for now", pending the tree picker being
+// seen working in the dialogs. That happened in v0.89.0: the cash table's
+// three facet columns mount facetTreeHtml like everywhere else, and the
+// panel is position:fixed so it escapes the scrolling row that was the
+// reason to wait. Kept as a record of why it was ever deferred.
 
-// Cash sub-tab: a cash position is a liquid instrument or an
-// interest-bearing deposit, so the picker is restricted to those
-// branches rather than the whole tree.
-//
-// KNOWN LIMITATION: the restriction is a test on node NAMES, because
-// the vocabulary endpoint serves each node's level but not its parent.
-// That is why "bond future" — a derivative under other/financial
-// products, not a deposit — had to be excluded by name too. The honest
-// fix is to serve the parent chain and filter on the branch; until
-// then, adding a node whose name contains one of these words puts it
-// in this dropdown whether it belongs there or not.
-function cashAssetOptions(current){
-  const blk = (RES_FACET_NODES || {})['asset_class'];
-  if (!blk) return `<option value="">(vocabulary still loading)</option>`;
-  const KEEP = ['liquid', 'cash', 'fixed income'];
-  const INCLUDE = /cash|money market|bond|deposit|guarantee/;
-  // Derivatives carry "bond" in their names without being anything a
-  // cash position could hold.
-  const EXCLUDE = /future|swap|option|forward|backed|repo|buy-back/;
-  const cur  = String(current || '').trim().toLowerCase();
-  let matched = false;
-  const opts = (blk.targets || []).filter(t => {
-    const k = String(t.key).toLowerCase();
-    if (EXCLUDE.test(k)) return false;
-    return KEEP.includes(k) || INCLUDE.test(k);
-  }).map(t => {
-    const on = String(t.key).toLowerCase() === cur;
-    if (on) matched = true;
-    return `<option value="${escapeAttr(t.key)}"${on ? ' selected' : ''}>`
-         + `${escapeHtml(t.label || t.key)}`
-         + ` <span>· ${escapeHtml(LEVEL_LABELS[t.level] || t.level)}</span></option>`;
-  }).join('');
-  const legacy = (cur && !matched)
-    ? `<option value="${escapeAttr(current)}" selected style="color:var(--red)">`
-      + `⚠ ${escapeHtml(current)} (not in the definitions file)</option>`
-    : '';
-  return `<option value=""></option>` + legacy + opts;
-}
+// cashAssetOptions lived here until v0.89.0, together with a KNOWN
+// LIMITATION note: it restricted the list by testing node NAMES, so
+// "bond future" — a derivative, not a deposit — had to be excluded by
+// name as well, and any future node whose name happened to contain
+// "cash" or "bond" would have been offered whether it belonged or not.
+// The restriction is now cashAssetFilter, which tests the node's BRANCH
+// against the tree the picker already indexes. The limitation is closed
+// rather than moved.
 
 function buildMappingRows(){
   const p   = uploadState.preview;
@@ -14707,7 +15268,7 @@ async function submitUploadCommit(){
     try {
       const sp = fundIdentityParams(lastFundData);
       sp.set('commit', '1');
-      const sr = await fetch(`${API}/fund?${sp}`);
+      const sr = await fetchFundWithProgress(sp, 'Fetching fund data');
       const sd = await sr.json();
       if (sr.ok && !sd.error){
         lastFundData = sd;
@@ -14731,6 +15292,17 @@ async function submitUploadCommit(){
       defaults:      uploadState.defaults,
       enrich_fields: enrichList,
     };
+    // Any enrichment at all is worth watching here: unlike the tile's
+    // button, the commit enriches the WHOLE file, so even one facet on a
+    // few hundred rows is minutes. The commit records progress under the
+    // preview token, which this request already carries — no second
+    // identifier to invent or keep in step.
+    if (enrichList.length){
+      const n = uploadState.preview.total_rows;
+      enrichProgressStart(tokenAtFire, n
+        ? `Enriching ${n} holdings through Yahoo`
+        : 'Enriching holdings through Yahoo');
+    }
     const r = await fetch(`${API}/upload/commit`, {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify(body),
@@ -14760,6 +15332,12 @@ async function submitUploadCommit(){
       if (enr.unrecognised_count) {
         statusMsg += `, ${enr.unrecognised_count} ticker${enr.unrecognised_count===1?'':'s'} not found`;
       }
+      // Same distinction as the fund page's summary: a corrected
+      // identifier is a value from the file being replaced, not a blank
+      // being filled, and the user should hear about it.
+      const corr = Object.entries(enr.rows_corrected || {})
+        .filter(([, n]) => n > 0).map(([f, n]) => `${n} ${f}`);
+      if (corr.length) statusMsg += `, corrected ${corr.join(', ')}`;
       statusMsg += ')';
     }
     if ((d.warnings?.defaults_applied || []).length) {
@@ -14845,6 +15423,7 @@ async function submitUploadCommit(){
     }
     showUploadMapError('Network error: ' + e.message);
   } finally {
+    enrichProgressStop();
     clearBtnBusy(btn);
     // uploadState may have been nulled by closeUploadModal — guard.
     if (uploadState) {
@@ -14913,12 +15492,20 @@ async function enrichHoldings(){
   if (btn){ btn.disabled = true; btn.textContent = 'Enriching…'; }
   setStatus('spin',
     `Enriching ${selected.length} selected holding${selected.length===1?'':'s'} through Yahoo…`);
+  // Watch the run, above two rows. One or two lookups are over before a
+  // bar could render; three is already long enough to wonder whether
+  // anything is happening, and a few hundred is minutes.
+  const ptoken = enrichProgressToken();
+  if (selected.length > 2){
+    enrichProgressStart(ptoken,
+      `Enriching ${selected.length} holdings through Yahoo`);
+  }
   try {
     const url = `${API}/funds/${encodeURIComponent(lastFundData.ticker)}/enrich_holdings`;
     const r = await fetch(url, {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ row_ids: selected }),
+      body: JSON.stringify({ row_ids: selected, progress_token: ptoken }),
     });
     const d = await r.json();
     if (!r.ok){
@@ -14972,8 +15559,20 @@ async function enrichHoldings(){
     const filledFields = Object.entries(filled)
       .filter(([, n]) => n > 0)
       .map(([f, n]) => `${f}: ${n}`);
-    if (filledFields.length){
-      setStatus('ok', `Enriched ${stats.rows_with_changes} rows (${filledFields.join(', ')})`);
+    // Identifier columns REPLACED because what the file held was
+    // malformed. Said separately from the filled counts, because
+    // "filled 40 gaps" and "overwrote 40 values your file supplied" are
+    // different sentences and the second is the one worth reading.
+    const corrected = stats.rows_corrected || {};
+    const correctedBits = Object.entries(corrected)
+      .filter(([, n]) => n > 0)
+      .map(([f, n]) => `${n} ${f}`);
+    const correctedMsg = correctedBits.length
+      ? ` · corrected ${correctedBits.join(', ')}` : '';
+    if (filledFields.length || correctedBits.length){
+      setStatus('ok', `Enriched ${stats.rows_with_changes} rows`
+                    + (filledFields.length ? ` (${filledFields.join(', ')})` : '')
+                    + correctedMsg);
     } else {
       // "Nothing changed" has several quite different causes, and saying
       // only "no blanks needed filling" for all of them is how a run that
@@ -14998,6 +15597,7 @@ async function enrichHoldings(){
   } catch(e){
     setStatus('err', 'Network error: ' + e.message);
   } finally {
+    enrichProgressStop();
     _hEnrichBusy = false;
     fhSyncEnrichLabel();
   }
@@ -15930,12 +16530,14 @@ async function bkExportFunds(){
   const msg = document.getElementById('bkMsg');
   msg.textContent = 'Building bundle…';
   try {
-    const r = await fetch(`${API}/bundles/funds/export`, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({
-        include_price_history: document.getElementById('bkPriceHistory').checked,
-        include_factsheets:    document.getElementById('bkFactsheets').checked,
-      })});
+    const r = await withJobProgress('Building the fund bundle', (tok) =>
+      fetch(`${API}/bundles/funds/export`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          include_price_history: document.getElementById('bkPriceHistory').checked,
+          include_factsheets:    document.getElementById('bkFactsheets').checked,
+          progress_token: tok,
+        })}));
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     await bkDownload(r, 'porxpy_funds.zip');
     msg.textContent = 'Fund bundle downloaded.';
@@ -15946,7 +16548,9 @@ async function bkExportPortfolios(){
   const msg = document.getElementById('bkMsg');
   msg.textContent = 'Building bundle…';
   try {
-    const r = await fetch(`${API}/bundles/portfolios/export`, {method:'POST'});
+    const r = await withJobProgress('Building the portfolio backup', (tok) =>
+      fetch(`${API}/bundles/portfolios/export?progress_token=${encodeURIComponent(tok)}`,
+            {method:'POST'}));
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     await bkDownload(r, 'porxpy_portfolios.zip');
     msg.textContent = 'Portfolio backup downloaded.';
@@ -16112,7 +16716,10 @@ async function bkApply(){
       default_fund_action: 'skip',
       resource_action: resSel ? resSel.value : 'merge_aliases',
     }));
-    const r = await fetch(`${API}/bundles/apply`, {method:'POST', body:fd});
+    const r = await withJobProgress('Importing the bundle', (tok) => {
+      fd.set('progress_token', tok);
+      return fetch(`${API}/bundles/apply`, {method:'POST', body:fd});
+    });
     const rep = await r.json();
     if ((rep.errors || []).length){
       err.innerHTML = rep.errors.map(escapeHtml).join('<br>');
@@ -17314,6 +17921,12 @@ async function reloadPortfolio(forceRefresh){
   try {
     const params = new URLSearchParams();
     if (forceRefresh) params.set('refresh','1');
+    // The longest wait in the app: one Yahoo load per fund, and any of
+    // them can miss the cache. The request cannot report on itself, so it
+    // carries a token and the bar polls that while we wait here.
+    const ptok = jobProgressToken();
+    params.set('progress_token', ptok);
+    jobProgressStart(ptok, 'Loading portfolio funds');
     const r = await fetch(`${API}/portfolios/${activePid}/view?${params}`);
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
@@ -17322,6 +17935,9 @@ async function reloadPortfolio(forceRefresh){
     renderPortfolioHeader(data);
     renderPortfolioFunds(data);
     renderAllBreakdowns(data);
+    // The toggle row's visibility and its note both depend on how much
+    // cash this portfolio holds, which is only known once the view lands.
+    updateIncludeCashRow();
     // Targets tile — cheap to render even when the tab is hidden
     // (empty-state placeholder vs live tile); the chart sizing is
     // re-done by switchPortfolioSubTab on visibility.
@@ -17355,6 +17971,7 @@ async function reloadPortfolio(forceRefresh){
       `<tr><td colspan="12" style="padding:20px;text-align:center;color:var(--red)">Error: ${escapeHtml(e.message)}</td></tr>`;
     document.getElementById('pTitle').textContent = 'Error';
   } finally {
+    jobProgressStop();
     if (_scrollSnap) _restoreScroll(_scrollSnap);
   }
 }
@@ -17366,15 +17983,46 @@ function renderPortfolioHeader(view){
     .filter(c => (p.cache_config||{})[c]?.enabled)
     .map(c => `${fmtCacheCat(c)} (${p.cache_config[c].ttl_days}d)`);
   const nFunds = (p.funds||[]).length;
+  const nCash  = (view.funds || []).filter(f => f.is_cash).length;
   const sub = [
     p.base_currency,
     `${nFunds} fund${nFunds===1?'':'s'}`,
+    nCash ? `${nCash} cash position${nCash===1?'':'s'}` : null,
     cats.length ? `Cache: ${cats.join(', ')}` : 'no caching',
-  ].join(' · ');
+  ].filter(Boolean).join(' · ');
 
   let html = escapeHtml(sub);
   if (view.total_value_base != null && view.total_value_base > 0){
-    html += `<br><span class="pvalue">Total value: ${fmtMoney(view.total_value_base, p.base_currency)}</span>`;
+    // v0.89.0: three figures, not one. The funds list and the Cash
+    // sub-tab now each hold one kind of position, so a single "total
+    // value" left the reader unable to tell which of the two screens
+    // accounted for what. Funds and cash are stated separately and the
+    // whole is stated last, because the whole is the denominator every
+    // weight in this app is a percentage of.
+    const cur   = p.base_currency;
+    const cash  = Number(view.cash_value_base || 0);
+    const funds = (view.funds_value_base != null)
+      ? Number(view.funds_value_base)
+      : Number(view.total_value_base) - cash;
+    html += '<br>';
+    if (cash > 0){
+      // Each part carries its share of the total. The money says how much,
+      // the percentage says how the portfolio is split — and the split is
+      // the thing you actually decide when setting a cash reserve. These
+      // are the one place a percentage is of the GRAND total: everywhere
+      // else (the funds list, the holdings table, every target) a
+      // percentage is of the fund side, because that is what those
+      // numbers describe.
+      const total = Number(view.total_value_base) || 0;
+      const pct   = (x) => total > 0 ? ` (${(x / total * 100).toFixed(1)}%)` : '';
+      html += `<span class="pvalue-part" title="Value of the fund positions, excluding cash you hold yourself. Weights in the funds list and the holdings table are percentages of this.">`
+            + `Funds: ${fmtMoney(funds, cur)}<span class="pvalue-pct">${pct(funds)}</span></span>`
+            + `<span class="pvalue-sep">+</span>`
+            + `<span class="pvalue-part" title="Cash positions you hold — edited on the Cash sub-tab, reserved on the Targets tab">`
+            + `Cash: ${fmtMoney(cash, cur)}<span class="pvalue-pct">${pct(cash)}</span></span>`
+            + `<span class="pvalue-sep">=</span>`;
+    }
+    html += `<span class="pvalue">Total value: ${fmtMoney(view.total_value_base, cur)}</span>`;
   }
   document.getElementById('pSub').innerHTML = html;
 }
@@ -17388,11 +18036,26 @@ let portfolioFundsFilterState = {
 
 function renderPortfolioFunds(view){
   applyQualityHeaderTips();
-  const funds = view.funds || [];
+  // v0.89.0: this table lists FUND positions. Cash positions you hold
+  // yourself are not funds and live on the Cash sub-tab, which is where
+  // they can actually be edited; they arrive in view.funds because the
+  // backend injects each one as a synthetic single-holding fund so the
+  // X-ray can add your deposits to the funds' own cash sleeves in one
+  // bucket. Filtering happens here, at render, and never in the rollup —
+  // the X-ray must keep seeing them.
+  //
+  // f.weight is a share of the FUND side (v0.90.0), so these rows sum to
+  // 100% — cash the user holds is reserved off the top and is not part of
+  // what the percentages describe. The portfolio holdings table uses the
+  // same denominator, so the two agree.
+  const funds = (view.funds || []).filter(f => !f.is_cash);
   if (!funds.length){
+    const hasCash = (view.funds || []).some(f => f.is_cash);
     document.getElementById('pfundsBody').innerHTML =
       `<tr><td colspan="12" style="padding:24px;text-align:center;color:var(--muted)">
-        No funds yet — switch to Explore, fetch a fund, then "Add to portfolio".</td></tr>`;
+        ${hasCash
+          ? 'No funds in this portfolio — it holds cash only. Cash positions are on the <b>Cash</b> sub-tab.'
+          : 'No funds yet — switch to Explore, fetch a fund, then "Add to portfolio".'}</td></tr>`;
     populatePortfolioFundsFilterOptions([]);
     return;
   }
@@ -17533,33 +18196,11 @@ function renderPortfolioFunds(view){
       </tr>`;
     }
 
-    // Cash rows have no fund identity to "view" or "edit" — clicking
-    // a cash row should drop the user on the Cash sub-tab where the
-    // position can actually be edited; double-clicking does nothing
-    // (there's no separate edit dialog for cash positions, so the
-    // gesture has no place to land).
-    if (f.is_cash){
-      return `<tr class="clk" title="Click to edit on the Cash sub-tab"
-                  onclick="pfCashRowClick()">
-        <td class="tk wrap">${escapeHtml(f.ticker || '—')}</td>
-        <td class="tk wrap">${isinCell}</td>
-        <td class="tk" style="text-align:center">${curCell}</td>
-        <td class="wrap" style="color:var(--text)">${escapeHtml(name)}</td>
-        <td>${holdingsCell}</td>
-        <td><span class="derived muted" title="A cash position has no fund data and nothing to look through">—</span></td>
-        <td><span class="actag ${ac}" style="margin:0;padding:2px 8px;font-size:.62rem">${fmtAssetClass(ac)}</span></td>
-        <td class="r"><span class="derived muted" title="Cash positions are sized by amount (edit on the Cash sub-tab), not by share count">—</span></td>
-        <td class="r">${valueCell}</td>
-        <td class="wcell">${weightCell}</td>
-        <td style="text-align:center">
-          <span class="derived muted" title="Cash is not a fund — the optimiser never sells it as a position">—</span>
-        </td>
-        <td class="r">
-          <button class="btn btn-d btn-sm" title="Remove from portfolio"
-                  onclick="event.stopPropagation(); removeCashFromPortfolio('${tkEsc}')">✕</button>
-        </td>
-      </tr>`;
-    }
+    // The cash-row branch that stood here until v0.89.0 is gone with the
+    // rows it drew: this table lists fund positions only, and the filter
+    // at the top of renderPortfolioFunds means no cash entry reaches this
+    // map. Cash is edited on the Cash sub-tab and totalled separately on
+    // the overview.
 
     return `<tr class="clk" title="Click to view fund details · double-click to edit"
                 onclick="pfRowClick('${isinEsc}','${exchEsc}','${tkEsc}','${curEsc}')"
@@ -17836,7 +18477,7 @@ async function viewFundFromPortfolio(isin, exchange, ticker, currency){
   document.getElementById('fetchBtn').disabled = true;
   setStatus('spin', `Loading ${ticker || isin}…`);
   try {
-    const r = await fetch(`${API}/fund?${params}`);
+    const r = await fetchFundWithProgress(params, 'Fetching fund data');
     const d = await r.json();
     if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
     curISIN = d.isin || ''; curTicker = d.ticker || ''; curExchange = d.resolved_mic || '';
@@ -17864,19 +18505,6 @@ function pfRowDblClick(isin, exchange){
   clearTimeout(pfRowClickTimer);
   pfRowClickTimer = null;
   openEditFundFromPortfolio(isin, exchange);
-}
-
-// Cash-row click. Cash positions have no fund identity to view or edit
-// in-place, so clicking a cash row navigates to the Cash sub-tab where
-// the position can actually be edited. The deferred-click pattern is
-// reused (shared timer with pfRowClick) so a double-click — which is a
-// no-op for cash rows — doesn't fire two navigations back-to-back.
-function pfCashRowClick(){
-  clearTimeout(pfRowClickTimer);
-  pfRowClickTimer = setTimeout(() => {
-    pfRowClickTimer = null;
-    switchPortfolioSubTab('cash');
-  }, 220);
 }
 
 async function updateFundShares(ticker, rawVal){
@@ -17909,39 +18537,11 @@ async function removeFundFromPortfolio(ticker){
   } catch(e){ alert('Remove failed: ' + e.message); }
 }
 
-// Cash-row variant. The funds table receives synthetic cash entries
-// from /view (ticker = "cash:<position_id>"), but cash lives on a
-// separate endpoint — hitting /funds/<ticker> would 404, which is the
-// bug pre-fix. Strip the prefix, route to the cash endpoint. Mirrors
-// removeFundFromPortfolio in confirm + reload behaviour so the two
-// delete paths feel identical from the user's side.
-async function removeCashFromPortfolio(syntheticTicker){
-  const positionId = String(syntheticTicker || '').replace(/^cash:/, '');
-  if (!positionId) { alert('Could not identify cash position to remove.'); return; }
-  // Look up the position's display name for the confirm prompt — the
-  // synthetic ticker isn't user-meaningful. Falls back to a generic
-  // label if the view's funds list is missing for any reason.
-  let label = '(cash position)';
-  const row = (currentPortfolioView?.funds || [])
-    .find(f => f.is_cash && f.ticker === syntheticTicker);
-  if (row?.name) label = row.name;
-  if (!confirm(`Remove ${label} from portfolio?`)) return;
-  try {
-    const r = await fetch(
-      `${API}/portfolios/${activePid}/cash/${encodeURIComponent(positionId)}`,
-      {method:'DELETE'});
-    if (!r.ok){ const d = await r.json(); throw new Error(d.error||`HTTP ${r.status}`); }
-    // Bust the cash-sub-tab cache so the next visit reloads from
-    // server (the deletion happened outside the Cash sub-tab's
-    // dirty-buffer flow; without this, returning to Cash would
-    // still show the deleted row until the user switches portfolio).
-    cashPositions    = [];
-    cashPositionsPid = '';
-    cashDirty        = false;
-    await refreshConfigAndPortfolios();
-    reloadPortfolio(false);
-  } catch(e){ alert('Remove failed: ' + e.message); }
-}
+// pfCashRowClick and removeCashFromPortfolio lived here until v0.89.0.
+// Both existed only to serve cash rows in the portfolio funds table, and
+// that table no longer draws them — a cash position is added, edited and
+// deleted on the Cash sub-tab, which is the one place that owns them.
+
 
 // Called when the "Re-fetch" button on a needs_refetch row is clicked.
 // The listings cache is missing for this ticker, so the row has no
@@ -18004,6 +18604,31 @@ const isResidual     = k => k === 'unknown' || k === 'n/a';
 const residualColour = k => RESIDUAL_COLOURS[k] || '#6b7280';
 const residualLabel  = k => RESIDUAL_LABELS[k]  || k;
 
+// Which pair of blocks the X-ray cards read (v0.91.0).
+//
+// The server ships two rollups of the same portfolio — one over
+// everything, one over the funds alone — and the "include cash held by
+// me" toggle chooses between them. Routed through these two accessors
+// rather than read directly by each card, because there are six cards
+// and a card that kept reading `view.fundlevel_breakdowns` would quietly
+// ignore the toggle while its neighbours obeyed it. That is exactly the
+// drift this codebase is most exposed to: nothing would fail, one card
+// would just answer a different question from the other five.
+//
+// Both fall back to the all-inclusive block, so a payload from a server
+// that predates the toggle still renders.
+function xrayBreakdowns(view){
+  const b = includeCashEnabled() ? view?.fundlevel_breakdowns
+                                 : view?.fundlevel_breakdowns_ex_cash;
+  return b || view?.fundlevel_breakdowns || {};
+}
+
+function xrayCoverage(view){
+  const c = includeCashEnabled() ? view?.fundlevel_coverage
+                                 : view?.fundlevel_coverage_ex_cash;
+  return c || view?.fundlevel_coverage || {};
+}
+
 // Public entry point — called from reloadPortfolio().
 //
 // There is no portfolio-wide source switch. Each fund's own card decides
@@ -18047,6 +18672,12 @@ const _TG_GROUPS = [
 ];
 const _TG_ALL_FACETS = _TG_GROUPS.flatMap(g => g.facets);
 
+// The cash reserve being edited, in base currency. Kept beside
+// _tgEditorState because it is saved by the same button in the same
+// call — a partial save would leave the screen describing a portfolio
+// that does not exist.
+let _tgReserve = 0;
+
 // Editor state — populated in openTargetsEditor, written by saveTargetsEditor.
 // Shape: {asset_class: {key: pct, ...}, sector: {...}, country: {...}, currency: {...}}
 let _tgEditorState = null;
@@ -18073,7 +18704,12 @@ function renderTargetsTile(view){
   const tileEl  = document.getElementById('pTargetsTile');
   if (!emptyEl || !tileEl) return;
 
-  if (!td.any_targets) {
+  // A cash reserve on its own is a plan (v0.90.0). It is not a facet
+  // target, so `any_targets` does not see it — and hiding the whole tile
+  // because of that left a user who had set only a reserve looking at
+  // "no targets set" with a number saved.
+  const reserve = Number(view.cash_reserve || 0);
+  if (!td.any_targets && !reserve) {
     emptyEl.style.display = '';
     tileEl.style.display  = 'none';
     // Destroy any old charts to free Chart.js instances.
@@ -18089,6 +18725,42 @@ function renderTargetsTile(view){
   // Render one section per facet, in canonical order.
   const root = document.getElementById('pTargetsFacets');
   root.innerHTML = '';
+
+  // The reserve first, because it is taken first: every percentage below
+  // is a share of what is left once it is set aside. Stated in money, and
+  // against the cash actually held, so the row says what will happen
+  // rather than only what was asked for.
+  if (reserve > 0){
+    const cur   = view.base_currency || view.portfolio?.base_currency || '';
+    const held  = Number(view.cash_value_base || 0);
+    const total = Number(view.total_value_base || 0);
+    const diff  = reserve - held;
+    const rest  = Math.max(0, total - reserve);
+    // The reserve was in range when it was saved; the portfolio may have
+    // fallen since. Said plainly here rather than left to the optimiser,
+    // which would otherwise be the first thing to mention it.
+    const over  = total > 0 && reserve > total + 0.005;
+    const state = over
+      ? `<span style="color:var(--red)">more than the portfolio is now worth `
+        + `(${escapeHtml(fmtMoney(total, cur))}) — lower it before optimising</span>`
+      : Math.abs(diff) < 0.005
+      ? `<span style="color:var(--green)">on target</span>`
+      : (diff > 0
+          ? `<span style="color:var(--amber)">${escapeHtml(fmtMoney(diff, cur))} short — the optimiser sells to raise it</span>`
+          : `<span style="color:var(--accent)">${escapeHtml(fmtMoney(-diff, cur))} above — the optimiser invests the difference</span>`);
+    const gh = document.createElement('div');
+    gh.className = 'tg-group-head';
+    gh.innerHTML = `<span class="tg-group-label">Cash held by me</span>` +
+      `<span class="tg-group-note">Reserved before anything else. ` +
+      `Every percentage below is a share of the ${escapeHtml(fmtMoney(rest, cur))} that remains.</span>`;
+    root.appendChild(gh);
+    const rr = document.createElement('div');
+    rr.className = 'tg-facet';
+    rr.style.cssText = 'font-family:var(--mono);font-size:.72rem;padding:6px 0 10px';
+    rr.innerHTML = `<b>${escapeHtml(fmtMoney(reserve, cur))}</b> reserved · ` +
+                   `holding ${escapeHtml(fmtMoney(held, cur))} · ${state}`;
+    root.appendChild(rr);
+  }
   let _tgGroupSeen = null;
   for (const facet of _TG_ALL_FACETS) {
     // Group header, once per group, at the point its first facet renders.
@@ -18410,10 +19082,11 @@ async function openTargetsEditor(){
   // freely without touching the view).
   const stored = (currentPortfolioView.targets || {});
   _tgEditorState = {};
-  // All six facets, not the four this used to list. market_cap and
-  // style_box became targetable in 0.30.0, and seeding from a hardcoded
-  // four meant any target set on them was absent from the editor state
-  // and therefore wiped by the next save.
+  // Every facet in _TG_ALL_FACETS, never a hardcoded subset. market_cap
+  // and style_box became targetable in 0.30.0, and
+  // seeding from a hardcoded list meant any target set on a facet the
+  // list had not caught up with was absent from the editor state and
+  // therefore wiped by the next save.
   // v0.65.0: {facet: {level: {key: pct}}}. A pre-0.65 portfolio stores
   // {key: pct}; the backend migrates it to the default level on read,
   // so anything arriving here is already levelled.
@@ -18427,6 +19100,20 @@ async function openTargetsEditor(){
     }
   }
 
+  _tgReserve = Number(currentPortfolioView.cash_reserve || 0);
+  const _resEl = document.getElementById('tgCashReserve');
+  if (_resEl) _resEl.value = _tgReserve > 0 ? _tgReserve : '';
+  const _curEl = document.getElementById('tgReserveCur');
+  if (_curEl) _curEl.textContent =
+    currentPortfolioView.base_currency || currentPortfolioView.portfolio?.base_currency || '';
+  renderTgReserveNote();
+  // A reserve saved when the portfolio was worth more can be out of
+  // range now without anyone having touched it — markets move. So the
+  // check runs on open, not only on edit.
+  const _resInput = document.getElementById('tgCashReserve');
+  if (_resInput) _resInput.max = Number(currentPortfolioView.total_value_base || 0) || '';
+  updateTgReserveValidity();
+
   document.getElementById('targetsEditorTitle').textContent =
     `Edit exposure targets — ${currentPortfolioView.portfolio?.name || ''}`;
   document.getElementById('targetsEditorErr').style.display = 'none';
@@ -18437,8 +19124,8 @@ async function openTargetsEditor(){
   // dialog. See setBtnBusy / hideModal.
   showModal('targetsEditorModal');
 
-  // Lazy-fetch canonical values for the four facets (regions for
-  // country) the first time the editor is opened, then cache them.
+  // Lazy-fetch canonical values for every facet (regions for country)
+  // the first time the editor is opened, then cache them.
   await Promise.all(_TG_ALL_FACETS.map(_tgFetchCanonical));
   _renderTgEditorBody();
 }
@@ -18723,16 +19410,93 @@ function removeTgEditorRow(facet, level, key){
   _renderTgEditorBody();
 }
 
+function onTgReserveChange(){
+  const el = document.getElementById('tgCashReserve');
+  const v  = parseFloat(el ? el.value : '');
+  // Never negative. Clamped rather than rejected, because a negative
+  // reserve has no reading at all — there is no such thing as holding
+  // less than no cash — so there is nothing to ask the user about.
+  _tgReserve = (isNaN(v) || v < 0) ? 0 : v;
+  if (el && v < 0) el.value = 0;
+  renderTgReserveNote();
+  updateTgReserveValidity();
+}
+
+// The reserve cannot exceed the portfolio. Enforced by blocking Save
+// rather than by clamping, because unlike a negative value this one is a
+// real intention typed slightly wrong — the user meant a number, and
+// silently rewriting it to the portfolio total would hide that they had
+// asked for more than they own.
+function tgReserveTooLarge(){
+  const total = Number(currentPortfolioView?.total_value_base || 0);
+  return total > 0 && _tgReserve > total + 0.005;
+}
+
+function updateTgReserveValidity(){
+  const bad = tgReserveTooLarge();
+  const el  = document.getElementById('tgCashReserve');
+  if (el) el.style.borderColor = bad ? 'var(--red)' : '';
+  const btn = document.getElementById('targetsEditorSaveBtn');
+  if (btn){
+    btn.disabled = bad;
+    btn.title = bad
+      ? 'The cash reserve is more than the portfolio is worth.'
+      : '';
+  }
+}
+
+// Say what the reserve will DO, in money, against the cash actually
+// held. "50,000" on its own does not tell the user whether that means
+// selling something; "30,000 to raise" does.
+function renderTgReserveNote(){
+  const note = document.getElementById('tgReserveNote');
+  if (!note || !currentPortfolioView) return;
+  const cur   = currentPortfolioView.base_currency
+             || currentPortfolioView.portfolio?.base_currency || '';
+  const held  = Number(currentPortfolioView.cash_value_base || 0);
+  const total = Number(currentPortfolioView.total_value_base || 0);
+  if (!_tgReserve){
+    note.textContent = held > 0
+      ? `Nothing reserved — the ${fmtMoney(held, cur)} you hold is treated as investable.`
+      : 'Nothing reserved.';
+    return;
+  }
+  if (_tgReserve > total && total > 0){
+    note.innerHTML = `<span style="color:var(--red)">More than the whole portfolio `
+      + `(${escapeHtml(fmtMoney(total, cur))}) — nothing would be left to invest.</span>`;
+    return;
+  }
+  const diff = _tgReserve - held;
+  const rest = Math.max(0, total - _tgReserve);
+  const move = Math.abs(diff) < 0.005
+    ? 'matches the cash you already hold'
+    : (diff > 0
+        ? `${fmtMoney(diff, cur)} to raise by selling`
+        : `${fmtMoney(-diff, cur)} freed to invest`);
+  note.textContent = `${move}. Percentages below are shares of the `
+    + `${fmtMoney(rest, cur)} that remains.`;
+}
+
 async function saveTargetsEditor(){
   if (!activePid || !_tgEditorState) return;
   const btn = document.getElementById('targetsEditorSaveBtn');
   const err = document.getElementById('targetsEditorErr');
   err.style.display = 'none';
+  if (tgReserveTooLarge()){
+    const cur = currentPortfolioView?.base_currency || '';
+    err.textContent =
+      `Cash held by me (${fmtMoney(_tgReserve, cur)}) is more than the whole `
+      + `portfolio (${fmtMoney(Number(currentPortfolioView?.total_value_base || 0), cur)}). `
+      + `It is reserved before anything is invested, so it cannot exceed what you own.`;
+    err.style.display = '';
+    return;
+  }
   setBtnBusy(btn, 'Saving…');
   try {
     const r = await fetch(`${API}/portfolios/${activePid}/targets`, {
       method: 'PUT', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({targets: _tgEditorState}),
+      body: JSON.stringify({targets: _tgEditorState,
+                            cash_reserve: _tgReserve}),
     });
     const d = await r.json();
     // v0.65.0: a 409 carries the parent/child problems. Listed in full
@@ -18831,9 +19595,9 @@ function renderAssetClassBreakdownYM(view){
   // Fund/ETF-level asset-class breakdown — the issuer-published
   // asset-allocation split per fund (with any per-card holdings
   // override applied), aggregated to portfolio level.
-  const acCard    = view?.fundlevel_breakdowns?.asset_class || emptyCard('asset_class');
+  const acCard    = xrayBreakdowns(view)?.asset_class || emptyCard('asset_class');
   const breakdown = levelItems(acCard, acCard.default_level);
-  const cov       = (view?.fundlevel_coverage?.asset_class || {})['asset_class'];
+  const cov       = (xrayCoverage(view)?.asset_class || {})['asset_class'];
   const baseCur   = view?.base_currency || view?.portfolio?.base_currency || '';
   const unvalued  = view?.unvalued_funds || [];
   const totalVal  = view?.total_value_base;
@@ -18897,10 +19661,10 @@ function renderSectorBreakdownYM(view){
   // to portfolio level. Coverage is the share of portfolio value where
   // a sector breakdown was available.
   // v0.61.0: a levelled block, the same shape the fund card reads.
-  const card    = view?.fundlevel_breakdowns?.sector || emptyCard('sector');
+  const card    = xrayBreakdowns(view)?.sector || emptyCard('sector');
   const level   = effectiveLevelIn(portfolioFacetLevel, 'sector', card);
   const sectors = levelItems(card, level);
-  const cov     = (view?.fundlevel_coverage?.sector || {})[level];
+  const cov     = (xrayCoverage(view)?.sector || {})[level];
   const baseCur = view?.base_currency || view?.portfolio?.base_currency || '';
   setCoverageBadge('secCov', cov != null ? cov*100 : null, 'yahoo');
   renderPortfolioLevelCtl('pSecCtl', 'sector', card);
@@ -18944,10 +19708,10 @@ function renderCountryBreakdownYM(view){
   // distribution rather than regrouped in the browser from the country
   // one — which is why a fund reporting "Europe (Developed)" finally
   // counts here instead of vanishing into unknown.
-  const card    = view?.fundlevel_breakdowns?.country || emptyCard('country');
+  const card    = xrayBreakdowns(view)?.country || emptyCard('country');
   const level   = effectiveLevelIn(portfolioFacetLevel, 'country', card);
   const items   = levelItems(card, level);
-  const cov     = (view?.fundlevel_coverage?.country || {})[level];
+  const cov     = (xrayCoverage(view)?.country || {})[level];
   const baseCur = view?.base_currency || view?.portfolio?.base_currency || '';
   setCoverageBadge('ctyCov', cov != null ? cov*100 : null, 'yahoo');
   renderPortfolioLevelCtl('pCtyCtl', 'country', card);
@@ -19006,9 +19770,9 @@ function renderCurrencyBreakdownYM(view){
   // is populated only for funds whose currency card is overridden to
   // "Holdings". (Trading-currency exposure of the wrappers themselves
   // is a separate figure — view.trading_currency_breakdown.)
-  const curCard   = view?.fundlevel_breakdowns?.currency || emptyCard('currency');
+  const curCard   = xrayBreakdowns(view)?.currency || emptyCard('currency');
   const breakdown = levelItems(curCard, curCard.default_level);
-  const cov       = (view?.fundlevel_coverage?.currency || {})['currency'];
+  const cov       = (xrayCoverage(view)?.currency || {})['currency'];
   const baseCur   = view?.base_currency || view?.portfolio?.base_currency || '';
   setCoverageBadge('curCov', cov != null ? cov*100 : null, 'yahoo');
 
@@ -19050,9 +19814,9 @@ function renderCurrencyBreakdownYM(view){
 // look fully classified, which is the one thing this card must not do.
 function renderMetaFacetBreakdown(view, facet, cfg){
   // Meta facets are single-level blocks of the same shape.
-  const mCard = view?.fundlevel_breakdowns?.[facet] || {};
+  const mCard = xrayBreakdowns(view)?.[facet] || {};
   const items = levelItems(mCard, mCard.default_level || facet);
-  const cov   = (view?.fundlevel_coverage?.[facet] || {})[mCard.default_level || facet];
+  const cov   = (xrayCoverage(view)?.[facet] || {})[mCard.default_level || facet];
   const base  = view?.base_currency || view?.portfolio?.base_currency || '';
   setCoverageBadge(cfg.covId, cov != null ? cov*100 : null, 'yahoo');
 
@@ -19153,7 +19917,14 @@ function renderPortfolioFundToggles(){
     return;
   }
 
-  const toggles = pPriceData.funds.map((f, i) => {
+  // Same filter as the chart: a legend entry for a series that is not
+  // drawn is a control that does nothing.
+  const legendFunds = pPriceData.funds.filter(f => includeCashEnabled() || !f.is_cash);
+  const toggles = legendFunds.map((f) => {
+    // Colour by the series' position in the FULL list, so hiding cash
+    // does not recolour every fund beneath it — a legend that reshuffles
+    // its colours makes the chart look like different data.
+    const i = pPriceData.funds.indexOf(f);
     const color = SCOL[(i + 1) % SCOL.length];  // reserve SCOL[0] for the portfolio line
     const on    = pFundVisible[f.ticker] !== false;
     const label = f.name || f.ticker;
@@ -19202,7 +19973,16 @@ function renderPortfolioChart(){
   if (!pPriceData || !pPriceData.dates.length) return;
 
   const allDates  = pPriceData.dates;
-  const allPortfo = pPriceData.portfolio_values;
+  // The portfolio line follows the include-cash toggle, and so does the
+  // set of series drawn beneath it — a chart whose total excluded cash
+  // while still drawing the cash line would invite the reader to add up
+  // something that does not add up. Both variants are computed server-side
+  // in one pass under identical carry-forward rules, so the line and the
+  // series it is a sum of can never disagree about method.
+  const withCash  = includeCashEnabled();
+  const allPortfo = (withCash ? pPriceData.portfolio_values
+                              : pPriceData.portfolio_values_ex_cash)
+                    || pPriceData.portfolio_values;
   const baseCur   = pPriceData.base_currency;
 
   // ── Slice by period ────────────────────────────────────────────────────
@@ -19223,9 +20003,9 @@ function renderPortfolioChart(){
   let ma200     = ma200All ? ma200All.slice(fromIdx) : null;
 
   // Per-fund windows
-  const fundsWindowed = pPriceData.funds.map(f => ({
-    ...f, windowValues: f.values.slice(fromIdx),
-  }));
+  const fundsWindowed = pPriceData.funds
+    .filter(f => withCash || !f.is_cash)
+    .map(f => ({ ...f, windowValues: f.values.slice(fromIdx) }));
 
   // ── Transform values for the view mode ─────────────────────────────────
   // money:   raw base-currency values (portfolio total = portfolio_values,

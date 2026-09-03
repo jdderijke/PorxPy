@@ -35,7 +35,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import openpyxl
 
@@ -154,6 +154,52 @@ def clear_cancel(token: str) -> None:
         return
     with _CANCEL_LOCK:
         _CANCELLED_TOKENS.discard(token)
+
+
+# ---------------------------------------------------------------------------
+# Job progress
+# ---------------------------------------------------------------------------
+# The progress store lived here until v0.91.0, because Yahoo holdings
+# enrichment was the first thing slow enough to need it. It was never an
+# upload concern though - every long external call has the same problem -
+# so it moved to utils, and everything that contacts the outside world
+# now reports into one store read by one endpoint. Re-exported here so
+# existing callers and their imports keep working unchanged.
+from porxpy.utils import (  # noqa: F401
+    progress_start, progress_update, progress_finish, progress_get,
+    progress_phase, progress_scope,
+)
+
+
+def enrichment_progress_hook(token: str, log_prefix: str
+                             ) -> Callable[[int, int, float], None]:
+    """Build the ``on_progress`` callback both enrichment callers pass.
+
+    One hook rather than one per caller, because the two callers want the
+    identical thing — the terminal line that already existed, plus the
+    record the browser polls — and a second copy is a second place for
+    the two to describe the same run differently.
+
+    Args:
+        token: Job token, or "" to keep the terminal line only.
+        log_prefix: Tag for the printed line, e.g. ``"Upload"``.
+
+    Returns:
+        ``f(i, total, elapsed_s)`` suitable for
+        :func:`porxpy.extractors.enrich_holdings_rows`.
+    """
+    def _hook(i: int, total: int, elapsed: float) -> None:
+        progress_update(token, i, total, elapsed)
+        # The terminal line stays coarse: it is for reading a scrollback
+        # after the fact, not for watching, which is now the browser's job.
+        step = 25 if total > 100 else 10
+        if not i or i % step or i >= total:
+            return
+        rate = i / elapsed if elapsed > 0 else 0
+        eta  = (total - i) / rate if rate > 0 else 0
+        print(f"[{log_prefix}]   {i}/{total} rows "
+              f"({elapsed:.0f}s elapsed, ~{eta:.0f}s left)")
+    return _hook
 
 
 def _token_path(token: str) -> Path:
@@ -981,9 +1027,16 @@ def _upload_commit_impl(token: str, *,
                   # normalises the dates to DD/mmm/YYYY; we don't have
                   # to do anything special here besides shuttle the
                   # cell contents into the row.
-                  "duration", "maturity", "coupon", "effective_date")
+                  "duration", "maturity", "coupon", "effective_date",
+                  # v0.93.0: the credit rating, shuttled through as text.
+                  # No coercion beyond the trim coerce_holdings_row gives
+                  # every string column — the scale is only consulted for
+                  # ORDER, and rewriting "Baa3" to "BBB-" on ingest would
+                  # restate what the issuer's file said.
+                  "quality")
 
-    isin_re = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")
+    # resolver.ISIN_RE, not a local copy — see the note there.
+    from porxpy.resolver import ISIN_RE as isin_re
 
     for r in data_rows:
         def cell(field: str) -> str:
@@ -1135,22 +1188,17 @@ def _upload_commit_impl(token: str, *,
             if is_cancelled(token):
                 raise UploadCancelled(token)
 
-        # Progress to the terminal. A per-holding Yahoo lookup costs
-        # ~0.01s cached and ~1s when it misses and runs the full
-        # fallback chain (variant probe, ISIN search, name search), so a
-        # few hundred unrecognised rows is legitimately minutes of work.
-        # With nothing printed, that is indistinguishable from a hang —
-        # which is exactly how it was reported.
+        # Progress, to the terminal and to the browser. A per-holding
+        # Yahoo lookup costs ~0.01s cached and ~1s when it misses and
+        # runs the full fallback chain (variant probe, ISIN search, name
+        # search), so a few hundred unrecognised rows is legitimately
+        # minutes of work — indistinguishable from a hang if nothing
+        # says otherwise. The record is opened under the PREVIEW token,
+        # which the dialog already holds, so the bar needs no second
+        # identifier and stops when the commit returns.
         _n_total = min(len(out_rows), _ENRICH_ROW_CAP)
-        _step = 25 if _n_total > 100 else 10
-
-        def _progress(i: int, total: int, elapsed: float) -> None:
-            if not i or i % _step or i >= total:
-                return
-            rate = i / elapsed if elapsed > 0 else 0
-            eta  = (total - i) / rate if rate > 0 else 0
-            print(f"[Upload]   {i}/{total} rows "
-                  f"({elapsed:.0f}s elapsed, ~{eta:.0f}s left)")
+        progress_start(token, _n_total, "enriching")
+        _progress = enrichment_progress_hook(token, "Upload")
 
         _t_start = time.time()
         print(f"[Upload] enrichment starting: {_n_total} row(s), "
@@ -1165,6 +1213,10 @@ def _upload_commit_impl(token: str, *,
               f"filled={dict(enrich_stats.get('rows_filled') or {})} "
               f"unrecognised={enrich_stats.get('rows_yahoo_not_found', 0)} "
               f"no_id={enrich_stats.get('rows_skipped_no_identifier', 0)}")
+        # Closed here rather than in a finally: a cancelled commit raises
+        # out of the loop above and its record should stay at the row it
+        # stopped on, which is what the dialog reports.
+        progress_finish(token, "enrichment complete")
 
     # ──────────────────────────────────────────────────────────────────
     # Pass 4 — default-fill for unmapped fields the user supplied a
@@ -1180,7 +1232,8 @@ def _upload_commit_impl(token: str, *,
                    # a fixed-coupon issuer-fund spreadsheet that omits
                    # the bond columns can still get them filled this
                    # way. coerce_holdings_row will type-coerce later.
-                   "duration", "maturity", "coupon", "effective_date")
+                   "duration", "maturity", "coupon", "effective_date",
+                   "quality")
     default_apply: dict[str, str] = {}
     for f in DEFAULTABLE:
         # v0.72.0: a mapped column no longer disqualifies a default.
@@ -1207,9 +1260,9 @@ def _upload_commit_impl(token: str, *,
         # the stated grain. asset_class already passed through, for
         # exactly this reason; the other three now match it.
         #
-        # Bond fields (duration, maturity, coupon, effective_date) are
-        # not facets and keep their own columns; coerce_holdings_row
-        # normalises their numerics and dates later.
+        # Bond fields (duration, maturity, coupon, effective_date,
+        # quality) are not facets and keep their own columns;
+        # coerce_holdings_row normalises their numerics and dates later.
         default_apply[f] = raw
 
     # A facet default is a SOURCE for the row — the user asserting a

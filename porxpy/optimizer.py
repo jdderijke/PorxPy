@@ -17,14 +17,20 @@ trade list (``shares_delta`` per fund) rather than a set of weights: for a
 fresh portfolio those deltas are all buys; for an existing one they are
 the buys and sells needed to reach the target.
 
-**Cash is an asset, not just a budget.** Cash carries real exposure (asset
-class "cash", a currency, a country), and users often target holding some
-of it. So cash enters the optimisation as one more column of the exposure
-matrix, and its weight is a free variable like any fund's. Two things fall
-out for free: the "leave 5% in cash" target works with no special-casing,
-and the no-overdraft constraint is automatic — cash weight is constrained
-non-negative like everything else, so the solver simply cannot spend money
-that isn't there.
+**Cash is a reservation, not a column** (v0.90.0). The user says how much
+of the portfolio must stay as cash they hold — an amount in base currency,
+not a percentage — and that amount is taken off the top before the solver
+runs. What remains is the *fund side*, and every target is a fraction of
+it: reserve 50k of 100k and a 50% equity target means 25k of equity.
+
+Cash used to be one more column of the exposure matrix, with its weight a
+free variable, so that "leave 5% in cash" needed no special-casing. That
+was wrong in a way only visible in use: the optimiser cannot buy a bank
+deposit, so treating the amount as one more least-squares target let it be
+satisfied approximately, and pulled every other target off course while it
+was at it. A reservation is exact by construction — the money is simply
+not in the budget — and the no-overdraft rule comes from the same place,
+since the fund weights are a simplex over a budget that is already known.
 
 **Why not L1 for sparsity.** The obvious move for "pick a few funds out of
 200" is an L1 penalty. It does nothing here. Weights are non-negative and
@@ -232,7 +238,6 @@ def _solve_weights(A: np.ndarray, t: np.ndarray,
 # Building the exposure matrix
 # ---------------------------------------------------------------------------
 def _build_facet_matrix(candidates: list[dict],
-                        cash_exposure: dict,
                         targets: dict,
                         facet_weights: dict | None) -> tuple[np.ndarray, np.ndarray, list]:
     """Assemble the exposure matrix and target vector across all facets.
@@ -257,11 +262,18 @@ def _build_facet_matrix(candidates: list[dict],
     Returns:
         ``(A, t, rows)`` where ``A`` is ``(n_buckets, n_assets)``, ``t`` is
         ``(n_buckets,)``, and ``rows`` is ``[(facet, bucket, level), ...]``
-        labelling each row for the caller's diagnostics. Assets are ordered
-        as ``candidates`` then cash (cash is always the last column).
+        labelling each row for the caller's diagnostics. Assets are the
+        candidates, in order — there is no cash column (v0.90.0).
     """
     facet_weights = facet_weights or {}
-    n_assets = len(candidates) + 1          # +1 for cash
+    # One column per candidate. Cash used to have a column of its own, so
+    # that a "leave 5% in cash" target could be met by leaving money
+    # uninvested. Cash is now a RESERVE taken off the top before the
+    # solver runs (see optimise_portfolio), so the money the solver
+    # distributes is by definition all going into funds, and every target
+    # is a fraction of that fund side. A cash column would now be pure
+    # slack the solver could park weight in to flatter its own fit.
+    n_assets = len(candidates)
 
     A_rows: list[np.ndarray] = []
     t_vals: list[float] = []
@@ -312,14 +324,6 @@ def _build_facet_matrix(candidates: list[dict],
                                                 for k in keys))
                 else:
                     row[j] = float(exp_f.get(key, 0.0))
-
-            cash_f = (((cash_exposure or {}).get(facet) or {})
-                      .get(level) or {})
-            if key == OTHER_BUCKET:
-                row[-1] = max(0.0, 1.0 - sum(float(cash_f.get(k, 0.0))
-                                             for k in keys))
-            else:
-                row[-1] = float(cash_f.get(key, 0.0))
 
             raw_target = (other_target if key == OTHER_BUCKET
                           else float(tgt[key]))
@@ -420,7 +424,6 @@ def _greedy_select(A: np.ndarray, t: np.ndarray,
         ``(selected_indices, facet_devs, all_met)`` — indices in selection
         order, so the caller can show which funds did the real work.
     """
-    cash_idx = A.shape[1] - 1
     # Locked positions are in the design by right: a lower bound only
     # binds if its column is present.
     selected: list[int] = list(forced or [])
@@ -433,7 +436,15 @@ def _greedy_select(A: np.ndarray, t: np.ndarray,
         return (None if lb is None else lb[cols],
                 None if ub is None else ub[cols])
 
-    # Baseline: everything in cash. Any fund must beat that.
+    # Baseline: whatever is in the design by right — the locked
+    # positions, or nothing at all. Until v0.90.0 the baseline was
+    # "everything in cash", which was a real portfolio because cash had a
+    # column. It no longer does: the reserve is taken off the top and the
+    # fund side is fully invested, so with no fund selected there is no
+    # portfolio to score. An all-zero weight vector stands in for it —
+    # `_facet_devs` then reports each target missed by its own size, which
+    # is the honest reading of "you hold none of this yet", and any fund
+    # improves on it.
     #
     # Two residuals are tracked deliberately. ``best_sse`` is measured at
     # SCREENING precision because every challenger is, and a comparison
@@ -442,16 +453,19 @@ def _greedy_select(A: np.ndarray, t: np.ndarray,
     # than that would read as "no fund helps" and stop the search early.
     # The exact solve is kept only for the deviations, which drive the
     # stopping test and must be honest.
-    _base_cols = selected + [cash_idx]
-    _l, _u = _bnd(_base_cols)
-    w0, _ = _solve_weights(A[:, _base_cols], t, lb=_l, ub=_u)
     w_full = np.zeros(A.shape[1])
-    for _pos, _col in enumerate(_base_cols):
-        w_full[_col] = w0[_pos]
+    if selected:
+        _base_cols = list(selected)
+        _l, _u = _bnd(_base_cols)
+        w0, _ = _solve_weights(A[:, _base_cols], t, lb=_l, ub=_u)
+        for _pos, _col in enumerate(_base_cols):
+            w_full[_col] = w0[_pos]
+        _, best_sse = _solve_weights(A[:, _base_cols], t, lb=_l, ub=_u,
+                                     max_iter=SCREEN_ITER, tol=SCREEN_TOL)
+    else:
+        best_sse = float("inf")
     cur_w = w_full
     best_devs = _facet_devs(A_raw, t_raw, mask, row_facet, w_full)
-    _, best_sse = _solve_weights(A[:, _base_cols], t, lb=_l, ub=_u,
-                                 max_iter=SCREEN_ITER, tol=SCREEN_TOL)
 
     while len(selected) < max_funds and remaining:
         if _all_within(best_devs, tol):
@@ -459,13 +473,12 @@ def _greedy_select(A: np.ndarray, t: np.ndarray,
 
         best_j, best_j_sse, best_j_w = None, best_sse, None
         # Warm start: incumbent weights, with the trial column at zero.
-        # cols is [*selected, j, cash], so the new column sits second-last.
-        warm = np.zeros(len(selected) + 2)
+        # cols is [*selected, j], so the new column sits last.
+        warm = np.zeros(len(selected) + 1)
         for pos, col in enumerate(selected):
             warm[pos] = cur_w[col]
-        warm[-1] = cur_w[cash_idx]
         for j in remaining:
-            cols = selected + [j] + [cash_idx]
+            cols = selected + [j]
             _tl, _tu = _bnd(cols)
             w, sse = _solve_weights(A[:, cols], t, lb=_tl, ub=_tu,
                                     max_iter=SCREEN_ITER, tol=SCREEN_TOL,
@@ -543,7 +556,6 @@ def _swap_refine(A: np.ndarray, t: np.ndarray,
     Returns:
         ``(selected, facet_devs, all_met, n_swaps)``.
     """
-    cash_idx = A.shape[1] - 1
     selected = list(selected)
     # A locked position cannot be swapped out — that is what locking it
     # means — so its slot is not a candidate for exchange.
@@ -552,12 +564,14 @@ def _swap_refine(A: np.ndarray, t: np.ndarray,
     def _fit(cols: list[int], *, exact: bool = True,
              warm: np.ndarray | None = None) -> tuple[float, np.ndarray]:
         kw = {} if exact else {"max_iter": SCREEN_ITER, "tol": SCREEN_TOL}
-        full = cols + [cash_idx]
+        full = list(cols)
+        if not full:
+            return float("inf"), np.zeros(A.shape[1])
         _l = None if lb is None else lb[full]
         _u = None if ub is None else ub[full]
         w, sse = _solve_weights(A[:, full], t, w0=warm, lb=_l, ub=_u, **kw)
         w_full = np.zeros(A.shape[1])
-        for pos, col in enumerate(cols + [cash_idx]):
+        for pos, col in enumerate(full):
             w_full[col] = w[pos]
         return sse, w_full
 
@@ -600,7 +614,7 @@ def _swap_refine(A: np.ndarray, t: np.ndarray,
             for j in shortlist:
                 trial = list(selected)
                 trial[pos] = j
-                warm = np.array([best_w[c] for c in trial] + [best_w[cash_idx]])
+                warm = np.array([best_w[c] for c in trial])
                 sse, _w = _fit(trial, exact=False, warm=warm)
                 if sse < best_sse - 1e-12 and (best_move is None
                                                or sse < best_move[0]):
@@ -688,16 +702,17 @@ def _score_alternatives(A: np.ndarray, t: np.ndarray,
         best in its group yields an empty ``alternatives`` list rather
         than being omitted, so the table can say so.
     """
-    cash_idx = A.shape[1] - 1
     forced_set = set(forced or [])
 
     def _fit(cols):
-        full = cols + [cash_idx]
+        full = list(cols)
+        if not full:
+            return np.zeros(A.shape[1])
         _l = None if lb is None else lb[full]
         _u = None if ub is None else ub[full]
         w, sse = _solve_weights(A[:, full], t, lb=_l, ub=_u)
         w_full = np.zeros(A.shape[1])
-        for pos, col in enumerate(cols + [cash_idx]):
+        for pos, col in enumerate(full):
             w_full[col] = w[pos]
         return w_full
 
@@ -783,7 +798,7 @@ def _score_alternatives(A: np.ndarray, t: np.ndarray,
 def optimise_portfolio(candidates: list[dict],
                        targets: dict,
                        cash_base: float,
-                       cash_exposure: dict | None = None,
+                       cash_reserve: float = 0.0,
                        *,
                        max_funds: int = 10,
                        min_weight: float = 0.01,
@@ -829,10 +844,14 @@ def optimise_portfolio(candidates: list[dict],
         targets: ``{facet: {level: {bucket: fraction}}}``. Sparse — a
             facet or level with no targets is ignored entirely.
             Fractions, not percents.
-        cash_base: Total investable cash, in base currency.
-        cash_exposure: Cash's own exposure, same shape as a candidate's
-            — including the level dimension.
-            Defaults to 100% ``asset_class: cash``.
+        cash_base: Cash the user currently holds, in base currency.
+        cash_reserve: How much of the portfolio must remain as cash the
+            user holds, in base currency (v0.90.0). Taken off the top
+            before anything is designed, so the solver never sees it and
+            no fund can occupy it. When the cash on hand exceeds it the
+            difference becomes investable; when it falls short, funds are
+            sold until it is met. Every target is then a fraction of what
+            remains — the fund side — rather than of the grand total.
         max_funds: Cap on how many funds the design may use.
         min_weight: Drop any fund the solver gives less than this weight,
             then re-solve without it. Prevents 0.4% dust positions.
@@ -892,8 +911,7 @@ def optimise_portfolio(candidates: list[dict],
         — that is the whole point of the shape. Sells come out as negative
         ``shares_delta``.
     """
-    if cash_exposure is None:
-        cash_exposure = {"asset_class": {"cash": 1.0}}
+
 
     # Drop unpriceable candidates — a fund we can't price is a fund we
     # can't trade, and silently weighting it would produce a design the
@@ -965,10 +983,32 @@ def optimise_portfolio(candidates: list[dict],
                       * float(c.get("price_base") or 0.0)
                       for c in frozen)
     total_base = held_base + frozen_base + float(cash_base or 0.0)
-    free_base  = held_base + float(cash_base or 0.0)
+
+    # The reserve comes off the top (v0.90.0). What is left is the FUND
+    # SIDE: the money every target is a percentage of, and the money the
+    # design distributes. `free_base` is the part of it the solver may
+    # actually move — the fund side less the frozen holdings.
+    reserve   = max(0.0, float(cash_reserve or 0.0))
+    fund_side = total_base - reserve
+    free_base = fund_side - frozen_base
 
     if total_base <= 0:
         return {"ok": False, "reason": "nothing to invest (no cash, no holdings)",
+                "trades": [], "positions": [], "selected": []}
+    if reserve > 0 and fund_side <= 0:
+        return {"ok": False,
+                "reason": (f"the cash reserve ({reserve:,.0f}) is the whole "
+                           f"portfolio ({total_base:,.0f}) or more, so there "
+                           f"is nothing left to invest. Lower it to design a "
+                           f"fund side."),
+                "trades": [], "positions": [], "selected": []}
+    if reserve > 0 and free_base <= 0 and frozen_base > 0:
+        return {"ok": False,
+                "reason": (f"funds you have excluded or locked are worth "
+                           f"{frozen_base:,.0f}, which already exceeds the "
+                           f"{fund_side:,.0f} left after a cash reserve of "
+                           f"{reserve:,.0f}. Lower the reserve, or release a "
+                           f"locked position."),
                 "trades": [], "positions": [], "selected": []}
     if not usable:
         return {"ok": False,
@@ -981,7 +1021,10 @@ def optimise_portfolio(candidates: list[dict],
                 "reason": "nothing tradeable — all value sits in excluded funds",
                 "trades": [], "positions": [], "selected": []}
 
-    frozen_share = frozen_base / total_base if total_base > 0 else 0.0
+    # Against the fund side, not the grand total: the reserve is not part
+    # of what the targets describe, so the frozen funds' share has to be
+    # measured in the same space the targets live in.
+    frozen_share = frozen_base / fund_side if fund_side > 0 else 0.0
 
     # ---- Per-column bounds ----------------------------------------------
     # Expressed as fractions of the FREE budget, because that is the space
@@ -1041,12 +1084,10 @@ def optimise_portfolio(candidates: list[dict],
     # `len(usable)` candidates, and `usable` comes first in the column
     # order.
     A, t, rows, A_raw, t_raw, mask, row_facet = _build_facet_matrix(
-        usable + frozen, cash_exposure, targets, facet_weights)
+        usable + frozen, targets, facet_weights)
     if A.shape[0] == 0:
         return {"ok": False, "reason": "no targets set",
                 "trades": [], "positions": [], "selected": []}
-
-    cash_idx = A.shape[1] - 1
 
     # ---- Reduce to the free sub-problem ---------------------------------
     # The frozen funds contribute a fixed vector f of whole-portfolio
@@ -1068,7 +1109,7 @@ def optimise_portfolio(candidates: list[dict],
         for k, c in enumerate(frozen):
             col = len(usable) + k
             fz_w[col] = (float(c.get("current_shares") or 0.0)
-                         * float(c.get("price_base") or 0.0)) / total_base
+                         * float(c.get("price_base") or 0.0)) / fund_side
         f_scaled = A     @ fz_w
         f_raw    = A_raw @ fz_w
         t_free     = (t     - f_scaled) / free
@@ -1138,8 +1179,9 @@ def optimise_portfolio(candidates: list[dict],
                 sel[sel.index(oj)] = ij
                 applied_subs.append({"out": out_tk.upper(), "in": in_tk.upper()})
 
-    # 2. Solve weights on that set (+ cash).
-    cols = sel + [cash_idx]
+    # 2. Solve weights on that set. No cash column: the reserve is
+    #    already out of the budget, so these weights are fully invested.
+    cols = list(sel)
     w, _ = _solve_weights(A[:, cols], t_free,
                           lb=None if _lb is None else _lb[cols],
                           ub=None if _ub is None else _ub[cols])
@@ -1152,16 +1194,15 @@ def optimise_portfolio(candidates: list[dict],
             if w[i] >= min_weight or j in set(forced)]
     if len(keep) < len(sel):
         sel = [sel[i] for i in keep]
-        cols = sel + [cash_idx]
+        cols = list(sel)
         w, _ = _solve_weights(A[:, cols], t_free,
                               lb=None if _lb is None else _lb[cols],
                               ub=None if _ub is None else _ub[cols])
 
     # These are weights *within the free sub-portfolio*, so they sum to 1
-    # across the selected funds plus cash — not across the whole
-    # portfolio, which also contains the frozen part.
+    # across the selected funds — not across the whole portfolio, which
+    # also contains the frozen funds and the cash reserve.
     fund_w = {sel[i]: float(w[i]) for i in range(len(sel))}
-    cash_w = float(w[-1])
 
     # 4. Weights → target shares → trades. Money is sized against the free
     #    budget; the reported weight is of the whole portfolio, because
@@ -1253,12 +1294,11 @@ def optimise_portfolio(candidates: list[dict],
     w_full = np.zeros(A.shape[1])
     for j, weight in fund_w.items():
         w_full[j] = weight * free
-    w_full[cash_idx] = cash_w * free
     for k, c in enumerate(frozen):
         w_full[len(usable) + k] = (
             (float(c.get("current_shares") or 0.0)
-             * float(c.get("price_base") or 0.0)) / total_base
-            if total_base else 0.0)
+             * float(c.get("price_base") or 0.0)) / fund_side
+            if fund_side else 0.0)
 
     # v0.65.0: {facet: {level: {key: ...}}}, mirroring the targets, and
     # each bucket measured against the exposure AT ITS OWN LEVEL. Reading
@@ -1278,9 +1318,6 @@ def optimise_portfolio(candidates: list[dict],
                                               .get(facet) or {})
                                              .get(level) or {}).get(key, 0.0))
                           for j, c in enumerate(usable + frozen))
-                got += w_full[cash_idx] * float(
-                    (((cash_exposure or {}).get(facet) or {})
-                     .get(level) or {}).get(key, 0.0))
                 # float() because `got` is a numpy scalar here, and the
                 # Flask JSON encoder does not know what to do with one.
                 achieved[facet][level][key]  = round(float(got), 6)
@@ -1337,8 +1374,11 @@ def optimise_portfolio(candidates: list[dict],
         "total_base":  round(total_base, 2),
         "trades":      trades,
         "positions":   positions,
-        "cash_weight": round(cash_w * free, 6),
-        "cash_after":  round(cash_w * free_base, 2),
+        # The reserve is met exactly, by construction: it was removed
+        # from the budget before the solver ran, so whatever the trades
+        # below net out to leaves precisely this much in cash.
+        "cash_weight": round(reserve / total_base, 6) if total_base > 0 else 0.0,
+        "cash_after":  round(reserve, 2),
         "selected":    [usable[j]["ticker"] for j in sel],
         "achieved":    achieved,
         "deviation":   deviation,

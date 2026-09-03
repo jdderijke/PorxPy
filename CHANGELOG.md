@@ -3,6 +3,878 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.96.0] - 2026-09-03
+
+### Changed — a peer group of two is now ranked, and no percentile reaches 0 or 100
+
+The report: a peer group with only two members produced no ranking at
+all, which is wrong — even out of two, one fund outranks the other.
+
+Two separate things were causing it, and fixing only one would have made
+matters worse.
+
+**The gate.** `MIN_PEER_GROUP` was 3, so a group of two was skipped
+outright: `score_peer` was null, the fund showed `—` in the score column
+and an orange "alone" dot, and the optimiser ignored it on score grounds.
+It is now 2. A group of ONE is still unranked, because there genuinely is
+no ordering inside it and any number would be invented.
+
+**The formula, which is why the gate was 3 in the first place.**
+`_percentiles` mapped the worst value to exactly 0 and the best to
+exactly 100 (`i / (n - 1)`), stretching whatever field it was given
+across the full range whether or not the field could support the claim.
+In a pair that is absurd on its face — one fund perfect on cost and the
+other worthless, on the strength of whatever separates them, however
+little that is. Refusing to rank pairs was a workaround for that, not a
+fact about pairs.
+
+Percentiles are now the plotting position `rank / (n + 1)`, counting
+1-based from the worst. Two funds land on 33.3 and 66.7, three on
+25/50/75, the whole 51-fund universe on 1.9 through 98.1. The distortion
+being removed is entirely a small-n effect: at universe scale the two
+formulas differ by under two points, so nothing of value is lost where
+the old one was defensible. It also removes a discontinuity — under the
+old formula a pair's leader scored 100 and dropped to 67 the moment a
+third fund of the same kind was loaded, having changed in no way itself;
+it now moves 66.7 → 75, which is the group becoming more informative
+rather than the fund becoming worse.
+
+The consequence worth knowing: **0 and 100 are no longer reachable from a
+ranked component.** Nothing is best-in-class against a field that might
+yet grow. Fund size is a floor test rather than a ranking and still
+scores exactly 0 or 100, so a blended score can still sit at either end
+under a size-only weighting.
+
+A single measured value now scores 50 rather than 100, and falls out of
+the same formula with no special case. When one fund of a pair has a TER
+on record and the other does not, the measured one has not beaten
+anybody; scoring it 100 let a fund look best-in-class on the strength of
+its neighbour's missing data.
+
+**Knock-on in the optimiser.** The alternatives pass only considers
+candidates that have a peer score, so both members of a pair were
+previously skipped in both directions: no alternatives offered, and
+neither fund counted toward the design's quality figure. Both now rank,
+so expect the portfolio score to move on designs holding such funds.
+Nothing about how a swap is priced changed — only which funds have a
+score to be priced against.
+
+**Nothing to migrate.** Scores are never persisted: `_score_universe_cached`
+rebuilds the universe from the caches on every list render, memoised per
+preset. Every ranking, in every peer group, recalculates on the next page
+load.
+
+The two surfaces that explain a missing peer score — the fund-list score
+tooltip and the fund-page score sub-line — now share one phrasing,
+`scoreNoPeerText`. They answered the same question about the same block
+in two different wordings, and both would have rendered the retired
+"only 1 fund(s)".
+
+## [0.95.3] - 2026-09-02
+
+### Fixed — "Save to pre-loaded" vanished on funds that were never saved
+
+The report, exactly: load a fund by ISIN, don't press Save, go straight
+to Edit fund data, change the focus, press Save — and back on the fund
+page the Save button is gone, which says the fund is saved. It wasn't.
+Its overrides were written; nothing else was.
+
+Three faults, all of them the same mistake in different places: asking
+whether a FILE exists when the question is whether a piece of DATA was
+saved.
+
+**The "saved" marker.** `listing_exists` tested whether
+`cache/listings/<ticker>.json` is on disk, and v0.21.0's model does say
+the listing file's presence is the marker. But every fetch stamps an
+identity block into that listing, saved or not — so the file exists for
+any fund that has ever been *looked at*. The first response said
+`saved: false` (the identity is written after the flag is computed); the
+next read of the same fund said `saved: true`. Editing anything triggers
+a re-read, which is why the button disappeared after an edit and only
+after an edit. `listing_is_saved` now asks whether the listing holds real
+cached data, which only a commit ever writes.
+
+**The "already cached" test.** Three call sites wrote
+`bool(cache_read(key, category))` to mean "has this been cached before?"
+— but `cache_read` returns the whole blob for that key's FILE, not the
+one category. A listing holding nothing but its identity therefore
+answered "already cached" for profile and price history, so an unsaved
+fund quietly began persisting them on its second view while its
+fund-scope data, which had no file at all, never started.
+`cache_has_category` tests the category.
+
+**Editing an unsaved fund left an orphaned override.** You cannot
+meaningfully assert "this fund's focus is thematic" about a fund you have
+not kept: the assertion lands in `overrides.json` keyed by ISIN while the
+fund is in nobody's pre-loaded list. That is precisely the state behind
+the last three reports — an edited focus, no cached asset class, and a
+peer group of one. Saving an edit now commits the fund as well, and says
+so: *"Saved UNIC.PA and added it to pre-loaded"*.
+
+Verified as a sequence, which is the only way this shows up:
+
+| step | saved | listing holds | fund file |
+|---|---|---|---|
+| first uncommitted fetch | false | identity | no |
+| second, third fetch | **false** | identity | no |
+| commit | true | identity, profile, price history | yes |
+| fund file deleted, ordinary read | true | (unchanged) | **heals** |
+
+The second row is the fix: before, it read `true` / identity+price_history
+and the button was gone.
+
+## [0.95.2] - 2026-09-02
+
+### Fixed — a fund could be half-saved for good, and looked saved while it was
+
+Symptom: a fund added and edited shows a peer group of **one — itself**.
+Underneath, its listing file existed while its fund file did not, so it
+had no asset class, no sectors and no holdings. `peer_key` reads the
+fund-level asset class, got "unknown", and put the fund in a group
+nothing else could join.
+
+The cache splits by scope: `cache/listings/<ticker>.json` for what
+differs per listing, `cache/funds/<isin>.json` for properties of the fund
+itself. The write gate asked, per CATEGORY, "did the caller commit, or is
+this entry already on disk?" — and "saved", in this app, is a property of
+the FUND, not of a category: the listing file's existence is the marker
+(v0.21.0).
+
+So a fund whose listing existed while its fund file did not could never
+recover. Every later read topped up the categories that happened to be on
+disk and skipped the ones that were not, because a category never written
+never becomes "already on disk". One interrupted commit is enough to
+reach that state, and nothing afterwards repairs it — pressing "Save to
+pre-loaded" again would, but nothing on screen says so, and the fund
+appears in the pre-loaded list looking perfectly saved.
+
+A fund-scope category is now written when the fund's **listing** exists,
+as well as on an explicit commit or an existing entry. Saved means saved,
+for both halves.
+
+Verified three ways: a half-saved fund now fills its fund file on the
+next ordinary read, with no commit; an **unsaved** fund still persists
+nothing but its identity stamp, so the explicit-save model is intact; and
+a fresh commit still writes both halves as before.
+
+Your existing funds repair themselves the next time each is opened. Any
+already in this state — mine found two — are corrected by loading them.
+
+## [0.95.1] - 2026-09-02
+
+### Fixed — "NetworkError when attempting to fetch resource" was an encoding crash
+
+Adding a fund by ISIN and exchange could fail in the browser with
+``NetworkError when attempting to fetch resource``. Nothing was wrong
+with the network, and nothing was wrong with the request.
+
+The app's console output is not ASCII: resolution notes print an arrow,
+money prints with currency symbols, several diagnostics use box-drawing
+characters. On Windows, stdout is cp1252 unless it is a UTF-8 console —
+and **redirecting output is enough to make it cp1252 even when the
+console is not**, which is what happens to anyone logging a run to a file
+or running the server under a supervisor. ``print`` then raises
+``UnicodeEncodeError``.
+
+That is not cosmetic. The prints happen inside request handlers, so the
+exception leaves the view, Flask returns a 500 without CORS headers, and
+the browser reports it as a network failure — a message that says nothing
+about encodings and sends you looking in the wrong place entirely.
+
+``main.py`` now reconfigures stdout and stderr to UTF-8 with
+``errors="replace"`` before anything prints. A character that still
+cannot be written becomes "?" in the log, which is a cosmetic loss where
+raising was a failed request.
+
+Verified: with output redirected to a file, the process now prints
+``resolved via ISIN → AAPL  €1.234,56  ✓`` without raising, and the
+add-by-ISIN-and-exchange flow completes — 422 with the currency choice,
+then 200 with the fund, its price history and its holdings.
+
+## [0.95.0] - 2026-09-02
+
+### Changed — a malformed identifier on a holdings row gets corrected
+
+The limit noted in v0.94.0 is closed. Enrichment filled a blank ISIN or
+CUSIP and kept a present one, so a file carrying a corrupt identifier —
+a transposed check digit, a truncated field — held onto it forever, even
+once the row had resolved by another route and Yahoo had told us the real
+one. The row looked identified and was not, and every later run re-failed
+on the same bad value.
+
+Now: **fill when blank, correct when malformed, and leave a well-formed
+value alone.** That last part is the other half of trusting an
+identifier — a valid ISIN is what decides the resolution in the first
+place (v0.94.0), so second-guessing it here would contradict the priority
+the whole chain rests on. Correcting means correcting garbage, not
+adjudicating between two plausible answers.
+
+Verified against Yahoo: `US0378331006` (Apple's ISIN with the check digit
+transposed) beside a ticker of AAPL is replaced with `US0378331005` and
+the CUSIP derived from it; a row whose valid ISIN says Microsoft while
+its ticker says AAPL keeps the ISIN and has the ticker corrected instead.
+
+### Changed — identifier validity now means the check digit
+
+`is_valid_isin` verifies the ISIN check digit (Luhn over the first eleven
+characters, letters expanded A=10 … Z=35), and a new `is_valid_cusip`
+does the same for CUSIPs. Shape alone was enough while the question was
+"is this worth a network call"; it is not enough now that the answer
+decides whether to overwrite, because a transposed digit is the right
+shape, never resolves, and would have been kept as though it were fine.
+
+`ISIN_RE` stays a shape test, and the two callers that only want the
+shape — `app.py` deciding whether typed input is an ISIN or a ticker,
+`upload.py` deciding whether a cell holds one — still use it. Tightening
+those would reject a slightly-off ISIN outright rather than trying it.
+
+### Fixed — a junk ISIN could produce a junk CUSIP
+
+Found while testing the above. `_cusip_from_isin` checks the length and
+the "US" prefix and nothing else, so a twelve-character nonsense value
+beginning "US" yielded a nonsense CUSIP: one bad identifier replaced by a
+second, and this one invented by us rather than by the file. The CUSIP is
+now derived only from an ISIN that passes validation.
+
+### Added — the summaries say what was overwritten
+
+Both the fund page's enrich button and the upload's status line now
+report corrections separately from fills. "Filled 40 gaps" and
+"overwrote 40 values your file supplied" are different sentences, and the
+second is the one worth reading.
+
+### Known limit
+
+A replacement is only written when there is something better to write.
+Yahoo exposes no ISIN for some tickers — Microsoft is one — so a row
+carrying a junk ISIN beside a resolving ticker keeps the junk. Clearing
+it instead would destroy what the file said and put nothing in its place,
+which is the worse of the two. Nothing downstream is fooled: every
+consumer gates on validity.
+
+## [0.94.0] - 2026-09-02
+
+### Changed — enrichment resolves by identifier first, and lets it correct the name
+
+The resolution chain used to try the file's ticker first and reach for
+the identifiers only when every ticker variant had failed — and in the
+no-ticker branch it asked the CUSIP before the ISIN. That is backwards.
+An ISIN names exactly one security; a ticker is ambiguous across
+exchanges, a CUSIP covers North America only, and a name is a guess.
+
+The order is now **ISIN → ticker → CUSIP → name**, with the ISIN checked
+only when it actually has the shape of one, so a malformed value falls
+through to the ticker rather than wasting a lookup. Verified against
+Yahoo: a row carrying Apple's ISIN beside a ticker of "MSFT" resolves to
+AAPL; the same row with the ISIN corrupted resolves to MSFT.
+
+**An identifier match now corrects the row's name.** Enrichment is
+otherwise strictly blank-only — that is what makes the button safe to
+press twice — but when an ISIN, ticker or CUSIP resolved the row, the
+answer describes the same security, and Yahoo's spelling is the one the
+rest of the app can search on again. An issuer's "APPLE INC COMMON STOCK
+USD0.00001" becomes "Apple Inc."
+
+A **name** resolution never overwrites. That path started from the row's
+name, so rewriting it would launder a guess into a fact and make the next
+run's guess a different one. The asymmetry is visible on a bond: "MICROSOFT
+CORP 2.525% 01/06/2050" keeps its name — it identifies that specific
+bond — while its country, currency and sector come from the issuer Yahoo
+found.
+
+The name search now runs on the **head** of the name. Issuers write bonds
+as "US TREASURY N/B 4.25% 15/11/2034", where everything after the issuer
+is coupon and maturity: precise, unsearchable, and the reason the whole
+string returned nothing. `name_query_head` stops at the first token
+carrying a digit, so that searches as "US TREASURY N/B" while an ordinary
+equity name passes through whole.
+
+### Fixed — an ISIN hit could poison the ticker alias cache
+
+Found while testing the reorder above, and it would have been ugly:
+putting the ISIN first broke an assumption the alias store had been
+relying on.
+
+That store means "this raw ticker input resolves to that Yahoo ticker",
+and every identifier path wrote into it. While identifiers were tried
+only *after* the ticker's own variants had failed, that was sound — the
+ticker was known not to resolve. With the ISIN going first the premise is
+gone, and writing the alias anyway taught the cache, permanently and
+across every fund, that a ticker resolves to whatever some other row's
+ISIN happened to name. A row carrying Apple's ISIN beside a ticker of
+"MSFT" made MSFT resolve to AAPL for everything afterwards.
+
+The ISIN step no longer aliases the raw ticker. The CUSIP and name steps
+still do, and are still entitled to: they run after the ticker has been
+tried and failed.
+
+### Changed — one probe helper, one ISIN definition
+
+Five blocks in `get_symbol_info_cached` did the same thing by hand —
+check the info cache, else call Yahoo, record either result, write an
+alias, stamp the resolved ticker — and they had drifted: two forgot the
+alias write, and only some carried the transport error out. They are one
+nested helper now, which is also what makes the new `_resolved_via` stamp
+(how the row was resolved) true at every return site rather than at the
+ones somebody remembered.
+
+The ISIN format was likewise written out twice, in `app.py` (is this
+typed input an ISIN or a ticker?) and `upload.py` (does this cell hold
+one?) — two copies of a shape fixed by a standard, either of which could
+have been "fixed" without the other. `resolver.ISIN_RE` and
+`is_valid_isin` are now the one definition.
+
+### Known limit
+
+An **invalid** ISIN on a row is left as the file wrote it. Enrichment
+blank-fills the ISIN column and does not overwrite, so a row whose ISIN
+is corrupt keeps the corrupt value even when the ticker then resolves and
+Yahoo knows the real one. Correcting it would mean overwriting a
+file-supplied value, which is a wider decision than this change.
+
+## [0.93.1] - 2026-09-02
+
+### Fixed — an asset-class card that read 100% unknown when the holdings said otherwise
+
+Import a holdings file with no asset column, set the upload default to
+"fixed income", and every row lands correctly: `asset_raw` carries the
+default, `normalise_facets` resolves it to the **super_class** node, and
+the holdings table shows fixed income on all of them. Switch the
+asset-class breakdown card to Holdings, though, and it reported 100%
+unknown — with all three level buttons struck through, so there was no
+way to look at the level where the answer actually was.
+
+The rollup was right the whole time. `rollup_holdings` emits all three
+asset levels and had `super_class: fixed income` at 100% coverage. What
+lost it was the graft in `build_fund_breakdowns` that replaces derived
+levels with the rollup's own:
+
+```python
+if lv in (facet, block["default_level"]):
+    continue
+```
+
+Skipping the facet-named level is right — that is where the items came
+from. Skipping the **default** level was never intended to do anything,
+and for three facets it does nothing: sector's default level is
+"sector" and country's is "country", so the two names are the same and
+the second condition never fires. `asset_class` is the one facet where
+they differ — its default is `super_class`, because the asset
+vocabulary's original four values live at the super level and defaulting
+anywhere finer would silently re-grain every target set against it.
+
+So asset_class was the only facet whose default level never received its
+native rollup. It was derived from the middle level instead, and the
+middle level was legitimately blank: you cannot derive downward from
+"fixed income" to a specific asset class, because it has several
+children. Unknown in, unknown out, at every level.
+
+The graft now skips only the level the items came from. Confirmed against
+the 8,500-row import that prompted the report: the card reads fixed
+income 100% at super class with full coverage.
+
+**No re-import and no cache purge.** `build_fund_breakdowns` is a pure
+function run on every read, so the correct card appears on the next page
+load. The stored rows were never wrong.
+
+The two finer levels stay struck through for that file, and that is the
+honest answer rather than a leftover of the bug: the file said "fixed
+income" and nothing more. To get the finer levels, give the import an
+asset column, or set the default to a finer node — a file that is all
+corporate bonds can default to "corporate", and the tree fills downward
+wherever there is exactly one answer.
+
+## [0.93.0] - 2026-09-02
+
+### Added — credit quality, as a fifth bond column
+
+Fixed-income holdings files often carry a rating column, and PorxPy threw
+it away on import. It is now a first-class bond field — `quality` in the
+row schema, beside duration, maturity, coupon and effective date, and
+shown or hidden with the same "bond columns" toggle:
+
+* **Import** maps it, by a broad alias list (quality, rating, credit
+  rating, S&P / Moody's / Fitch rating, composite rating, average
+  rating). Defaultable like the other bond columns, so a file that omits
+  it can still be given one value for every row.
+* **Both holdings tables** — the fund page and Portfolio → Holdings —
+  show it, filter on it, and sort by it. Editable in the holdings editor.
+* **Portfolio aggregation** merges it: two funds holding the same bond
+  should agree on its rating, and where they disagree the same source-rank
+  rule that settles the facets settles this.
+
+The value is stored **exactly as the source wrote it** — "BBB-", "Baa3",
+"AA (sf)" all survive verbatim, for the same reason a facet's raw column
+does. Rewriting Moody's spellings into S&P's on ingest would silently
+restate what the issuer's document said, and that is the one thing a
+holdings row must never do.
+
+Ordering is the separate question, and it needed answering: alphabetical
+sort puts AA+ before AAA and B before BBB, which is worse than no sort
+because it looks sorted. `config.credit_quality_rank` reads both
+agencies' scales onto one ordinal — Moody's Baa2 *is* S&P's BBB — and
+strips the decorations that ride along with a rating without changing it,
+so "AA (sf)" and "AA" are one entry. Unrecognised spellings rank as
+`None` rather than as junk: an unknown rating is a gap in our table, not
+a claim about the bond, so they sort to the end in both directions
+alongside the blanks.
+
+The scale is **served** to the frontend with the rest of the config
+rather than mirrored in the page. A second copy would be a second thing
+to keep in step with the agencies, and drift between them would show up
+as a table sorting differently from the way the backend would have.
+
+The column is headed **Rating**, not Quality. The app already has a
+Quality column — the five data-quality dots on the funds list, which say
+how completely a *fund* is described — and two columns with that heading
+one tab apart, meaning a bond's creditworthiness in one and our own data
+coverage in the other, is a trap worth one word to avoid. The stored
+field keeps the name `quality`, because that is what issuers' files call
+it and what the import maps from.
+
+### Changed — one sort comparator for both holdings tables
+
+They had a copy each, identical but for which keys counted as numeric,
+and rating order was about to be a third rule added to both. That is
+exactly the kind of rule that gets applied to one table and not the
+other: it changes nothing visible in the cells, so a table still sorting
+AA+ before AAA looks like it is working.
+
+### No migration
+
+Adding a schema field needs none, and this was checked rather than
+assumed. Every writer goes through `coerce_holdings_row`, which fills the
+whole of `HOLDINGS_ROW_FIELDS`, so anything written from now on carries
+`quality: ""`. Rows cached before this release simply have no key — and
+every reader reaches them through `.get()` on the backend or a
+`|| ''` on the frontend, both of which render exactly as an empty rating
+would. A missing rating and a blank one are the same thing on screen.
+
+Nothing is purged, nothing is rewritten, and the lazy facet migration is
+untouched: it re-derives facet columns, and `quality` is not one.
+
+## [0.92.0] - 2026-09-02
+
+### Changed — the progress bar now covers every slow path that was left
+
+v0.91.0 built the mechanism and wired the portfolio-shaped jobs. The
+paths it listed as still silent are wired now:
+
+* **The Explore fund fetch**, in all eight places the frontend makes it.
+  Phased rather than counted — OpenFIGI resolves the ISIN, Yahoo probes
+  each candidate ticker, then the fund loads, and the number of probes is
+  not known until OpenFIGI answers.
+* **Bundle export**, both kinds, counted per file as it packs funds and
+  listings. **Bundle import** the same, writing funds then listings.
+* **justETF, everywhere.** The phase is stamped inside
+  `lookup_fund_structure` rather than at each of its four call sites, so
+  a fifth caller gets it by construction — that function is the single
+  place that knows it is about to leave the machine. The endpoints that
+  call it (the per-field source fetch, the field-set fetch, the
+  inspection tool, the dedicated lookup) each open a job for the phase to
+  attach to.
+
+### Changed — jobs close at the request boundary, not at every return
+
+An `after_request` hook finishes whatever job the request carried. The
+fund fetch alone returns through half a dozen early exits — one per way
+an identity can fail to resolve — and every one of them would otherwise
+leave a record open, showing a bar frozen at the step it reached. That is
+the precise "it is still working" impression the bar exists to remove.
+
+Asking every exit of every handler to remember is the kind of rule that
+holds until somebody adds a ninth exit. The request boundary is true by
+construction, and true for handlers written later. Confirmed by taking
+the fund endpoint's `needs_isin` early return: the record now comes back
+`finished`.
+
+### Changed — two wrappers instead of the same three lines twelve times
+
+`withJobProgress(title, fn)` runs one request with the bar up and takes
+it down whichever way the request ends;`fetchFundWithProgress(params,
+title)` is the Explore fetch's version of the same, since all eight
+callers build their own query string and then make an identical request.
+
+The three lines they replace — mint a token, start the bar, stop it in a
+`finally` — were about to be written out at a dozen call sites, and the
+one that forgot the `finally` would leave a bar running forever after a
+failed request. Written once, that cannot happen; and a new caller gets
+the bar by using the helper rather than by remembering the ritual.
+
+`_job_token()` reads the token from wherever the request carries it —
+query string, JSON body, or multipart form field — so an endpoint that
+checked only one of the three cannot silently report nothing for callers
+using another.
+
+## [0.91.0] - 2026-09-02
+
+### Changed — the portfolio sub-tabs are grouped by what they answer
+
+Seven tabs in a flat row said nothing about how they relate. They are now
+three groups, separated by a hairline rather than by bare whitespace,
+which inside a pill bar reads as a boundary somebody drew rather than a
+layout accident:
+
+* **What the portfolio contains** — Funds, Holdings, Cash
+* **Performance and exposure** — History, X-ray
+* **Maintenance and optimisation** — Targets, Optimizer
+
+Holdings moved up beside Funds, where it belongs: it is the same question
+one level deeper. It had been sitting between Targets and Optimizer.
+
+### Added — "Include cash held by me", for the two views it changes
+
+Shown only for the performance-and-exposure group, and only when the
+portfolio actually holds cash — a checkbox whose two states look
+identical is worse than no checkbox. Ticked, History and X-ray count the
+cash in your own accounts; unticked, both describe the funds alone.
+
+It is a view choice, not an assertion: it changes what is on screen,
+never what any position means. So it lives in the browser and is
+remembered per portfolio, like the facet level selectors. Default on,
+which is the behaviour that existed before it — the X-ray's whole point
+is that your deposits and the funds' own cash sleeves add up to one
+honest answer.
+
+Both answers are computed server-side and shipped together, so flipping
+the box is instant. `rollup_portfolio_fundlevel` is pure, so the second
+pass costs no I/O, and the History chart's two portfolio lines are summed
+in the same loop under identical carry-forward rules — a client-side
+subtraction would have had to re-implement those rules and would drift
+the first time one of them changed. The chart also drops the cash series
+when the box is off, since a total that excludes cash while still drawing
+the cash line invites the reader to add up something that does not add
+up.
+
+The six X-ray cards read the blocks through two accessors rather than
+reaching for `view.fundlevel_breakdowns` themselves. A card that kept
+reaching directly would quietly ignore the toggle while its neighbours
+obeyed it — nothing would fail, one card would just answer a different
+question from the other five.
+
+### Fixed — target deviations were measured against the wrong total
+
+Since v0.90.0 the cash you hold is reserved off the top and every target
+is a percentage of what remains. The Targets tab had not caught up: it
+measured achievement against a denominator that still included that cash,
+so it and the optimiser answered the same question two ways — the tab
+reporting a shortfall on a design the optimiser called met. Deviations
+now read the fund-side rollup.
+
+### Changed — one progress bar for every slow external call
+
+The determinate bar built for Yahoo holdings enrichment is now the
+standard treatment whenever the app contacts something outside itself and
+the wait can run past a couple of seconds. A silent request is
+indistinguishable from a hung one, and a terminal log line is no help to
+somebody watching a browser.
+
+The store moved from `upload.py` to `utils.py` — it was never an upload
+concern — and generalised:
+
+* **Totals are optional.** A job that counts items passes one and gets a
+  determinate bar; a job that is a single opaque call passes 0 and gets a
+  sweeping bar with its phase. Both beat a frozen button.
+* **`progress_phase`** renames the running stage, so a job with several
+  steps says which one it is on instead of going quiet between them.
+* **`unit`** travels with the record, so one popover labels itself
+  "funds", "holdings" or "rows" without hardcoding a noun.
+* **`progress_scope`** wraps start/finish around a block and closes it
+  even when the block raises — a job that dies leaving its record open
+  shows a bar frozen at the step it died on, which is the exact wrong
+  impression the mechanism exists to remove.
+* **`GET /api/progress/<token>`** reads any of them.
+  `/api/enrichment/progress/<token>` is kept as an alias.
+
+Now reporting: **portfolio load** (`/view`), **portfolio holdings**
+(`/holdings_rollup`), the **optimiser's candidate pass**, **factsheet
+extraction** (phased: reading, asking the model, checking the reply,
+storing), the **justETF lookup** on its own endpoint, and the two Yahoo
+enrichment paths that had it already. The portfolio load is the one that
+matters most — one Yahoo call per fund, any of which can miss the cache —
+and it now reads "loading funds · 7 / 25 · 28%" instead of sitting silent
+for a minute.
+
+(The paths this entry listed as still silent — the Explore fund fetch,
+the bundle import/export, and the justETF calls inside other endpoints —
+were wired in v0.92.0.)
+
+`_build_enriched_funds` was split so the fund loop could carry a progress
+scope without its ninety-line body being indented into it. The per-fund
+work is `_enrich_one_fund` and the cash-and-totals tail is
+`_finish_enriched`; nothing about the behaviour changed.
+
+## [0.90.0] - 2026-09-02
+
+### Changed — cash you hold is reserved off the top, as an amount
+
+v0.89.0 made "cash held by me" a percentage target and gave the optimiser
+a `custody` facet so it could be satisfied separately from a fund's own
+cash sleeve. In use that was wrong, and the report was exact: *"It tries
+to satisfy the cash held by me target, just like the other targets."*
+
+It did, because that is what a target is. But the optimiser has no
+instrument that buys a bank deposit. It can only leave money uninvested,
+so the amount could only ever be approximated — and, being one more row
+in a least-squares fit, it pulled every other target off course while it
+was at it.
+
+So it is no longer a target. **You state an amount**, and it is reserved
+before anything is designed:
+
+```
+portfolio = funds + cash on hand
+fund side = portfolio − reserve      ← what every percentage is a % of
+```
+
+Reserve 50,000 of 100,000 and "50% equity, 30% fixed income" means 25,000
+of equity and 15,000 of fixed income. Both directions the user asked for
+fall out of the same arithmetic rather than needing a branch: hold more
+cash than the reserve and the difference is invested; hold less and the
+design sells until it is met. Either way the reserve is hit **exactly**,
+because the money was never in the budget the solver worked with.
+
+`custody` is gone with the mechanism it existed for. A reservation needs
+no facet — money that is not in the matrix cannot be occupied by a fund,
+by construction rather than by a row of zeros.
+
+Guard rails, in three places because no one of them can be true forever:
+the reserve can never be negative (clamped at write), the editor blocks a
+save above what the portfolio is worth, and the optimiser refuses to
+design against a reserve that has since drifted out of range — a legal
+reserve becomes an illegal one when the market falls, with nobody having
+touched it. The Targets tile says so too.
+
+### Changed — every percentage is now a share of the fund side
+
+Also a correction: v0.89.0 made the funds list and the portfolio holdings
+table express weights as percentages of the grand total, so both summed
+to the funds' share of it. With the reserve taken off the top that is the
+wrong denominator — once the cash is set aside, the fund side is the
+whole of what those percentages describe. Both tables now sum to 100%,
+and the holdings table's residual row with them.
+
+The one deliberate exception is the portfolio overview's own split, which
+now reads `Funds €50,974.04 (98.5%) + Cash €774.62 (1.5%) = Total
+€51,748.66`. Those percentages are of the grand total because that is the
+quantity being described.
+
+### Fixed — every facet column on the portfolio holdings table was blank
+
+Sector, country, asset class, currency and every level column came back
+empty for every row.
+
+`aggregate_portfolio_holdings` merges the `<facet>_node` columns — the
+stated value — and then calls `normalise_facets` to re-derive the levels
+from them, so that a merged row cannot take its sub sector from one fund
+and its super sector from another. But `normalise_facets` resolves from
+each facet's **raw** column and blanks every derived column when the raw
+is empty, and a merged row carries no raw. So the nodes that had just won
+the merge were wiped a line later, and the table drew empty cells.
+
+This is the same mechanism as the cash-position defect fixed in v0.89.0,
+in a second place that was not swept for at the time. It is fixed at the
+shared function rather than at either call site: `normalise_facets` now
+falls back to the node column when there is no raw. That is safe because
+a blank raw leaves nothing else to resolve from — it cannot override a
+source's wording, only replace an absent one — and it makes both callers,
+and the next one, correct by construction.
+
+## [0.89.0] - 2026-09-02
+
+### Changed — cash you hold is a position of yours, not a fund
+
+The portfolio funds list showed cash positions reading `0`. The zero was
+real but the cause was not the arithmetic: a cash position with a blank
+currency field found no FX rate, because the rate table was built only
+from positions that named a currency — and a missing rate was then
+coerced to `0.0`, with a comment calling that the safe behaviour. It is
+the opposite of safe. A zero does not blank a cell; it removes the
+position from the portfolio total, from the X-ray's denominator and from
+every target deviation, and says nothing on screen. A blank currency now
+means the base currency, which is the default the optimise endpoint
+already applied to the same field, and a genuinely missing rate is a
+`valuation_error` exactly as it is for a fund.
+
+Fixing that exposed the question behind it: where should cash appear at
+all? It now follows one rule — **separate by position, merged by
+exposure**.
+
+* **Portfolio → Funds** lists fund positions only. Cash is edited on the
+  Cash sub-tab, which is the one place that owns it, so the cash rows,
+  the click-through to that tab and its delete handler are all gone.
+* **Portfolio → Holdings** excludes it too. That table is a look-through
+  of what the funds hold, and a bank balance is not something a fund
+  holds. Its coverage figure is now measured against the fund side, so a
+  cash-heavy portfolio no longer reports a gap no factsheet could close,
+  and the residual row no longer quietly absorbs your savings and labels
+  them "unclassified".
+* **The overview states three figures** — funds, cash, and the whole —
+  because with the two kinds of position on two screens, one total left
+  the reader unable to tell which screen accounted for what.
+* **The X-ray is untouched**, which is the point. Your deposits and the
+  funds' own cash sleeves stay in one `cash` bucket, because "how much
+  of my money is in cash" has a single honest answer.
+
+Weights everywhere remain percentages of the **whole** portfolio, so the
+funds list and the holdings table each sum to the funds' share of it
+rather than both renormalising to 100% and disagreeing with the X-ray.
+Filtering happens at render; the rollup still sees every cash position,
+which is what keeps the X-ray right.
+
+### Added — `custody`, so the optimiser can tell your cash from a fund's
+
+Merging cash in the X-ray creates a problem for targets: asked to hold
+5% cash, the optimiser could satisfy it by buying a money-market fund,
+when what you meant was money in your own account.
+
+The obvious fix — a `direct cash` sub-class in `Asset_definitions.csv` —
+was rejected twice over. It would pull your deposits out of the cash
+bucket the X-ray must keep whole; and it does not stop at one node,
+because the same distinction returns for every cash sub-class and again
+for bonds and equities if either is ever held directly. A dimension that
+multiplies across the whole tree is a separate facet.
+
+So `custody` joins `market_cap` and `style_box` in `META_FACETS`. Two
+values, `direct` and `via_fund`, derived from what kind of position it is
+rather than fetched or asserted — so it is never `unknown`, needs no
+migration, no override and no Structure field. The payoff is in the
+solver: a fund's exposure genuinely *is* `via_fund`, so the target row
+for `custody: direct` comes out of the ordinary machinery as a 1 on the
+cash column and a 0 on every fund. No fund can move it, by construction
+rather than by rule, while an `asset_class: cash` target goes on counting
+fund sleeves. The two are satisfied independently in one solve.
+
+Only `direct` can carry a target: the two modes are complements, so
+offering both would let one intention be stated twice.
+
+Two things follow that are worth knowing. The optimiser cannot *buy* a
+deposit — it can only leave money uninvested — so a direct-cash target of
+5% caps every fund-only target at 95%, and the run now warns when that
+arithmetic cannot hold rather than missing several targets at once with
+no explanation. And the exposure diagnostics scan the cash column too,
+because otherwise a direct-cash target reported "an exposure none of your
+candidate funds have" — true, and entirely beside the point.
+
+`custody` is the one meta facet with no X-ray card. A two-slice donut
+would restate, less precisely, the three totals already on the overview.
+
+### Fixed — the optimiser was blind to every metadata facet
+
+Long-standing, recorded in `OPTIMIZER.md` §13, and a prerequisite for the
+above. `market_cap` and `style_box` were targetable, the Targets tab
+offered them and the deviation report computed them — but the optimise
+endpoint built candidate exposure from `fund_breakdowns`, which covers
+the four breakdown facets only. Every fund therefore reported *no*
+market-cap exposure, the whole facet fell into the synthetic "other"
+bucket, and the run told the user their universe lacked an exposure every
+one of their funds actually carried.
+
+`candidate_exposures` now answers any targeted metadata facet from
+`meta_facet_items`. Fixing it for `custody` alone while leaving its two
+siblings blind would have been exactly the drift this codebase is most
+exposed to, so all three are fixed together.
+
+### Fixed — cash positions carried no facets at all
+
+Two failures stacked, both silent.
+
+`coerce_cash_position` defaulted a blank asset class to `cash` and a
+blank sector to `cash and/or derivatives` — into `asset_class` and
+`sector`, which are *derived* level columns. `normalise_facets` resolves
+from each facet's **raw** column and blanks every derived column when the
+raw is empty, and a cash position has no raw. So the defaults were wiped
+a few lines after being written, and every cash position came back with
+all four facets empty. Each facet's raw column is now seeded from what
+the position actually states, through the config helpers rather than four
+hardcoded field names.
+
+Separately, `synth_enriched_for_cash_position` built an unlevelled
+breakdown block, and `facet_items` returns a bare list for every level it
+is asked for. A deposit stated as `cash` — an asset-class-level node —
+therefore also answered `cash` at super-class level, where the answer is
+`liquid`, so your deposits and the funds' cash sleeves appeared as two
+separate buckets at the same level. Cash positions now go through
+`build_facet_block`, the same function that builds a real fund's block.
+
+### Changed — every facet value is now picked from the same tree
+
+The cash table was the last place a facet value was chosen from a flat
+`<select>`. Its asset list restricted the vocabulary by testing node
+*names*, which is why "bond future" — a derivative, not a deposit — had
+to be excluded by name too, and why a note beside it admitted that any
+future node containing "cash" or "bond" would be offered whether it
+belonged or not.
+
+All three of its facet columns now mount the shared tree picker, the same
+control the holdings editor and the Resolve popover use, and the asset
+restriction is a test on the node's **branch** — is it inside `liquid` or
+`fixed income`? — which closes that limitation rather than moving it. The
+breakdown-upload dialog's "pick a canonical value" column moved to the
+picker as well, and stopped making one round-trip per facet for a list
+the shared vocabulary already held.
+
+The reason the cash table had been left behind was that the picker's drop
+panel would open inside a scrolling table row. That is fixed at the
+component: `.ftree-panel` is `position: fixed` and placed from the
+trigger's rect, so it escapes every clipping ancestor and works in a
+table cell exactly as it does in a dialog.
+
+The "pick a facet" dropdown in the upload dialog stays a `<select>` on
+purpose — it chooses *which facet* a column means, not a value in a
+vocabulary, and has no tree to draw. The Targets editor's add-picker
+stays flat for a related reason: its vocabulary is deliberately not the
+holdings tree (asset-class targets use the fund-level vocabulary, and the
+metadata facets are closed config enums), so converting two of its seven
+facets would make that one control less consistent, not more.
+
+One handler now serves all three cash facet columns instead of three
+near-copies: record the node the user asserted, drop the derived level
+columns, let the backend re-derive them.
+
+## [0.88.0] - 2026-09-01
+
+### Added — a progress bar for Yahoo enrichment, in both places that run it
+
+A per-holding Yahoo lookup costs about a hundredth of a second when the
+symbol cache has it and about a second when it misses and runs the whole
+fallback chain, so enriching a few hundred rows is legitimately minutes.
+Both callers ran that behind one request that returns only when the work
+is finished: the button said "Enriching…", nothing moved, and a long run
+was indistinguishable from a hung one. The terminal had a progress line;
+nobody watching the browser could see it.
+
+The shared enrichment loop already took an ``on_progress`` callback, so
+nothing about the work changed — only who gets told:
+
+* ``upload.py`` gained a progress store beside the cancel registry, the
+  same in-memory-and-a-lock shape and for the same reason: it is state
+  about an in-flight job addressed by a token, worthless after a
+  restart, and writing a file per row would cost more than the lookup it
+  reports on. ``enrichment_progress_hook`` builds the callback both
+  callers pass, so the terminal line and the browser record cannot
+  describe one run two ways.
+* ``GET /api/enrichment/progress/<token>`` reads it. The upload commit
+  records under the preview token the dialog already holds; the fund
+  page's button invents one and sends it as ``progress_token``.
+* One popover in the frontend, shown by both callers, with a determinate
+  bar, the row count, the percentage and a remaining-time estimate. It
+  sweeps rather than sitting at zero until the first record arrives — a
+  bar stuck at 0% is the thing it exists to stop looking like. It sits
+  above the modal layer, because the upload dialog is still open while
+  its commit enriches.
+
+When it appears is the caller's decision, since that is where the counts
+are: the holdings tile shows it above two selected rows (one or two
+lookups are over before a bar could render), and the upload shows it
+whenever any facet is being enriched, because the commit enriches the
+whole file rather than a selection.
+
+This was `WISHLIST.md`'s "A progress bar for upload enrichment", which
+guessed the design correctly — poll a token-keyed status endpoint, reuse
+the cancel-token machinery — and is removed from that document now it
+exists.
+
 ## [0.87.4] - 2026-09-01
 
 ### Fixed — "Reset to defaults" reset two settings of six and said it had reset them all

@@ -14,9 +14,45 @@ then point a browser at http://127.0.0.1:5000/.
 
 from __future__ import annotations
 
+import sys
+
 from porxpy import NAME, VERSION, BUILD_DATE
 from porxpy.app import create_app
 from porxpy.config import BASE_DIR
+
+
+def _force_utf8_output() -> None:
+    """Make stdout and stderr survive the diagnostics this app prints.
+
+    The app's console output is not plain ASCII — resolution notes carry
+    "->" as an arrow, money is printed with currency symbols, the banner
+    and several tables use box-drawing characters. On Windows that is a
+    problem the moment stdout is not a UTF-8 console: the default there
+    is cp1252, which cannot encode any of them, and ``print`` raises
+    ``UnicodeEncodeError``.
+
+    That is not a cosmetic failure. The prints happen inside request
+    handlers, so the exception propagates out of the view, Flask returns
+    a 500 with no CORS headers, and the browser reports it as
+    "NetworkError when attempting to fetch resource" — a message that
+    says nothing about an encoding and sends you looking at the network.
+
+    Redirecting output is enough to trigger it (``python main.py > log``
+    gives cp1252 even when the console itself is UTF-8), so this is not
+    hypothetical for anyone who logs a run to a file or runs the server
+    under a supervisor.
+
+    ``errors="replace"`` rather than a hard switch: a character that
+    still cannot be written becomes "?" in the log, which is a cosmetic
+    loss, where raising is a failed request.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            # Not a reconfigurable text stream (a pytest capture, a pipe
+            # wrapper). Nothing to do, and nothing worth failing over.
+            pass
 
 
 def _print_banner() -> None:
@@ -75,6 +111,8 @@ def _legacy_check() -> None:
 
 def main() -> None:
     """Build the Flask app and start serving on 0.0.0.0:5000."""
+    # Before anything prints, including the banner.
+    _force_utf8_output()
     _print_banner()
     _legacy_check()
     app = create_app()

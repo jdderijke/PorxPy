@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.87.1. This is the fullest architecture write-up;
+*Current as of v0.96.0. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -30,6 +30,25 @@ weights them by your allocation, and shows you the merged reality:
 - What currencies am I really running?
 - How much is equity vs fixed income vs cash, after looking through
   every fund?
+
+Cash gets a rule of its own, because "cash" means two things. Money in
+your own accounts is a **position** — it lives on the Cash sub-tab, and
+it is not listed among your funds or among the funds' holdings, because
+no fund holds it. But it is still your money, so in the X-ray it is added
+to the funds' own cash sleeves and answers as one number: separate by
+position, merged by exposure. The portfolio overview states all three
+figures with their shares of the total — funds, cash, and the whole.
+
+Every other percentage in the app is a share of the **fund side**. You
+say how much cash to keep as an amount ("50,000 stays liquid"), it is
+reserved before anything else, and the funds list, the holdings table and
+every target then describe what is left.
+
+The portfolio's sub-tabs are grouped by what they answer — what you hold
+(Funds, Holdings, Cash), how it has behaved and where it is exposed
+(History, X-ray), and what you want and how to get there (Targets,
+Optimizer). The middle pair carries an **Include cash held by me**
+checkbox, because it is the only pair the answer genuinely changes for.
 
 ### Read every facet at the grain you're asking about
 
@@ -99,6 +118,13 @@ statements and are fitted at their own grain. Where both are set, a
 parent is held to at least the sum of its targeted children — that rule
 is enforced when you save, not discovered later as an unmeetable brief.
 
+One setting is not a target at all. **Cash held by me** is an amount, not
+a percentage, and it is reserved before anything is designed: the
+optimiser leaves exactly that much in your own accounts, selling
+positions to raise it if you currently hold less and investing the
+difference if you hold more. Every percentage target is then a share of
+what remains — reserve 50,000 of 100,000 and "50% equity" means 25,000.
+
 Because targets nest that way, the per-facet total shown while you edit
 them, and on the Targets tab, is **what they commit**, not the levels
 added together: every target is rolled up into the bucket that contains
@@ -143,14 +169,26 @@ Each fund carries two scores:
 Three weight presets ship in Settings — **cost driven** (the default),
 **cost and returns**, and **returns driven** — and each score travels
 with its coverage, so a high score computed from one component out of
-three is visibly thin. A peer group smaller than three funds yields no
-peer score at all, because a percentile within a group of one is 100 by
-construction.
+three is visibly thin. A peer group of one fund yields no peer score at
+all — there is no ordering inside a group of one, so any number would be
+invented — but a group of **two** is ranked: one of the pair does outrank
+the other, and refusing to say so left those funds unrated and invisible
+to the optimiser.
+
+Percentiles are the plotting position `rank / (n + 1)`, counting from the
+worst. A pair scores 33 and 67, a trio 25/50/75, the whole 51-fund
+universe 2 through 98. That is why nothing ever scores exactly 0 or 100
+on a ranked component: nothing is best-in-class against a field that
+might yet grow, and the alternative — stretching whatever field is to
+hand across the full range — declared one of two funds perfect and the
+other worthless on the strength of a basis point between them. The size
+component is a floor test rather than a ranking, so it still scores
+exactly 0 or 100.
 
 Every place a score appears also names the model it was computed under —
 the fund list's column header, the fund page's Score row, the peer lists,
 and the optimiser's trade and alternatives tables. A rank means nothing
-without the weights it was taken over: the same fund is 100 under Cost
+without the weights it was taken over: the same fund is 96 under Cost
 driven and 12 under Returns driven, and a bare 12 reads as a bad fund
 rather than as one the chosen model does not reward.
 
@@ -229,12 +267,24 @@ anything about them having changed.
   and holdings from Yahoo Finance.
 - Group funds into one or more portfolios, with shares (or units) held
   per fund, plus cash positions.
+- Read the **bond metadata** an issuer's holdings file carries — duration,
+  maturity, coupon, effective date and credit rating — on import, in both
+  holdings tables, and merged across funds at portfolio level. Ratings
+  sort by credit standing rather than alphabetically, and both agencies'
+  scales are understood (BBB- and Baa3 are the same rung).
 - Upload full holdings CSVs or Excel files when the fund issuer
   publishes them (top-10 from Yahoo is often not enough for a real
   X-ray). Yahoo can fill the columns the file leaves blank, during the
   upload or afterwards from the holdings tile — the same pass either
-  way, identifying each holding by its ticker, ISIN, CUSIP **or just its
-  name**, and never overwriting a value the file supplied or you edited.
+  way, identifying each holding by its **ISIN first, then ticker, then
+  CUSIP, and only then its name**, because an ISIN names one security
+  where a name is a guess. Nothing the file supplied is overwritten, with
+  two deliberate exceptions: an identifier column that is malformed is
+  replaced with the real one (a valid one never is), and where an
+  identifier resolved the holding,
+  Yahoo's name replaces the issuer's, so "APPLE INC COMMON STOCK
+  USD0.00001" becomes "Apple Inc." A name-search match never rewrites the
+  name it searched on.
   Tick rows in the holdings table to enrich only those.
 - Hold **three position lists per fund at once** — Yahoo's top-10, the
   table read off the factsheet, and your uploaded file — and choose
@@ -670,7 +720,7 @@ You should see a startup banner:
 
 ```
 =======================================================
-  PorxPy  v0.87.1  (built 2026-09-01)
+  PorxPy  v0.96.0  (built 2026-09-03)
   Portfolio X-ray Python
 =======================================================
 ```

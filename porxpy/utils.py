@@ -519,12 +519,15 @@ def _maybe_migrate_facets(fp, data: dict) -> bool:
 
 
 def listing_exists(ticker: str) -> bool:
-    """Return True if a listing-level cache file exists for ``ticker``.
+    """Return True if a listing-level cache FILE exists for ``ticker``.
 
-    Used by the v0.21.0 explicit-save model: a listing existing in
-    ``cache/listings/`` IS the marker that the fund has been saved to
-    the pre-loaded list. There is no separate flag — the file's
-    presence is the truth.
+    Note the narrowness: this asks whether the file is there, which is
+    NOT the same as whether the fund is saved. Every fetch stamps an
+    identity block into the listing (see ``listing_identity_put``),
+    saved or not, so the file exists for any fund that has ever been
+    looked at. Use :func:`listing_is_saved` for the explicit-save
+    question; this one is for callers that genuinely mean "is there a
+    file".
 
     Args:
         ticker: Yahoo ticker symbol (case-insensitive).
@@ -536,6 +539,65 @@ def listing_exists(ticker: str) -> bool:
         return False
     fp = _cache_path_for(ticker, "profile")
     return fp.exists()
+
+
+def cache_has_category(key: str, category: str) -> bool:
+    """Whether the cache blob for ``key`` actually holds ``category``.
+
+    The distinction this draws used to be missing, and it mattered a
+    great deal (v0.95.3). Callers testing "has this been cached before?"
+    wrote ``bool(cache_read(key, category))`` — but ``cache_read``
+    returns the WHOLE blob for that key's file, not the one category. So
+    the test was really "does the file exist with anything in it", and
+    a listing holding nothing but its identity stamp answered yes for
+    every category it did not have.
+
+    Args:
+        key: Ticker (listing categories) or ISIN (fund categories).
+        category: The category to look for.
+
+    Returns:
+        True only when that category is present in the stored blob.
+    """
+    if not key or not category:
+        return False
+    blob = cache_read(key, category)
+    return isinstance(blob, dict) and category in blob
+
+
+def listing_is_saved(ticker: str) -> bool:
+    """Whether this listing has actually been saved to the pre-loaded list.
+
+    The v0.21.0 model says the listing file's presence is the marker.
+    That stopped being true once every fetch began stamping an identity
+    block into the listing: the file then exists for any fund that has
+    ever been *looked at*, so the marker reported "saved" for funds
+    nobody had saved. On the fund page the Save button vanished after an
+    unrelated edit re-read the fund, and the user was told their work was
+    persisted when none of it was (v0.95.3).
+
+    So the marker is the presence of real CACHED DATA rather than of the
+    file. Identity is resolver output, written for everyone; a TTL'd
+    category is only ever written by a commit, so its presence is the
+    act of saving having happened.
+
+    No migration: a genuinely saved fund already has a profile, and an
+    unsaved one has only its identity.
+
+    Args:
+        ticker: Yahoo ticker symbol.
+
+    Returns:
+        True when the listing holds at least one real cache category.
+    """
+    if not ticker:
+        return False
+    from porxpy.config import CACHE_CATEGORIES, FUND_CATEGORIES
+    blob = cache_read(ticker, "profile")
+    if not isinstance(blob, dict):
+        return False
+    listing_cats = [c for c in CACHE_CATEGORIES if c not in FUND_CATEGORIES]
+    return any(c in blob for c in listing_cats)
 
 
 def cache_read(key: str, category: str) -> dict:
@@ -1128,10 +1190,21 @@ def holdings_status_from_cache(isin: str) -> dict:
 #                                   passes unrecognised text through.
 #   everything else               → trimmed string
 #
-# Bond-only fields (duration, maturity, coupon, effective_date) stay
-# blank for equity / cash holdings — that's their normal state. The
+# Bond-only fields (duration, maturity, coupon, effective_date, quality)
+# stay blank for equity / cash holdings — that's their normal state. The
 # columns are always present in the schema for shape uniformity; the
 # holdings table can show or hide them via the "Show bond columns" toggle.
+#
+# ``quality`` (v0.93.0) is the credit rating, stored AS THE SOURCE WROTE
+# IT — "BBB-", "Baa3", "AA (sf)" all survive verbatim, for the same
+# reason a facet's raw column does: the file's own wording is the only
+# thing that cannot be re-derived later. Ordering is a separate question,
+# answered by config.credit_quality_rank, which reads both agencies'
+# scales onto one ordinal. Adding it needs no migration: every writer
+# goes through coerce_holdings_row, which fills the whole schema, and a
+# row cached before this release simply has no key — which every reader
+# already renders as blank, because a missing rating and an empty one are
+# the same thing on screen.
 #
 # Levelled facets (v0.70.0) — asset, sector and country each occupy
 # THREE columns, one per level of their tree, and currency occupies one
@@ -1169,7 +1242,7 @@ HOLDINGS_ROW_FIELDS: tuple[str, ...] = (
     "asset_class", "sub_class", "super_class", "asset_raw",
     "country", "region", "super_region", "country_raw",
     "currency", "currency_raw", "weight_pct",
-    "duration", "maturity", "coupon", "effective_date",
+    "duration", "maturity", "coupon", "effective_date", "quality",
 )
 
 # Subset of HOLDINGS_ROW_FIELDS that store numeric values. Used by
@@ -1494,7 +1567,28 @@ def normalise_facets(row: dict | None) -> tuple[dict, list[str]]:
         # source whose text differs from the node it resolved to is the
         # ordinary case, not a user decision.
         pinned = bool(row.get(pin_f))
-        stated = ((row.get(node_f) if pinned else row.get(raw_f)) or "").strip()
+        # Fall back to the NODE column when there is no raw (v0.90.0).
+        #
+        # A pinned row takes its node as given. An unpinned row normally
+        # resolves from the source's own wording — but some rows have no
+        # source wording at all, and for those the node IS the only thing
+        # stated. Two such rows exist today and both were silently losing
+        # every facet they carried:
+        #
+        #   * a portfolio holdings row merged by aggregate_portfolio_holdings,
+        #     which merges `<facet>_node` (the stated value) and then calls
+        #     this function to re-derive the levels — but never carried a
+        #     raw, so every facet column on the portfolio holdings table
+        #     came back blank;
+        #   * a cash position, where the user picks a node in the table
+        #     and nothing ever writes a raw.
+        #
+        # Blanking in that case throws away the one fact the row has. The
+        # `or` is safe because a blank raw leaves nothing else to resolve
+        # from — this cannot override a source's wording, only replace an
+        # absent one.
+        stated = ((row.get(node_f) if pinned
+                   else (row.get(raw_f) or row.get(node_f))) or "").strip()
 
         def _blank() -> None:
             row[node_f] = ""
@@ -1747,16 +1841,46 @@ def coerce_cash_position(raw: dict | None, *, id: str | None = None) -> dict:
     # then resolves anything the user typed (e.g. "us dollar" →
     # "USD") and annotates unmatched values with _unmatched_facets.
     CASH_SECTOR_DEFAULT = "cash and/or derivatives"
-    # asset_class: default to "cash" when blank. Lets the user save
-    # a position without explicitly picking the dropdown (the FE
-    # already does, but a hand-edited portfolios.json benefits).
-    if not (out.get("asset_class") or "").strip():
-        out["asset_class"] = "cash"
-    # sector: default the cash one if blank. If the user supplied
-    # something else (e.g. moved a deposit to "financial services"),
-    # let normalise_facets resolve it.
-    if not (out.get("sector") or "").strip():
-        out["sector"] = CASH_SECTOR_DEFAULT
+
+    # Seed each facet's RAW column from whatever this position states
+    # (v0.89.0). normalise_facets resolves from the raw column — that is
+    # the one input it has, for a holdings row and a cash position
+    # alike — and blanks every derived column when the raw is empty. A
+    # cash position carries no raw: the user picks a node in the table,
+    # which lands in the node column, and the defaults below were being
+    # written into `asset_class` and `sector`, which are DERIVED level
+    # columns. So normalise_facets found nothing stated, blanked the lot,
+    # and every cash position came back with all four facets empty —
+    # contributing nothing to the asset-class breakdown, which is exactly
+    # the bucket a deposit most obviously belongs in.
+    #
+    # The stated value is taken in precedence order: an explicit raw, the
+    # node the user picked, then any level column a hand-edited or
+    # legacy record happens to carry. Done through the config helpers
+    # rather than four hardcoded field names, so a new facet or a renamed
+    # column is picked up here without a second edit.
+    from porxpy.config import (BREAKDOWN_FACETS, FACET_LEVELS,
+                               facet_node_field, facet_raw_field)
+    _cash_defaults = {"asset_class": "cash", "sector": CASH_SECTOR_DEFAULT}
+    for _facet in BREAKDOWN_FACETS:
+        _raw_f  = facet_raw_field(_facet)
+        _node_f = facet_node_field(_facet)
+        _stated = (out.get(_raw_f) or "").strip()
+        if not _stated:
+            _stated = (out.get(_node_f) or "").strip()
+        if not _stated:
+            for _lv in FACET_LEVELS.get(_facet, (_facet,)):
+                _v = (out.get(_lv) or "").strip()
+                if _v:
+                    _stated = _v
+                    break
+        # A cash position with nothing said about it is still cash, and
+        # still has no sector to find. Currency and country are left
+        # blank — a deposit genuinely may not state either, and guessing
+        # would put money in a country the user never named.
+        if not _stated:
+            _stated = _cash_defaults.get(_facet, "")
+        out[_raw_f] = _stated
 
     # Single chokepoint — resolves all five facets, preserves raws
     # on miss, stamps _unmatched_facets.
@@ -3730,6 +3854,280 @@ def portfolio_targets_put(pid: str, targets: dict) -> dict:
                 p.pop("targets", None)
             save_portfolios(portfolios)
             return normalised
+    raise ValueError(f"no portfolio with id {pid!r}")
+
+
+# ---------------------------------------------------------------------------
+# Job progress - what a long external call is currently doing, by token
+# ---------------------------------------------------------------------------
+# Anything that contacts an external service and can take more than a
+# couple of seconds reports here, and one endpoint (``/api/progress``)
+# reads it. That is a standing rule for this app rather than a feature of
+# any one screen: a silent request is indistinguishable from a hung one,
+# and a terminal log line is no help to somebody watching the browser.
+#
+# Started life in upload.py for Yahoo holdings enrichment (v0.88.0) and
+# moved here in v0.91.0 when the same treatment was wanted for portfolio
+# loads, factsheet extraction, justETF lookups and bundle imports. One
+# store rather than one per caller, because they all answer the same
+# question - "how far has it got?" - and a second copy is a second way to
+# describe the same wait.
+#
+# In-memory with a lock, deliberately: this is state about an in-flight
+# job addressed by a token, it is worthless once the process restarts,
+# and writing a file per step would cost more than the step it reports on.
+#
+# TOTALS ARE OPTIONAL. A job that counts items (rows, funds) passes one
+# and gets a determinate bar; a job that is a single opaque call passes 0
+# and gets a sweeping bar plus its phase label. Both are better than a
+# frozen button, which is the thing this replaces.
+import threading
+import time as _time
+
+_PROGRESS: dict[str, dict] = {}
+_PROGRESS_LOCK = threading.Lock()
+
+# How long a record stays readable after its last update. Long enough for
+# the last poll of a slow client, short enough that an abandoned run does
+# not sit in memory for the life of the process.
+_PROGRESS_TTL_S = 120.0
+
+
+def _prune_progress(now: float) -> None:
+    """Drop records nothing has touched for the TTL. Caller holds the lock.
+
+    Staleness is measured by last update, not by the finished flag,
+    because an UNfinished record is the one that can be abandoned: a
+    cancelled commit raises out of the loop and deliberately leaves its
+    record showing the step it stopped on, so nothing ever marks it
+    finished. A running job updates every step, so it is never stale.
+    """
+    for tok, rec in list(_PROGRESS.items()):
+        if now - rec.get("updated_at", 0.0) > _PROGRESS_TTL_S:
+            _PROGRESS.pop(tok, None)
+
+
+def progress_start(token: str, total: int, what: str = "working",
+                   unit: str = "items") -> None:
+    """Open a progress record so the first poll has something to show.
+
+    Called before the loop rather than left to the first callback: a
+    client that polls in the gap would otherwise get nothing back and
+    have to guess whether the job had started or failed.
+
+    Args:
+        token: Job token, invented by the caller that will poll for it.
+        total: Expected step count, or 0 when the job cannot count itself
+            (a single slow request). Zero yields an indeterminate bar
+            rather than one stuck at 0%.
+        what: Short phase label, shown as-is.
+        unit: What the counts are of - "holdings", "funds", "rows". Sent
+            to the client so one bar labels itself correctly for every
+            caller instead of hardcoding a noun.
+    """
+    if not token:
+        return
+    now = _time.time()
+    with _PROGRESS_LOCK:
+        _prune_progress(now)
+        _PROGRESS[token] = {
+            "phase": what, "unit": unit,
+            "total": max(0, int(total or 0)), "done": 0,
+            "elapsed_s": 0.0, "eta_s": None, "finished": False,
+            "started_at": now, "updated_at": now,
+        }
+
+
+def progress_phase(token: str, what: str, total: int | None = None) -> None:
+    """Rename the current phase, and optionally restate the total.
+
+    For jobs that run in stages - a factsheet extraction reads a PDF,
+    then calls the model, then resolves what came back - so the bar says
+    which stage is running rather than going quiet between them.
+    """
+    if not token:
+        return
+    with _PROGRESS_LOCK:
+        rec = _PROGRESS.get(token)
+        if rec is None or rec.get("finished"):
+            return
+        rec["phase"] = what
+        if total is not None:
+            rec["total"] = max(0, int(total))
+            rec["done"] = 0
+        rec["updated_at"] = _time.time()
+
+
+def progress_update(token: str, done: int, total: int, elapsed: float) -> None:
+    """Record how far a run has got. Cheap enough to call per step."""
+    if not token:
+        return
+    rate = (done / elapsed) if elapsed > 0 and done > 0 else 0.0
+    with _PROGRESS_LOCK:
+        rec = _PROGRESS.get(token)
+        if rec is None or rec.get("finished"):
+            return
+        rec["done"]      = int(done)
+        rec["total"]     = int(total or rec.get("total") or 0)
+        rec["elapsed_s"] = round(float(elapsed), 1)
+        rec["eta_s"]     = (round((rec["total"] - done) / rate, 1)
+                            if rate > 0 and rec["total"] > done else None)
+        rec["updated_at"] = _time.time()
+
+
+def progress_finish(token: str, note: str = "") -> None:
+    """Close a run out. The record stays readable for _PROGRESS_TTL_S."""
+    if not token:
+        return
+    with _PROGRESS_LOCK:
+        rec = _PROGRESS.get(token)
+        if rec is None:
+            return
+        rec["finished"]   = True
+        rec["done"]       = rec.get("total") or rec.get("done") or 0
+        rec["eta_s"]      = 0.0
+        rec["note"]       = note or ""
+        rec["updated_at"] = _time.time()
+
+
+def progress_get(token: str) -> dict | None:
+    """The current record for ``token``, or None if there is not one."""
+    if not token:
+        return None
+    with _PROGRESS_LOCK:
+        rec = _PROGRESS.get(token)
+        return dict(rec) if rec else None
+
+
+class progress_scope:
+    """Context manager wrapping start/finish around a block of work.
+
+    The point of it is that ``progress_finish`` runs even when the block
+    raises. A job that fails and leaves its record open shows a bar
+    frozen at the step it died on, which gives exactly the wrong
+    impression - "it is still working" - that this whole mechanism exists
+    to remove.
+
+    A blank token makes every method a no-op, so a caller that was not
+    given one needs no branch of its own.
+
+    Usage::
+
+        with progress_scope(tok, len(funds), "loading funds", "funds") as p:
+            for i, f in enumerate(funds, 1):
+                ...
+                p.step(i)
+    """
+
+    def __init__(self, token: str, total: int = 0,
+                 what: str = "working", unit: str = "items"):
+        self.token = token or ""
+        self.total = int(total or 0)
+        self._what = what
+        self._unit = unit
+        self._t0 = 0.0
+
+    def __enter__(self) -> "progress_scope":
+        self._t0 = _time.time()
+        progress_start(self.token, self.total, self._what, self._unit)
+        return self
+
+    def step(self, done: int, total: int | None = None) -> None:
+        """Report ``done`` steps completed."""
+        progress_update(self.token, done,
+                        self.total if total is None else total,
+                        _time.time() - self._t0)
+
+    def phase(self, what: str, total: int | None = None) -> None:
+        """Move to a named stage, optionally with a fresh denominator."""
+        if total is not None:
+            self.total = int(total)
+        progress_phase(self.token, what, total)
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        progress_finish(self.token)
+        return False
+
+
+def cash_reserve_get(pid: str) -> float:
+    """How much of the portfolio must stay as cash the user holds.
+
+    A single amount in the portfolio's base currency — **not** a
+    percentage (v0.90.0). It is a reservation taken off the top before
+    anything else is designed: the optimiser leaves exactly this much in
+    the user's own accounts and distributes what remains across funds,
+    selling positions to raise it when the cash on hand falls short.
+
+    Why an amount rather than a percentage. The optimiser has no
+    instrument that buys a bank deposit, so a percentage of the whole
+    portfolio behaved like a target competing in the least-squares fit —
+    satisfied approximately, and pulling every other target off as it
+    went. Stated as an amount and taken off the top, it is exact by
+    construction, and every remaining target becomes a percentage of what
+    is left, which is what the user is actually deciding: "50,000 stays
+    liquid; design the other 50,000."
+
+    Args:
+        pid: Portfolio UUID.
+
+    Returns:
+        The reserve in base currency; ``0.0`` when unset, when the stored
+        value is malformed, or for an unknown portfolio.
+    """
+    p = find_portfolio(pid)
+    if not p:
+        return 0.0
+    try:
+        v = float(p.get("cash_reserve") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return v if v > 0 else 0.0
+
+
+def cash_reserve_set(pid: str, amount: float) -> float:
+    """Set the cash reserve for portfolio ``pid``, in base currency.
+
+    Args:
+        pid: Portfolio UUID.
+        amount: The amount to reserve. Negative is clamped to zero — a
+            reserve below nothing has no reading, so there is nothing to
+            ask the user about. Non-positive clears it, and the field is
+            dropped from ``portfolios.json`` rather than stored as zero,
+            so a portfolio nobody has set one on stays clean.
+
+            The UPPER bound is deliberately not enforced here. It is
+            "no more than the portfolio is worth", and this function
+            cannot know that without a full valuation pass over every
+            fund — and the bound would not stay enforced anyway, because
+            the portfolio's value moves with the market: a reserve that
+            was legal when saved can exceed the total a week later with
+            nobody having touched it. So the check lives where it can
+            actually be true — the editor blocks a save above the value
+            on screen, the Targets tile says so when it has drifted, and
+            the optimiser refuses to design against it.
+
+    Returns:
+        The persisted amount (``0.0`` when cleared).
+
+    Raises:
+        ValueError: If ``pid`` does not match any portfolio, or the
+            amount is not a number.
+    """
+    try:
+        val = float(amount or 0.0)
+    except (TypeError, ValueError):
+        raise ValueError("cash_reserve must be a number")
+    if val < 0:
+        val = 0.0
+    portfolios = load_portfolios()
+    for p in portfolios:
+        if p.get("id") == pid:
+            if val > 0:
+                p["cash_reserve"] = round(val, 2)
+            else:
+                p.pop("cash_reserve", None)
+            save_portfolios(portfolios)
+            return round(val, 2) if val > 0 else 0.0
     raise ValueError(f"no portfolio with id {pid!r}")
 
 

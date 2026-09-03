@@ -1,6 +1,6 @@
 # The PorxPy Optimizer — how it works
 
-*Applies to `porxpy/optimizer.py` as of v0.86.3. Audited against the
+*Applies to `porxpy/optimizer.py` as of v0.91.0. Audited against the
 module at that version: every claim below was re-checked, and the two
 open issues in §13 were re-confirmed by running them.*
 
@@ -177,6 +177,94 @@ unscaled, used only for *measuring* deviations, so the numbers reported to
 you are in real percentage points rather than in solver units. A mask
 excludes `__other__` rows from measurement — slack you never targeted is
 not error.
+
+---
+
+## 4b. Cash is a reservation, not a column (v0.90.0)
+
+The user states how much of the portfolio must stay as cash they hold —
+**an amount in base currency, not a percentage** (`cash_reserve` on the
+portfolio). That amount is taken off the top before anything is designed:
+
+```
+portfolio = held + frozen + cash_on_hand
+fund_side = portfolio − reserve        ← what every target is a % of
+free_base = fund_side − frozen         ← what the solver actually places
+```
+
+The solver never sees the reserve. Fund weights are a simplex over
+`free_base` and sum to 1, so the design is fully invested by construction
+and `cash_after` equals the reserve exactly — not approximately.
+
+Both directions the user asked for fall out of the same arithmetic rather
+than needing a branch:
+
+| situation | what happens |
+|---|---|
+| cash on hand **above** the reserve | the difference is in `free_base`, so it gets invested |
+| cash on hand **below** the reserve | `free_base` is smaller than the funds are worth, so the trade list sells the shortfall |
+
+### Why it used to be a column, and why that was wrong
+
+Until v0.89.0 cash was the last column of the exposure matrix, with its
+weight a free variable, so a "leave 5% in cash" target needed no
+special-casing and the no-overdraft rule came free. v0.89.0 went further
+and added a `custody` facet (`direct` / `via_fund`) so that a target on
+cash *the user holds* could be satisfied separately from a fund's own cash
+sleeve — a fund's column carried `via_fund`, so the `custody: direct` row
+was a 1 on the cash column and a 0 on every fund, and no fund could move
+it.
+
+That was a correct mechanism for the wrong requirement. It made the
+reserve a **target**, and the optimiser has no instrument that buys a bank
+deposit — so the amount was fitted approximately, in competition with
+every other target, and pulled them off course while it was at it. The
+user reported it: *"It tries to satisfy the cash held by me target, just
+like the other targets."*
+
+A reservation is exact, needs no facet, and makes the whole cash column
+redundant: money that is not in the budget cannot be occupied by a fund,
+by construction rather than by a row of zeros. `custody` was removed with
+the column.
+
+### What that changed elsewhere in this file
+
+* `_build_facet_matrix` no longer takes `cash_exposure` and builds
+  `len(candidates)` columns, not `len(candidates) + 1`.
+* `_greedy_select`'s baseline was "everything in cash", which was a real
+  portfolio because cash had a column. With no column and nothing
+  selected there is no portfolio to score, so an all-zero weight vector
+  stands in: `_facet_devs` then reports each target missed by its own
+  size, which is the honest reading of "you hold none of this yet", and
+  any fund improves on it.
+* `frozen_share` is measured against `fund_side`, not the grand total,
+  because that is the space the targets live in.
+* A target set summing to less than 100% used to be able to park its
+  slack in cash. It cannot now — the fund side is fully invested — so the
+  slack goes to whatever untargeted funds exist, and the `__other__`
+  bucket is what absorbs it.
+
+### The deviation report measures the same thing
+
+`compute_target_deviations` reads the fund-side rollup
+(`fundlevel_breakdowns_ex_cash`), not the all-inclusive one. Until
+v0.91.0 it read the latter, so the Targets tab measured achievement
+against a denominator that included the reserve while the optimiser
+measured against one that excluded it — the tab reporting a shortfall on
+a design the solver had just called met. Two screens, one question, two
+answers, which is the failure this codebase is most exposed to.
+
+### Guard rails
+
+The reserve is refused, with a written reason rather than a bad design,
+when it is the whole portfolio or more, and when locked or excluded funds
+are already worth more than the fund side that is left. Its **lower**
+bound (never negative) is enforced at write; its **upper** bound is not,
+deliberately — the portfolio's value moves with the market, so a reserve
+that was legal when saved can exceed the total a week later with nobody
+having touched it. The editor blocks a save above the value on screen, the
+Targets tile says so when it has drifted, and the optimiser refuses. Three
+places, because no single one of them can be true forever.
 
 ---
 
@@ -363,6 +451,15 @@ may still be the one you want.
 bond fund because the targets demand one; offering to replace it with a
 high-scoring US equity tracker would answer a question nobody asked. A
 fund alone in its peer group has no alternatives to offer.
+
+A **pair** does, since v0.96.0. Peer groups of two were previously left
+unscored — `MIN_PEER_GROUP` was 3 — and since this pass only considers
+candidates that HAVE a peer score, both members of a pair were skipped
+in both directions: no alternatives offered, and neither fund counted
+toward the design's quality figure. Both now rank, 33 against 67, so a
+two-fund group behaves like any other. Expect the portfolio score to
+move on designs holding such funds; nothing about the pricing of a swap
+changed, only which funds have a score to be priced against.
 
 ### Why the costs do not add up
 
@@ -599,54 +696,50 @@ Defects specific to the optimiser, as opposed to the deliberate
 boundaries in §12. Each is something that should be fixed rather than
 something someone chose.
 
-Both were re-confirmed against the code at v0.86.3 — the first by
-running `candidate_exposures` with a `market_cap` target and getting
-`{'market_cap': {}}` back, the second by reading the full facet weight
-still being applied once per `(facet, level)` block in
-`_add_target_rows`.
+One remains, re-confirmed against the code at v0.89.0 by reading the
+full facet weight still being applied once per `(facet, level)` block in
+`_add_target_rows`. The metadata-facet blindness recorded here since
+v0.30.0 was **fixed in v0.89.0** — see the resolved entry below.
 
-### The metadata facets are targetable, but the optimiser is blind to them
+### ~~The metadata facets are targetable, but the optimiser is blind to them~~ — fixed in v0.89.0
+
+Kept as a record because the failure was invisible in exactly the way
+worth remembering: the optimiser reported a confident, wrong diagnosis.
 
 `config.TARGET_FACETS` is `BREAKDOWN_FACETS + META_FACETS`, so the
-Targets tab offers `market_cap` and `style_box`, `targets.py` computes
-deviations for them, and the X-ray card renders them. The optimise
-endpoint does not. It builds each candidate's exposure with
+Targets tab offered `market_cap` and `style_box`, `targets.py` computed
+deviations for them, and the X-ray card rendered them — while the
+optimise endpoint built each candidate's exposure with
 `candidate_exposures(data["fund_breakdowns"], targets)`, and
-`fund_breakdowns` covers only `_FUND_BD_FACETS` — `asset_class`,
-`sector`, `country`, `currency`. The metadata one-hots come from
-`breakdowns.meta_facet_items`, which is called by
+`fund_breakdowns` covers only the four breakdown facets. The metadata
+one-hots come from `breakdowns.meta_facet_items`, which was called by
 `rollup_portfolio_fundlevel` and by nothing on the optimise path.
 
-Every candidate therefore reports empty exposure for a metadata facet.
-All of its weight falls into the synthetic `__other__` bucket, and the
-target becomes unsatisfiable by any portfolio whatsoever. Confirmed by
-running it rather than by reading it: with a `market_cap` target set,
-`candidate_exposures` returns `{'market_cap': {}}` for every fund, and
-the run reports
+Every candidate therefore reported empty exposure for a metadata facet,
+all of its weight fell into the synthetic `__other__` bucket, and the
+run said
 
 ```
 market_cap 100.0% (allowed 5%) … these targets need exposure none of
 your candidate funds have.
 ```
 
-That message is wrong in the way that matters. Every fund carries a
-`market_cap` on its structure block; the optimiser was simply never
-handed it. The user is told their universe is inadequate when the
-universe is fine.
+which was wrong in the way that matters: every fund carries a
+`market_cap` on its structure block, and the optimiser had simply never
+been handed it. The user was told their universe was inadequate when the
+universe was fine.
 
-The proposed design itself is still correct — the dead rows are constant
-across all assets, so they shift the least-squares fit not at all — but
-`target_met` is false forever, and the stated reason sends the user
-looking for funds they already own. Until this is closed, set targets on
-the four breakdown facets only.
+**The fix.** `candidate_exposures` now takes `fund_structure` and
+`is_cash`, and answers any targeted facet in `META_FACETS` from
+`meta_facet_items` rather than from `fund_breakdowns`. A metadata facet
+has no entry in `FACET_LEVELS`, so its level key is the facet name
+itself — the shape `_key_at_level` and `build_facet_block` already
+assume for a flat facet, so nothing else had to change.
 
-The fix is to merge `meta_facet_items` into the exposure dict the
-optimise route builds, so a metadata facet answers as a one-hot
-distribution at its own single level, exactly as `currency` already
-does. `market_cap` and `style_box` have no entry in `FACET_LEVELS`, so
-their level key is the facet name itself — the shape `_key_at_level` and
-`build_facet_block` already assume for a flat facet, so nothing else has
-to change.
+It was found while building the `custody` facet that v0.90.0 then removed
+(§4b); the fix outlived the feature that prompted it, because
+`market_cap` and `style_box` were blind for the same reason and both are
+still targetable.
 
 ### Targeting one facet at several levels silently multiplies its weight
 

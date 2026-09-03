@@ -26,6 +26,8 @@ project usable without an API key — a successful lookup is cached for
 
 from __future__ import annotations
 
+import re
+
 import requests
 import yfinance as yf
 
@@ -850,6 +852,130 @@ def search_name_only(name: str, max_results: int = 8) -> str | None:
                   f"({q.get('longname') or q.get('shortname') or ''})")
             return sym
     return None
+
+
+# An ISIN is twelve characters: a two-letter ISO country code, nine
+# alphanumerics, and a numeric check digit. One definition, here, because
+# the shape was written out separately in app.py (deciding whether typed
+# input is an ISIN or a ticker) and upload.py (deciding whether a cell
+# holds one) — two copies of a format that is fixed by a standard, either
+# of which could have been "fixed" without the other.
+#
+# ISIN_RE is the SHAPE alone, which is the right question for "does this
+# typed input look like an ISIN rather than a ticker" — the two callers
+# above want that and nothing more. `is_valid_isin` additionally verifies
+# the check digit, which is the right question for "should I spend a
+# network call on this, and should I trust it over the row's ticker".
+#
+# The check digit earns its keep now that a malformed identifier gets
+# CORRECTED rather than merely skipped (v0.95.0): without it, an ISIN
+# with a transposed digit is the right shape, fails to resolve, and is
+# left on the row as though it were fine. With it, the row falls through
+# to the ticker, resolves there, and the bad ISIN is replaced by the real
+# one.
+ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")
+
+# A CUSIP is nine characters: eight of issuer-and-issue, then a check
+# digit. The rarely-used *, @ and # placeholders are not accepted — they
+# appear in no holdings file this app has met, and admitting them would
+# widen what counts as "valid enough to keep".
+CUSIP_RE = re.compile(r"^[0-9A-Z]{8}[0-9]$")
+
+
+def _luhn_ok(digits: str, check: int) -> bool:
+    """Whether ``check`` is the Luhn check digit of ``digits``.
+
+    Shared by both identifier checks below: ISIN and CUSIP use the same
+    doubling rule over different alphabets, so the arithmetic lives once.
+    """
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        d = int(ch)
+        if i % 2 == 0:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return (10 - (total % 10)) % 10 == check
+
+
+def is_valid_isin(value: str | None) -> bool:
+    """Whether ``value`` is a well-formed ISIN, check digit included.
+
+    Args:
+        value: Any string, or None. Whitespace and case are forgiven —
+            holdings files are full of " ie00b4l5y983 ".
+
+    Returns:
+        True when the trimmed, upper-cased value has the ISIN shape AND
+        its final digit is the correct Luhn check over the first eleven
+        characters, letters expanded to their two-digit values (A=10 …
+        Z=35).
+    """
+    if not value:
+        return False
+    s = str(value).strip().upper()
+    if not ISIN_RE.match(s):
+        return False
+    digits = "".join(str(ord(c) - 55) if c.isalpha() else c for c in s[:11])
+    return _luhn_ok(digits, int(s[11]))
+
+
+def is_valid_cusip(value: str | None) -> bool:
+    """Whether ``value`` is a well-formed CUSIP, check digit included.
+
+    Args:
+        value: Any string, or None. Whitespace and case forgiven.
+
+    Returns:
+        True when the value has the CUSIP shape and its final digit is
+        the correct check over the first eight characters (digits as
+        themselves, letters as their position plus nine).
+    """
+    if not value:
+        return False
+    s = str(value).strip().upper()
+    if not CUSIP_RE.match(s):
+        return False
+    digits = "".join(str(ord(c) - 55) if c.isalpha() else c for c in s[:8])
+    return _luhn_ok(digits, int(s[8]))
+
+
+def name_query_head(name: str, max_tokens: int = 4) -> str:
+    """The searchable head of a security name.
+
+    Bond holdings are named like "US TREASURY N/B 4.25% 15/11/2034" or
+    "DEUTSCHLAND REP 0% 15/08/2031", where everything after the issuer is
+    coupon and maturity — precise, and useless to a name search, which
+    matches words. Feeding the whole string to Yahoo returns nothing;
+    feeding the first few words returns the issuer.
+
+    Stops at the first token that is not a word: a number, a percentage,
+    a date fragment. So "US TREASURY N/B 4.25% ..." searches as
+    "US TREASURY N/B", and an ordinary equity name — "Novo Nordisk A/S" —
+    is returned whole because it never hits one.
+
+    Args:
+        name: The security name as the file wrote it.
+        max_tokens: Cap on the words kept, for names with a long
+            preamble.
+
+    Returns:
+        The head of the name, or ``""`` when nothing survives (a name
+        that is all numbers is not a name to search on).
+    """
+    if not name:
+        return ""
+    out: list[str] = []
+    for tok in str(name).split():
+        # A token counts as a word when it holds no digits. "N/B" and
+        # "A/S" survive; "4.25%", "15/11/2034" and "2031" stop the scan.
+        if any(ch.isdigit() for ch in tok):
+            break
+        out.append(tok)
+        if len(out) >= max_tokens:
+            break
+    return " ".join(out).strip()
 
 
 def search_id_variant(identifier: str) -> str | None:

@@ -4,8 +4,8 @@ super_sector;sensitive;;;;;
 super_sector;defensive;;;;;
 super_sector;n/a;Positions the equity sector question does not apply to: sovereign and municipal issuers have no line of business. Resolves to the reserved n/a residual, which counts as covered rather than as a data gap.;;south africa treasury bills|nigeria treasury bills|u.s. treasury bonds|u.s. treasury strips|u.s. treasury inflation protected securities|turkey treasury bills|egypt treasury bills|sovereign issues|new york|florida|california|illinois|georgia|government|governments|treasury|us treasury|u.s. treasury|united states treasury note/bond|treasury bonds|treasury notes|treasury bills|government bonds|sovereign|sovereigns|municipal|municipals|municipal bonds|agency|agencies|*treasury bill*|*government bond*;;
 sector;basic materials;Chemicals, building materials, mining and metals.;cyclical;materials|basic resources|basic_materials|Materialen|Basismaterialen;;style_match=materials|basic resources|mining|gold miners|gold mining|metals and mining|chemicals|steel
-sector;communication services;Telecoms, media, interactive media and services.;sensitive;communications|communication_services|Communicatiediensten|Communicatie|Telecommunicatiediensten|Communication;;style_match=telecommunications|telecommunication|telecom|telecoms|interactive media|social media
-sector;consumer cyclical;Discretionary consumer goods and services â€” autos, hotels, retail.;cyclical;consumer discretionary|consumer cyclicals|consumer_cyclical|Luxe-consumentengoederen|Cyclische Cons.|Duurzame consumentengoederen|Luxe-consumenten­goederen|Cyclische consumentengoederen|Consument cyclisch;;style_match=consumer discretionary|consumer cyclicals|automobiles|travel and leisure|leisure|luxury
+sector;communication services;Telecoms, media, interactive media and services.;sensitive;communications|communication_services|Communicatiediensten|Communicatie|Telecommunicatiediensten|Communication|Media Cable;;style_match=telecommunications|telecommunication|telecom|telecoms|interactive media|social media
+sector;consumer cyclical;Discretionary consumer goods and services â€” autos, hotels, retail.;cyclical;consumer discretionary|consumer cyclicals|consumer_cyclical|Luxe-consumentengoederen|Cyclische Cons.|Duurzame consumentengoederen|Luxe-consumenten­goederen|Cyclische consumentengoederen|Consument cyclisch|Luxe-consumptengoederen;;style_match=consumer discretionary|consumer cyclicals|automobiles|travel and leisure|leisure|luxury
 sector;consumer defensive;Staple consumer goods â€” food, beverages, household products.;defensive;consumer staples|consumer non-cyclical|consumer staples products|staples|consumer_defensive|Niet-cyclische Cons.|Niet-duurzame consumentengoederen|Basis-consumenten­goede..|Basis-consumentengoederen;;style_match=consumer staples|consumer non cyclical|food and beverage|beverages|household goods|tobacco
 sector;energy;Oil, gas, fuel, and energy equipment / services.;sensitive;oil & gas|oil and gas|oil, gas & consumable fuels|petroleum|Energie;;style_match=oil and gas|oil gas|petroleum|crude oil|energy equipment
 sector;financial services;Banks, insurance, capital markets, diversified financials.;cyclical;financials|financial|financial|financial_services|financialservices|finance companies|banking & finance|Financiën|Financiële waarden|Financieel;;style_match=financials|banks|banking|insurance|capital markets|diversified financials
@@ -34,20 +34,20 @@ sub_sector;beverages;Soft drinks, brewers, distillers, and wineries.;consumer de
 sub_sector;household and personal products;Cleaning, hygiene, cosmetics, and personal care.;consumer defensive;household products|personal products|cosmetics|personal care|hygiene;;
 sub_sector;tobacco;Cigarette and tobacco product makers.;consumer defensive;tobacco products|cigarettes;;
 sub_sector;discount and grocery stores;Supermarkets, discount and food retail.;consumer defensive;grocery stores|supermarkets|discount stores|food retail|food distribution;;
-sub_sector;oil and gas exploration;Upstream exploration and production.;energy;exploration and production|upstream|e&p|oil and gas e&p|crude producers;;
-sub_sector;oil and gas midstream;Pipelines, storage, and transportation of hydrocarbons.;energy;midstream|pipelines|gas transportation|storage and transportation;;
+sub_sector;oil and gas exploration;Upstream exploration and production.;energy;exploration and production|upstream|e&p|oil and gas e&p|crude producers|Independent E&P;;
+sub_sector;oil and gas midstream;Pipelines, storage, and transportation of hydrocarbons.;energy;midstream|pipelines|gas transportation|storage and transportation|Integrated Oil;;
 sub_sector;oil and gas refining;Refining and marketing of petroleum products.;energy;refining|refiners|downstream|refining and marketing;;
 sub_sector;oilfield services;Drilling, equipment, and services to producers.;energy;oil services|energy equipment|drilling|oilfield equipment|energy services;;
 sub_sector;renewable energy;Solar, wind, and other renewable generation and equipment.;energy;solar|wind|renewables|clean energy|renewable energy equipment;;
 sub_sector;banks;Retail, commercial, and diversified banking.;financial services;banking|retail banks|commercial banks|diversified banks|regional banks;;
-sub_sector;insurance;Life, property, casualty, and reinsurance.;financial services;life insurance|property and casualty|reinsurance|insurers|insurance brokers;;
+sub_sector;insurance;Life, property, casualty, and reinsurance.;financial services;life insurance|property and casualty|reinsurance|insurers|insurance brokers|Insurance Life;;
 sub_sector;capital markets;Brokers, exchanges, and asset managers.;financial services;brokerage|exchanges|asset managers|asset management|investment banking|brokerage/asset managers/exchanges;;
 sub_sector;credit services;Consumer credit, payments, and card networks.;financial services;consumer finance|credit cards|payments|payment processors|specialty finance;;
 sub_sector;diversified financials;Holding companies and mixed financial groups.;financial services;financial conglomerates|diversified financial services|financial other;;
-sub_sector;pharmaceuticals;Branded and generic drug manufacturers.;healthcare;pharma|drug manufacturers|generic drugs|branded drugs|medicines;;
-sub_sector;biotechnology;Biotech research and therapeutics developers.;healthcare;biotech|biotechnology and medical research|therapeutics;;
-sub_sector;medical devices;Devices, diagnostics, and healthcare equipment.;healthcare;medical equipment|medical instruments|diagnostics|healthcare equipment|devices;;
-sub_sector;healthcare providers;Hospitals, insurers, care facilities, and distribution.;healthcare;healthcare plans|hospitals|medical care facilities|healthcare distribution|managed care;;
+sub_sector;pharmaceuticals;Branded and generic drug manufacturers.;healthcare;pharma|drug manufacturers|generic drugs|branded drugs|medicines|Farmaceutica;;
+sub_sector;biotechnology;Biotech research and therapeutics developers.;healthcare;biotech|biotechnology and medical research|therapeutics|Biotechnologie;;
+sub_sector;medical devices;Devices, diagnostics, and healthcare equipment.;healthcare;medical equipment|medical instruments|diagnostics|healthcare equipment|devices|Health Care Equipment;;
+sub_sector;healthcare providers;Hospitals, insurers, care facilities, and distribution.;healthcare;healthcare plans|hospitals|medical care facilities|healthcare distribution|managed care|Health Care Services;;
 sub_sector;life sciences tools;Research tools, instruments, and contract research.;healthcare;life sciences|research tools|contract research|laboratory instruments;;
 sub_sector;aerospace and defense;Aircraft, space, and defence contractors.;industrials;aerospace|defence|defense|aerospace & defense|aircraft|military;;
 sub_sector;machinery;Industrial, agricultural, and construction machinery.;industrials;industrial machinery|farm machinery|construction machinery|heavy equipment|capital goods;;
@@ -62,7 +62,7 @@ sub_sector;software;Application, systems, and infrastructure software.;technolog
 sub_sector;semiconductors;Chips, chip equipment, and materials.;technology;semiconductor|semiconductor equipment|chips|chipmakers|integrated circuits|IT;;
 sub_sector;hardware;Computers, peripherals, and electronic equipment.;technology;computer hardware|electronic equipment|peripherals|consumer electronics|communication equipment;;
 sub_sector;it services;Consulting, outsourcing, and technology services.;technology;information technology services|technology services|it consulting|data processing|information technology|Informatietechnologie|info tech|Informatica|Informatie technologie;;
-sub_sector;electric utilities;Electricity generation and distribution.;utilities;electric|electricity|power generation|independent power producers|Elektrisch;;
+sub_sector;electric utilities;Electricity generation and distribution.;utilities;electric|electricity|power generation|independent power producers|Elektrisch|Electric Utility;;
 sub_sector;gas utilities;Natural gas distribution and supply.;utilities;gas distribution|natural gas utilities|gas supply;;
 sub_sector;water utilities;Water supply and treatment.;utilities;water|water supply|water treatment;;
 sub_sector;multi utilities;Combined electric, gas, and water providers.;utilities;multi utility|diversified utilities|combined utilities;;

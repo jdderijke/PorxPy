@@ -1,6 +1,6 @@
 # FACET_TREE.md — the four facet trees
 
-*Current as of v0.86.3.*
+*Current as of v0.93.1.*
 
 Sections 1–5 describe how the facet trees behave **today**, across all
 four facets. Sections 6–16 are the v0.70.0 design record that produced
@@ -292,6 +292,76 @@ reduces punctuation to spaces, so `s&p` becomes `s p` — and "iShares
 Physical" contains "s p" across its word break.
 
 `mixed` and `commodity` exist only here. A *holding* is never mixed.
+
+---
+
+## 8b. Cash the user holds is not a facet either (v0.90.0)
+
+"Is this cash in my own account, or inside a fund I own?" looks at first
+like a missing `sub_class` next to `free spendable cash`. It is not, and
+the reasoning survives even though the answer changed twice.
+
+**Why not a node.** The distinction returns for *every* cash sub-class —
+a deposit you hold versus a deposit a fund holds, collateral versus
+collateral — and again for bonds and equities if either is ever held
+directly. A node would need a `direct` twin of every node in the tree,
+each with its own `matches` spellings, and every holdings import would
+have to guess which twin to resolve to when the importer cannot possibly
+know: "direct" is not a property of the holding, it is a property of who
+holds it.
+
+**Why it must not split the cash bucket.** The X-ray answers "how much of
+my money is in cash" with one number covering both your deposits and the
+funds' own cash sleeves. A `direct cash` node would pull your deposits
+*out* of `asset_class: cash`, which is the opposite of what the breakdown
+is for.
+
+**And why it is not a facet either.** v0.89.0 made it one — a `custody`
+meta facet, `direct` / `via_fund`, so the optimiser could satisfy a
+percentage target on your own cash separately from a fund's sleeve.
+v0.90.0 removed it. The requirement was never a percentage: the user
+wants to say *"50,000 stays liquid"*, and the optimiser cannot buy a bank
+deposit, so as a target it could only ever be approximated — in
+competition with every other target. Stated as an amount and reserved off
+the top (`cash_reserve` on the portfolio), it is exact, and the facet has
+nothing left to do: the reserved money is simply not in the solver's
+matrix. See `OPTIMIZER.md` §4b.
+
+The lesson worth keeping is that all three attempts failed the same test
+in different places — a node splits the exposure, a facet turns an amount
+into a percentage, and only removing the money from the budget expresses
+"this is not available to invest".
+
+### Where the cash surfaces sit
+
+| surface | axis | direct cash |
+|---|---|---|
+| Portfolio → Funds | position | excluded — not a fund |
+| Portfolio → Cash | position | the only place it is edited |
+| Portfolio → Holdings | fund look-through | excluded — not held by a fund |
+| Portfolio → X-ray | exposure | **merged** with the funds' cash sleeves, unless the reader unticks "include cash held by me" |
+| Portfolio → History | exposure | same toggle, same default |
+| Targets / optimiser | budget | reserved off the top, as an amount; every target is a % of the fund side |
+
+Filtering happens at render and in the budget, **never in the rollup** —
+the rollup must keep seeing cash for the X-ray to be right.
+
+The include-cash toggle (v0.91.0) is a **view** choice: it changes which
+positions the two exposure views describe, never what any position means,
+so it lives in the browser and is remembered per portfolio, exactly like
+the facet level selectors. The server ships both rollups with the
+portfolio payload — `fundlevel_breakdowns` over everything and
+`fundlevel_breakdowns_ex_cash` over the funds alone — so flipping it
+costs no round-trip. The Targets tab always reads the second one, because
+since v0.90.0 a target describes the fund side by definition.
+
+### One denominator rule
+
+Every percentage in the app is a share of the **fund side** — the funds
+list, the portfolio holdings table, every target. The single exception is
+the portfolio overview's own split (`Funds 98.5% + Cash 1.5% = Total`),
+which is a share of the grand total because that is the quantity it is
+describing.
 
 ---
 
@@ -612,6 +682,78 @@ Defects in the facet-tree machinery, grouped by the tree they belong to.
 Verified against the code at v0.70.1 rather than carried forward on
 trust. Deliberate boundaries are described in the sections above;
 everything here is something that should be fixed.
+
+### Fixed in v0.93.1 — the asset card ignored its own default level
+
+`build_fund_breakdowns` replaces a card's derived levels with the
+holdings rollup's own where one exists, and it skipped two levels while
+doing so: the facet-named level (right — that is where the items came
+from) and `block["default_level"]` (wrong, and invisible for three
+facets out of four).
+
+`sector`'s default level is `sector` and `country`'s is `country`, so for
+them the two conditions name the same level and the second never fires.
+`asset_class` is the exception: `FACET_DEFAULT_LEVEL` puts it at
+`super_class`, deliberately, because the asset vocabulary's original four
+values live at the super level and defaulting finer would re-grain every
+target set. So asset_class was the only facet whose default level never
+got its native rollup — it was derived from the middle level instead.
+
+That is harmless while the middle level has data and fatal when it does
+not. Import a bond file with no asset column and a default of "fixed
+income" — a super-class node — and every row states fixed income at
+super level with the finer levels honestly blank, because you cannot
+derive downward through a node with several children. The card derived
+all three levels from a blank middle one, reported 100% unknown, and
+struck through every level button, while the holdings table beside it
+showed fixed income on all 8,500 rows.
+
+The graft now skips only the level the items came from. Worth keeping as
+a record because of its shape: a condition that is a no-op for three
+members of a set and a bug for the fourth is invisible in exactly the way
+this codebase's parallel structure makes likely — nothing failed, one
+facet simply answered a different question from its siblings.
+
+### Fixed in v0.89.0 — cash positions carried no facets at all
+
+Recorded rather than deleted, because both halves failed silently and
+the second is a trap any future non-fund position will fall into.
+
+**The defaults were written into derived columns.**
+`coerce_cash_position` defaulted a blank `asset_class` to `cash` and a
+blank `sector` to `cash and/or derivatives`, then called
+`normalise_facets`. But `normalise_facets` resolves from each facet's
+**raw** column and blanks every derived column when the raw is empty —
+and a cash position has no raw: the user picks a node in the table,
+which lands in the node column. So the defaults were written into
+`asset_class` and `sector`, which are derived, and were wiped a few
+lines later. Every cash position came back with all four facets empty,
+contributing nothing to the asset-class breakdown — the one bucket a
+deposit most obviously belongs in. The fix seeds each facet's raw column
+from what the position states (raw, else node, else level column, else
+the cash default), through the `facet_raw_field` / `facet_node_field`
+helpers rather than four hardcoded names.
+
+**The synthetic breakdown was not levelled.**
+`synth_enriched_for_cash_position` built `{"items": [ … ]}` — a bare
+list with no levels. `facet_items` returns a bare list for *every* level
+it is asked for, so a deposit stated as `cash` (an `asset_class`-level
+node) also answered `cash` at `super_class` level, where the right
+answer is `liquid`. The X-ray then drew the user's own deposits and the
+funds' cash sleeves as two separate buckets at the same level — the one
+thing the cash design says must never happen. Cash positions now go
+through `build_facet_block`, the same function a real fund's block comes
+from, so the stated node rolls up and down its tree and the two merge.
+
+**A blank currency valued the position at zero.** The FX rate table was
+built only from positions that named a currency, so a position with a
+blank currency field found no rate — and the missing rate was coerced to
+`0.0` with a comment calling that the safe behaviour. It is the opposite:
+a zero does not blank a cell, it silently removes the position from the
+portfolio total, the X-ray denominator and every target deviation. A
+blank currency now means the base currency (the default the optimise
+endpoint already applied to the same field), and a genuinely missing rate
+is a `valuation_error`, as it is for a fund.
 
 ### Geography
 
