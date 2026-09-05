@@ -55,9 +55,23 @@ from porxpy.config import (
     field_vocab,
 )
 
-# Anthropic API. The key is read from the environment, never from
-# settings.json — that file sits in the project directory in plaintext
-# and gets copied around, which is no place for a credential.
+# Anthropic API.
+#
+# The key comes from Settings first, and from the environment when
+# Settings has none (v0.103.0). It used to be environment-only, on the
+# reasoning that settings.json sits in the project directory in
+# plaintext and is no place for a credential. What changed is not that
+# assessment but whose problem it is: PorxPy is a self-hosted app the
+# user runs on their own machine with their own key, an environment
+# variable on Windows means a restart before it takes effect, and the
+# result was that the feature looked broken to anyone who had not set
+# one. settings.json is gitignored and untracked, so the key does not
+# reach a commit.
+#
+# Two consequences worth keeping in mind when editing this module:
+# the key must never be logged, and it must never be returned to the
+# browser — /api/settings masks it on read, and only ever accepts a
+# new one.
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_MODEL = "claude-sonnet-4-5"
@@ -92,10 +106,61 @@ _FIELD_ALIASES: dict[str, str] = {
 }
 
 
-def api_key_present() -> bool:
-    """Whether an API key is available in the environment."""
+def api_key() -> str:
+    """The Anthropic key in force, or ``""``.
+
+    THE read path — `api_key_present`, the status endpoint and the
+    extraction call all go through it, so none of them can disagree
+    about which key is in use or whether there is one.
+
+    Settings wins over the environment. A key typed into Settings is a
+    deliberate act in the UI and takes effect at once; the environment
+    variable stays as the fallback for a machine set up that way, and
+    for anyone driving the app headless.
+    """
     import os
-    return bool((os.environ.get(API_KEY_ENV) or "").strip())
+    from porxpy.utils import load_settings
+    from_settings = ((load_settings().get("ai") or {}).get("api_key") or "").strip()
+    if from_settings:
+        return from_settings
+    return (os.environ.get(API_KEY_ENV) or "").strip()
+
+
+def api_key_source() -> str:
+    """Where the key in force came from: ``"settings"``, ``"env"`` or ``""``.
+
+    Reported to the user because the fix differs. A missing key is a
+    field to fill in; a key that is present but wrong is one the user
+    has to find, and knowing which of the two places it is coming from
+    is the difference between looking in Settings and looking at the
+    environment.
+    """
+    import os
+    from porxpy.utils import load_settings
+    if ((load_settings().get("ai") or {}).get("api_key") or "").strip():
+        return "settings"
+    if (os.environ.get(API_KEY_ENV) or "").strip():
+        return "env"
+    return ""
+
+
+def api_key_hint(key: str | None = None) -> str:
+    """A key rendered safe to show: ``"sk-ant…B7dQ"``, or ``""``.
+
+    Enough to tell two keys apart when checking which one is stored,
+    and not enough to use. Never returns the middle of the key.
+    """
+    k = (key if key is not None else api_key()).strip()
+    if not k:
+        return ""
+    if len(k) <= 12:
+        return "…" + k[-4:]
+    return f"{k[:6]}…{k[-4:]}"
+
+
+def api_key_present() -> bool:
+    """Whether an API key is available at all — Settings or environment."""
+    return bool(api_key())
 
 
 def _market_cap_definition() -> str:
@@ -534,13 +599,13 @@ def extract_from_document(data: bytes, ext: str, *,
         ValueError: The document is empty/too large, or the reply is not
             usable JSON.
     """
-    import os
     import requests
 
-    key = (os.environ.get(API_KEY_ENV) or "").strip()
+    key = api_key()
     if not key:
         raise RuntimeError(
-            f"no API key: set {API_KEY_ENV} in the environment and restart")
+            "no API key: enter one under Settings → AI helper, or set "
+            f"{API_KEY_ENV} in the environment and restart")
     if not data:
         raise ValueError("the document is empty")
     if len(data) > MAX_DOC_BYTES:

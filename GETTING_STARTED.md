@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.102.1. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.103.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -100,11 +100,22 @@ That is the whole installation. There is nothing else to set up.
 
 The AI factsheet helper — letting Claude read an issuer factsheet and
 stage the fields, breakdowns and positions it finds — is off by default
-and needs two things: `ANTHROPIC_API_KEY` set in your environment
-*before* you start the app, and the toggle switched on in **Settings**.
-The key is read from the environment and never written to
-`settings.json`, which sits in the project directory in plain text and
-tends to get copied around.
+and needs two things: an Anthropic API key, and the toggle switched on
+in **Settings**.
+
+Both live in the same place. Go to **Settings → AI helper**, tick
+*Read factsheets with Claude*, paste your key into **Anthropic API
+key**, and press Save. It takes effect immediately — no restart. The
+key is stored in `settings.json` on this machine; that file is
+gitignored and never committed, but it is plain text, so treat the
+machine as you would treat the key. Once saved it is never shown again:
+the field stays blank, and the line above it reads *Key stored
+(sk-ant…WXYZ)* so you can tell which key is in place. **Forget key**
+erases it.
+
+An `ANTHROPIC_API_KEY` environment variable still works and is used
+when no key is stored in Settings, which is the way to run the app
+headless. A key entered in Settings takes precedence over it.
 
 You do not need it for anything in this guide.
 
@@ -123,7 +134,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.102.1 (built 2026-09-05)
+  PorxPy  v0.103.0 (built 2026-09-05)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -253,6 +264,12 @@ Cash counts toward the portfolio's asset-class, sector, country and
 currency tiles and appears as rows in the Holdings sub-tab, so a
 portfolio that is 100% cash already X-rays correctly — it is simply all
 one bucket.
+
+The Holdings sub-tab merges the same company across every fund that
+holds it, so ASML appears once with the combined value rather than once
+per fund. Its **Funds** column says how many of your funds contributed
+to that row and opens to name them — the quickest way to find out why
+an exposure you did not plan for is as big as it is.
 
 The amount you enter here is the money the optimiser has to work with.
 How much of it *stays* in cash is a separate decision, made in the next

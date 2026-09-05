@@ -1,6 +1,6 @@
 # IMPORT_NEW_FUNDS_GUIDE.md — importing new funds and ETFs
 
-*Current as of v0.102.1. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.103.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between typing an ISIN into an empty box and having a fully
@@ -81,7 +81,7 @@ version you are looking at:
 
 ```
 =======================================================
-  PorxPy  v0.102.1 (built 2026-09-05)
+  PorxPy  v0.103.0 (built 2026-09-05)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -101,11 +101,17 @@ saving a Python file restarts it automatically. Stop it with `Ctrl+C`.
 ### The optional AI helper
 
 Reading factsheets with Claude ([section 10](#10-the-factsheet)) is off by
-default and needs two things: the environment variable
-`ANTHROPIC_API_KEY` set *before* you start the app, and the toggle
-switched on in **Settings**. The key is read from the environment and
-never written to `settings.json`, which sits in the project directory in
-plain text and tends to get copied around.
+default and needs two things, both in **Settings → AI helper**: the
+toggle switched on, and an Anthropic API key pasted into the **Anthropic
+API key** field. Saving takes effect at once — no restart.
+
+The key is stored in `settings.json` on this machine. That file is
+gitignored so the key never reaches a commit, but it is plain text.
+After saving, the field stays blank and the line above it reads *Key
+stored (sk-ant…WXYZ)*, which is enough to tell one key from another
+without showing it; **Forget key** erases it. An `ANTHROPIC_API_KEY`
+environment variable is still honoured when Settings holds no key, and
+a key in Settings takes precedence over it.
 
 Everything else works offline once fetched. The only outbound traffic is
 Yahoo Finance, OpenFIGI for ISIN lookups, and — if you ask for it —

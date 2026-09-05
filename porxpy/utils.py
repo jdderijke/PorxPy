@@ -4457,12 +4457,25 @@ def normalise_settings(raw: dict | None) -> dict:
 
     # ── ai ────────────────────────────────────────────────────────────
     # Consent to send an uploaded factsheet to the Anthropic API. Off by
-    # default and stored separately from the key, which lives only in the
-    # environment: settings.json sits in the project directory in
-    # plaintext and gets copied around, which is no place for a
-    # credential.
+    # default.
+    #
+    # The key used to be deliberately absent from here and read only
+    # from the environment, because settings.json sits in the project
+    # directory in plaintext. v0.103.0 moved it in. The plaintext point
+    # still stands and is why the file is gitignored and untracked, and
+    # why /api/settings never returns the key to the browser — but an
+    # environment variable on Windows needs a restart before it takes
+    # effect, which made the feature look broken to anyone who had not
+    # already set one. A self-hosted app holding the user's own key, in
+    # a file that cannot reach a commit, is the trade the user asked
+    # for.
+    #
+    # Whitespace is stripped because a key pasted out of a web page
+    # routinely arrives with a trailing newline, and the API rejects it
+    # with an error that says nothing about whitespace.
     ai_src = raw.get("ai") if isinstance(raw.get("ai"), dict) else {}
     ai_enabled = bool(ai_src.get("enabled", False))
+    ai_api_key = str(ai_src.get("api_key") or "").strip()
     # Whether the extraction report offers an editable prompt. Off by
     # default: the generated prompt is built from the live registry, so
     # hand-editing it is a debugging affordance rather than something
@@ -4505,6 +4518,7 @@ def normalise_settings(raw: dict | None) -> dict:
         "ai": {
             "enabled":     ai_enabled,
             "edit_prompt": ai_edit_prompt,
+            "api_key":     ai_api_key,
         },
         "group_ttl_days": group_ttl,
     }
@@ -4565,6 +4579,29 @@ def save_settings(settings: dict) -> dict:
         The normalised dict that was actually written, so the caller can
         echo it back to the client without a second read.
     """
+    # The API key is write-only from the browser's side: /api/settings
+    # never sends it back, so a saved settings snapshot cannot echo it,
+    # and the PUT's shallow merge would blank it on every unrelated save
+    # — toggling a checkbox would silently forget the key.
+    #
+    # The rule lives here rather than in the route because this is the
+    # one write path, so every caller gets it:
+    #
+    #   key absent, or ""  → keep whatever is stored (the ordinary save)
+    #   a non-empty string → set it
+    #   None               → clear it ("Forget key")
+    #
+    # None is the only way to erase one, which is what makes "" safe to
+    # mean "unchanged" — and "" is what an untouched password field
+    # sends.
+    incoming = settings.get("ai") if isinstance(settings.get("ai"), dict) else {}
+    if "api_key" in incoming and incoming["api_key"] is None:
+        settings = {**settings, "ai": {**incoming, "api_key": ""}}
+    elif not str(incoming.get("api_key") or "").strip():
+        stored = str((load_settings().get("ai") or {}).get("api_key") or "")
+        if stored:
+            settings = {**settings, "ai": {**incoming, "api_key": stored}}
+
     norm = normalise_settings(settings)
     try:
         with open(SETTINGS_FP, "w", encoding="utf-8") as f:

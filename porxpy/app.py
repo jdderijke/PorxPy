@@ -506,9 +506,26 @@ def create_app() -> Flask:
         two of the six sections, so the reset button it feeds could only
         ever restore those two and quietly left the rest alone.
         """
+        # The API key is never sent to the browser. It is stored so the
+        # user does not have to set an environment variable, not so the
+        # page can read it back — a masked hint is enough to tell which
+        # key is in place, and the field is write-only from here on.
+        from porxpy import ai as _ai
+        settings = load_settings()
+        ai_block = dict(settings.get("ai") or {})
+        stored   = str(ai_block.pop("api_key", "") or "")
+        ai_block["api_key_set"]  = bool(stored)
+        ai_block["api_key_hint"] = _ai.api_key_hint(stored) if stored else ""
+        settings = {**settings, "ai": ai_block}
+
+        defaults = default_settings()
+        d_ai = dict(defaults.get("ai") or {})
+        d_ai.pop("api_key", None)
+        defaults = {**defaults, "ai": d_ai}
+
         return jsonify({
-            "settings": load_settings(),
-            "defaults": default_settings(),
+            "settings": settings,
+            "defaults": defaults,
         })
 
     @app.route("/api/settings", methods=["PUT"])
@@ -4046,18 +4063,24 @@ def create_app() -> Flask:
 
         Two independent conditions — the user's consent and the presence
         of a key — reported separately, because the fix differs: one is a
-        switch in Settings, the other an environment variable and a
-        restart. Collapsing them to a single "unavailable" would leave
-        the user guessing which.
+        switch in Settings, the other a key to supply. Collapsing them to
+        a single "unavailable" would leave the user guessing which.
+
+        ``key_source`` says WHERE the key in force came from, because
+        that changes the fix too: a wrong key stored in Settings is
+        edited there, while one coming from the environment is not
+        PorxPy's to change and needs a restart once it is.
         """
         from porxpy import ai as _ai
         settings = load_settings()
         enabled = bool((settings.get("ai") or {}).get("enabled"))
         has_key = _ai.api_key_present()
         return jsonify({
-            "enabled":  enabled,
-            "has_key":  has_key,
-            "ready":    enabled and has_key,
+            "enabled":    enabled,
+            "has_key":    has_key,
+            "ready":      enabled and has_key,
+            "key_source": _ai.api_key_source(),
+            "key_hint":   _ai.api_key_hint(),
             "key_env":  _ai.API_KEY_ENV,
             "model":    _ai.DEFAULT_MODEL,
             "edit_prompt": bool((settings.get("ai") or {}).get("edit_prompt")),

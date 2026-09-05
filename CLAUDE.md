@@ -125,7 +125,7 @@ of debugging.
 
 There is **no test suite, linter config, or build step** in this repo. Verification is done by running the app and exercising the affected screen, or by the two `tools/` scripts. `test files/` holds sample CSVs for manually exercising the breakdown-upload flow, not automated tests.
 
-The AI factsheet helper needs `ANTHROPIC_API_KEY` in the environment plus the Settings toggle; it is off by default and the key is never written to `settings.json`.
+The AI factsheet helper needs an Anthropic API key plus the Settings toggle; it is off by default. Since v0.103.0 the key is entered in **Settings → AI helper** and stored in `settings.json` (gitignored, so it cannot reach a commit); `ANTHROPIC_API_KEY` in the environment is the fallback when Settings holds no key. `ai.api_key()` is the single read path — never read the environment directly — and the key must never be logged or returned to the browser: `/api/settings` strips it and reports only `api_key_set` and a masked `api_key_hint`.
 
 ## Architecture
 

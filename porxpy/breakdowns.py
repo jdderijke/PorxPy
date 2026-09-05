@@ -1445,6 +1445,7 @@ def aggregate_portfolio_holdings(funds: list[dict],
                  "weight_pct",        # % of WHOLE portfolio
                  "portfolio_value",   # base-currency money
                  "fund_count",        # how many funds hold it
+                 "fund_tickers",      # and which ones, for the Funds column
                  "is_residual"},      # True only for the synthetic row
                 ...
               ],
@@ -1472,6 +1473,14 @@ def aggregate_portfolio_holdings(funds: list[dict],
     # accumulator per merged holding:
     #   value      — Σ base-currency money contributed
     #   fund_ids   — set of contributing fund indices (for fund_count)
+    #   fund_tks   — the same funds as TICKERS, in first-contribution
+    #                order, so the Funds column can name them. Tickers
+    #                rather than names: the display name of a fund lives
+    #                on the portfolio view the page already holds, and
+    #                repeating it on every one of a few thousand merged
+    #                rows would bloat the payload to say something the
+    #                client can already look up — and could disagree
+    #                with what the funds table shows.
     #   fields     — per output field: current winning value + the
     #                (source_rank, -contribution, order) of its source
     acc: dict[str, dict] = {}
@@ -1553,6 +1562,7 @@ def aggregate_portfolio_holdings(funds: list[dict],
                 slot = {
                     "value":    0.0,
                     "fund_ids": set(),
+                    "fund_tks": [],
                     "fields":   {},
                     # Tracks whether the merged row originated from a
                     # cash position. Sticky-True: if any contributing
@@ -1570,6 +1580,12 @@ def aggregate_portfolio_holdings(funds: list[dict],
                 acc[key] = slot
                 order.append(key)
             slot["value"] += money
+            if fund_idx not in slot["fund_ids"]:
+                # Appended before the index is recorded, so the list
+                # keeps first-contribution order and holds each fund
+                # exactly once however many of its rows merge here.
+                slot["fund_tks"].append(
+                    (e.get("ticker") or "").strip().upper())
             slot["fund_ids"].add(fund_idx)
             if e.get("is_cash"):
                 slot["is_cash"] = True
@@ -1615,6 +1631,7 @@ def aggregate_portfolio_holdings(funds: list[dict],
             round(money / funds_base * 100.0, 6) if funds_base > 0 else 0.0)
         row["portfolio_value"] = round(money, 2)
         row["fund_count"]      = len(slot["fund_ids"])
+        row["fund_tickers"]    = [t for t in slot["fund_tks"] if t]
         row["is_residual"]     = False
         row["is_cash"]         = slot.get("is_cash", False)
         row["interest"]        = slot.get("interest", 0.0)
@@ -1641,6 +1658,7 @@ def aggregate_portfolio_holdings(funds: list[dict],
             "weight_pct":      round(residual / funds_base * 100.0, 6),
             "portfolio_value": round(residual, 2),
             "fund_count":      0,
+            "fund_tickers":    [],
             "is_residual":     True,
             "is_cash":         False,
             "interest":        0.0,

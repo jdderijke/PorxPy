@@ -3,6 +3,106 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.103.0] - 2026-09-05
+
+### Added — the Anthropic API key is entered in Settings
+
+It used to come only from an `ANTHROPIC_API_KEY` environment variable,
+deliberately: `settings.json` sits in the project directory in plain
+text, which is no place for a credential. That assessment has not
+changed. What changed is whose problem it is. PorxPy is self-hosted, the
+key is the user's own, and an environment variable on Windows needs a
+restart before the running process sees it — so the feature looked
+broken to anyone who had not already set one, and the fix was invisible
+from inside the app.
+
+**Settings → AI helper** now has an *Anthropic API key* field. Saving
+takes effect at once. The environment variable still works and is used
+when Settings holds no key, so a headless setup is unaffected; a key
+entered in Settings takes precedence over it.
+
+What keeps it from becoming a leak:
+
+* `settings.json` is gitignored and untracked, so the key cannot reach
+  a commit. Verified against the working tree, not assumed.
+* The key is never returned to the browser. `/api/settings` strips it
+  and reports `api_key_set` plus a masked `api_key_hint`
+  (`sk-ant…WXYZ`) — enough to tell two keys apart, not enough to use
+  one. The field is blank after saving and stays blank.
+* An untouched field means "leave the stored key alone", not "erase
+  it". The rule lives in `save_settings`, the one write path, so every
+  caller gets it: absent or `""` keeps what is stored, a string sets
+  it, and `null` — which only the **Forget key** button sends — clears
+  it. Without this, toggling any unrelated checkbox would have silently
+  forgotten the key.
+* `ai.api_key()` is the single read path, so the status endpoint, the
+  readiness check and the extraction call cannot disagree about which
+  key is in force. The status now also reports `key_source`, because a
+  wrong key in Settings is edited there while one from the environment
+  is not PorxPy's to change.
+
+### Added — the portfolio Holdings table names the funds behind each row
+
+The column was headed `# Funds` and printed a bare count. It answered
+"how widely is this held" and left "by which of my funds" — the question
+a reader of a merged row actually has — to be worked out by filtering
+the funds table one fund at a time.
+
+It is now **Funds**, and each cell is a dropdown that names them. It
+uses the same popover as the Pre-Loaded list's Portfolios column, which
+was extracted into one builder (`crpopHtml`) rather than copied: they
+are the same control over the same shape of answer — a cell that says N
+and has no room to say which N.
+
+The rollup carries `fund_tickers` per merged row and the page resolves
+display names from the portfolio view it already holds. Tickers rather
+than names on the wire because a few thousand merged rows would each
+repeat a name the client can look up, and because the name shown is then
+by construction the one the funds table shows. A cached rollup from
+before this release simply shows the count, as it always did.
+
+## [0.102.2] - 2026-09-05
+
+### Fixed — a freshly filled portfolio showed no holdings at all
+
+Regression from v0.102.0, reported from the sequence that exposes it:
+empty an old portfolio of its funds, give it cash, set targets, run the
+optimiser, apply the trades. The funds list fills — and Portfolio →
+Holdings stays empty.
+
+The look-through rollup is cached in the browser per portfolio.
+Emptying the portfolio and then opening Holdings caches a legitimately
+empty answer against that portfolio's id. Applying trades then fills it
+with funds, and the apply handler clears `lastLoadedPid` precisely so
+the next load counts as a change and drops the per-portfolio caches.
+
+v0.102.0 narrowed that drop. It was fixing a real problem — a
+late-landing reload was discarding an unsaved cash draft the user had
+just typed — but it applied the same rule to both caches, keeping
+whichever already belonged to the active portfolio. For the cash draft
+that is right. For the rollup it is exactly wrong: the rollup is
+*derived from the funds*, and a reload is the signal that those funds
+may have changed. The stale empty answer therefore survived the one
+event guaranteed to invalidate it.
+
+`portfolioHoldings` is dropped unconditionally again, with the
+asymmetry against the cash draft stated at the site. Two further
+changes so this cannot recur quietly:
+
+* The trades handler now invalidates the rollup **itself**, rather than
+  relying on that falling out of clearing `lastLoadedPid`. The share
+  counts changed; the rollup computed from them is stale by definition,
+  and saying so where the change happens does not depend on a coupling
+  invisible from that end.
+* A user sitting on the Holdings sub-tab when the cache is dropped now
+  gets it re-fetched. `switchPortfolioSubTab` only loads on entry, so
+  someone who never left would have kept looking at an empty table.
+
+Verified in a browser across four paths: a fresh load (1,582 rows), the
+reported sequence (empty cache → apply → open Holdings → 1,582 rows),
+the user staying on Holdings throughout, and navigating to Holdings
+while the reload is still in flight.
+
 ## [0.102.1] - 2026-09-05
 
 ### Fixed — a disabled button said "forbidden" when it meant "nothing to do"

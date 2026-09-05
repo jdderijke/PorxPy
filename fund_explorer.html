@@ -2274,11 +2274,33 @@
           nothing else. No holdings, no portfolios, no positions. Off by
           default.
           <br><br>
-          The API key is read from the
-          <code id="setAiKeyEnv">ANTHROPIC_API_KEY</code> environment
-          variable and never written to disk. <span id="setAiKeyState"></span>
+          Needs an Anthropic API key — enter it below.
+          <span id="setAiKeyState"></span>
         </span>
       </label>
+      <div style="margin:0 0 1rem 26px">
+        <label class="mfl" for="setAiKey">Anthropic API key</label>
+        <div style="display:flex;gap:.4rem;align-items:center;margin-top:.25rem">
+          <input id="setAiKey" type="password" autocomplete="off"
+                 spellcheck="false" placeholder="sk-ant-…"
+                 style="flex:1;min-width:220px;background:var(--surface2);
+                        border:1px solid var(--border2);border-radius:6px;
+                        color:var(--text);font-family:var(--mono);
+                        font-size:.78rem;padding:.4rem .55rem">
+          <button class="btn btn-s btn-sm" id="setAiKeyForget"
+                  onclick="aiForgetKey()">Forget key</button>
+        </div>
+        <div style="font-family:var(--mono);font-size:.66rem;color:var(--muted);
+                    line-height:1.6;margin-top:.4rem">
+          Stored in <code>settings.json</code> on this machine. That file is
+          gitignored, so the key is never committed — but it is stored in
+          plain text, so treat the machine as you would treat the key.
+          Leave the box blank to keep the key already stored; it is never
+          shown again once saved. An
+          <code id="setAiKeyEnv">ANTHROPIC_API_KEY</code> environment
+          variable still works, and is used when no key is stored here.
+        </div>
+      </div>
       <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;margin:0 0 1rem 26px">
         <input type="checkbox" id="setAiEditPrompt" style="margin-top:3px">
         <span style="font-family:var(--mono);font-size:.7rem;color:var(--muted);line-height:1.6">
@@ -5108,6 +5130,29 @@ function revealCacheRow(ticker){
   row.classList.add('rowflash');
 }
 
+// One popover, drawn the same way wherever a cell has to name a list it
+// has no room for: the Pre-Loaded list's Portfolios column and the
+// portfolio Holdings table's Funds column. They are the same control
+// answering the same question — "this cell says N, which N?" — so they
+// share a builder rather than each growing a copy that can drift in
+// styling, in how the trigger reads, or in what an empty list does.
+//
+// items: [{k, v}] — k is the name, v the trailing detail (a share
+// count, a weight) or '' when there is nothing to add.
+function crpopHtml(popoverId, label, items){
+  const body = items.map(it => `<div class="crpop-item">
+      <span class="crpop-k">${escapeHtml(it.k)}</span>
+      <span class="crpop-v">${escapeHtml(it.v || '')}</span>
+    </div>`).join('');
+  return `<div class="crpop" id="${escapeAttr(popoverId)}">
+    <button class="crpop-trigger" onclick="event.stopPropagation(); togglePrePop('${escapeAttr(popoverId)}')">
+      <span>${escapeHtml(label)}</span>
+      <span class="arr">▼</span>
+    </button>
+    <div class="crpop-menu">${body}</div>
+  </div>`;
+}
+
 function renderPortfoliosTrigger(rowIdx, portfolios){
   if (!portfolios || !portfolios.length){
     // No tile at all when the fund isn't in any portfolio — keeps row
@@ -5115,7 +5160,6 @@ function renderPortfoliosTrigger(rowIdx, portfolios){
     // would be empty anyway.
     return '';
   }
-  const popoverId = `pfpop-${rowIdx}`;
   const items = portfolios.map(p => {
     const shares = p.shares;
     let sharesStr;
@@ -5125,19 +5169,10 @@ function renderPortfoliosTrigger(rowIdx, portfolios){
       const n = Number(shares);
       sharesStr = `${n.toLocaleString(undefined,{maximumFractionDigits:6})} sh`;
     }
-    return `<div class="crpop-item">
-      <span class="crpop-k">${escapeHtml(p.name || '(unnamed)')}</span>
-      <span class="crpop-v">${escapeHtml(sharesStr)}</span>
-    </div>`;
-  }).join('');
+    return { k: p.name || '(unnamed)', v: sharesStr };
+  });
   const label = `${portfolios.length} ${portfolios.length===1?'portfolio':'portfolios'}`;
-  return `<div class="crpop" id="${popoverId}">
-    <button class="crpop-trigger" onclick="event.stopPropagation(); togglePrePop('${popoverId}')">
-      <span>${label}</span>
-      <span class="arr">▼</span>
-    </button>
-    <div class="crpop-menu">${items}</div>
-  </div>`;
+  return crpopHtml(`pfpop-${rowIdx}`, label, items);
 }
 
 // Toggle a single popover open. Closing all others first guarantees only
@@ -6068,6 +6103,12 @@ async function applyOptimizerTrades(){
     optProposal = null;
 
     // Reload so the Funds / Cash / X-ray tabs reflect the new positions.
+    // The share counts just changed, so the look-through rollup computed
+    // from them is stale by definition — said here rather than left to
+    // fall out of clearing lastLoadedPid, because that coupling is
+    // invisible from this end and broke once already (v0.102.2).
+    portfolioHoldings    = null;
+    portfolioHoldingsPid = '';
     lastLoadedPid = '';
     await refreshConfigAndPortfolios();
   } catch(e){
@@ -6964,7 +7005,7 @@ function renderPortfolioHoldings(){
             ${phTh('coupon',         'Coupon %',  {right:true, width:80,  bond:true})}
             ${phTh('effective_date', 'Eff. Date', {width:110, bond:true})}
             ${phTh('quality',        'Rating',    {width:80,  bond:true})}
-            ${phTh('fund_count',      '# Funds', {right:true, width:80})}
+            ${phTh('fund_count',      'Funds', {right:true, width:104})}
             ${phTh('weight_pct',      'Weight', {right:true, width:120})}
             ${phTh('portfolio_value', 'Portfolio Value', {right:true, width:160})}
           </tr>
@@ -7003,6 +7044,47 @@ function renderPortfolioHoldings(){
     });
   }
   renderPortfolioHoldingsBody();
+}
+
+// The Funds cell: how many funds hold this position, and which.
+//
+// The column used to print a bare count, which answered "how widely is
+// this held" and left "by which of my funds" — the question a reader of
+// a merged row actually has — to be worked out by filtering the funds
+// table one at a time. It uses the same popover as the Pre-Loaded
+// list's Portfolios column (crpopHtml), because it is the same control
+// over the same shape of answer.
+//
+// Names are resolved from the portfolio view rather than sent with each
+// row: the rollup carries tickers only, so a few thousand merged rows
+// do not each repeat a fund's display name, and the name shown here is
+// by construction the one the funds table shows. A ticker with no entry
+// in the view falls back to itself, which is still an identification.
+function phFundsCell(r){
+  const n  = r.fund_count || 0;
+  const tk = r.fund_tickers || [];
+  if (!n) return '0';
+  // Nothing to open when the rollup predates fund_tickers (a cached
+  // payload from before v0.103.0) — show the count as it always was.
+  if (!tk.length) return String(n);
+  const byTicker = {};
+  for (const f of ((currentPortfolioView && currentPortfolioView.funds) || [])){
+    const key = (f.ticker || '').toUpperCase();
+    if (key) byTicker[key] = f;
+  }
+  const items = tk.map(t => {
+    const f = byTicker[t];
+    const prof = (f && f.data && f.data.profile) || {};
+    const name = prof.longName || prof.shortName || '';
+    return { k: name || t, v: name ? t : '' };
+  });
+  const label = `${n} ${n === 1 ? 'fund' : 'funds'}`;
+  // Keyed by the row's own merge key, not by index: the table sorts and
+  // filters, so an index-keyed id would move between renders and a
+  // popover left open would reopen against a different holding.
+  const id = 'phfundpop-' + String(r._merge_key || r.isin || r.ticker || r.name || '')
+             .replace(/[^A-Za-z0-9_-]/g, '');
+  return crpopHtml(id, label, items);
 }
 
 // Sortable <th> for the portfolio holdings table.
@@ -7211,7 +7293,7 @@ function renderPortfolioHoldingsBody(){
       bondRCell(coupon_or_interest == null ? '—' : coupon_or_interest.toFixed(2) + '%') +
       bondCell(isResidual ? '' : r.effective_date) +
       bondCell(isResidual || r.is_cash ? '' : r.quality) +
-      rcell(isResidual ? '—' : (r.fund_count || 0)) +
+      rcell(isResidual ? '—' : phFundsCell(r)) +
       rcell(wpct(r.weight_pct)) +
       rcell(fmtMoney(r.portfolio_value, cur)) +
     `</tr>`;
@@ -13980,12 +14062,58 @@ async function refreshAiStatus(){
   } catch(e){ /* leave the defaults: the buttons simply stay off */ }
   const st = document.getElementById('setAiKeyState');
   if (st){
-    st.innerHTML = aiStatus.has_key
-      ? `<span style="color:var(--green)">Key detected.</span>`
-      : `<span style="color:var(--amber)">No key found — set it and restart PorxPy.</span>`;
+    // Where the key came from decides what the user does next, so say
+    // it: one is edited here, the other is not PorxPy's to change.
+    const hint = aiStatus.key_hint ? ` (${escapeHtml(aiStatus.key_hint)})` : '';
+    if (aiStatus.key_source === 'settings'){
+      st.innerHTML = `<span style="color:var(--green)">Key stored${escapeHtml(hint)}.</span>`;
+    } else if (aiStatus.key_source === 'env'){
+      st.innerHTML = `<span style="color:var(--green)">Using the `
+        + `${escapeHtml(aiStatus.key_env || 'ANTHROPIC_API_KEY')} environment `
+        + `variable${escapeHtml(hint)}.</span> A key entered here would take `
+        + `precedence.`;
+    } else {
+      st.innerHTML = `<span style="color:var(--amber)">No key yet.</span>`;
+    }
   }
+  // Nothing to forget when nothing is stored HERE — an environment key
+  // is not ours to remove, and a live button implying otherwise would
+  // be a promise the app cannot keep.
+  const fg = document.getElementById('setAiKeyForget');
+  if (fg) fg.disabled = (aiStatus.key_source !== 'settings');
+  const box = document.getElementById('setAiKey');
+  if (box) box.placeholder = (aiStatus.key_source === 'settings')
+    ? 'stored — type a new key to replace it' : 'sk-ant-…';
   const env = document.getElementById('setAiKeyEnv');
   if (env && aiStatus.key_env) env.textContent = aiStatus.key_env;
+}
+
+// Erase the stored key. Sends null, which is the one value save_settings
+// reads as "clear it" — an empty string means "unchanged", because that
+// is what an untouched password box sends on every unrelated save.
+async function aiForgetKey(){
+  if (!confirm('Forget the stored Anthropic API key?\n\n'
+             + 'The AI helper stops working until you enter another one, '
+             + 'unless an ANTHROPIC_API_KEY environment variable is set.')) return;
+  try {
+    const r = await fetch(`${API}/settings`, {
+      method: 'PUT', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ ai: {
+        enabled:     !!document.getElementById('setAiEnabled')?.checked,
+        edit_prompt: !!document.getElementById('setAiEditPrompt')?.checked,
+        api_key:     null,
+      }}),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const box = document.getElementById('setAiKey');
+    if (box) box.value = '';
+    await loadAppSettings();
+    await refreshAiStatus();
+    setSettingsStatus('Key forgotten.', 'ok');
+    setTimeout(() => setSettingsStatus(''), 2500);
+  } catch(e){
+    setSettingsStatus('Could not clear the key: ' + e.message, 'err');
+  }
 }
 
 // ── Factsheets ───────────────────────────────────────────────────────
@@ -15932,6 +16060,11 @@ async function saveSettings(){
     ai: {
       enabled:     !!document.getElementById('setAiEnabled')?.checked,
       edit_prompt: !!document.getElementById('setAiEditPrompt')?.checked,
+      // Blank means "leave the stored key alone" — the field is never
+      // populated with the real one, so an untouched box must not be
+      // read as an instruction to erase it. Clearing is deliberate and
+      // goes through aiForgetKey(), which sends null.
+      api_key:     document.getElementById('setAiKey')?.value || '',
     },
   };
   setSettingsStatus('Saving…');
@@ -15966,6 +16099,14 @@ async function saveSettings(){
     // pass for which rating inputs count and how big a peer group is.
     // Refetching the scores alone left the dots on the previous model.
     invalidateFundDerived();
+
+    // The key was sent; blank the box rather than leaving it holding a
+    // secret in a field the user can no longer verify against anything.
+    // refreshAiStatus() below repaints the "Key stored (sk-ant…)" line,
+    // which is the honest confirmation.
+    const keyBox = document.getElementById('setAiKey');
+    if (keyBox) keyBox.value = '';
+    refreshAiStatus().catch(()=>{});
 
     portfolioHoldings    = null;
     portfolioHoldingsPid = '';
@@ -18103,12 +18244,23 @@ async function reloadPortfolio(forceRefresh, isSwitch = false){
       // clearing them threw away work the user had just done and left
       // the panel describing rows it no longer held (v0.101.2).
       //
-      // Each cache therefore says which portfolio it is for, and is
-      // dropped only when that is not the one we just loaded.
-      if (portfolioHoldingsPid !== activePid) {
-        portfolioHoldings    = null;
-        portfolioHoldingsPid = '';
-      }
+      // The two are NOT the same kind of thing, and v0.102.0 wrongly
+      // treated them alike:
+      //
+      // portfolioHoldings is a CACHE of data derived from the
+      // portfolio's funds. Any reload means those funds may have
+      // changed — applying the optimiser's trades sets lastLoadedPid to
+      // '' precisely to force this path — so it is always dropped.
+      // Keeping it because the pid still matched is what left a
+      // freshly-filled portfolio showing no holdings at all: the rollup
+      // had been cached while the portfolio was empty, the trades
+      // filled it, and the stale empty answer survived (v0.102.2).
+      //
+      // cashPositions is the user's own unsaved DRAFT. That is worth
+      // protecting from a late-landing reset, and is why the check
+      // below stays.
+      portfolioHoldings    = null;
+      portfolioHoldingsPid = '';
       if (cashPositionsPid !== activePid) {
         cashPositions    = [];
         cashPositionsPid = '';
@@ -18124,6 +18276,12 @@ async function reloadPortfolio(forceRefresh, isSwitch = false){
       // and wrong once they have navigated somewhere themselves while
       // it loaded. Their choice is the later one, so it wins.
       if (portfolioSubTab === subTabAtStart) switchPortfolioSubTab('funds');
+      // If that left them on Holdings, its cache was just dropped and
+      // nothing else will re-fetch it — switchPortfolioSubTab only
+      // loads on entry, and they never left.
+      if (portfolioSubTab === 'holdings') {
+        loadPortfolioHoldings().catch(e => console.warn('holdings rollup:', e));
+      }
     }
     // Fetch price-history separately — it's the slow one (FX history etc.)
     // and we don't want it blocking the main view.

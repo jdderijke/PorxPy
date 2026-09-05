@@ -1,6 +1,6 @@
 # WISHLIST.md — possible future enhancements
 
-*Started 2026-08-18, at v0.72.3. Last swept at v0.102.1.*
+*Started 2026-08-18, at v0.72.3. Last swept at v0.103.0.*
 
 Things worth doing that nobody has promised. This is deliberately **not**
 a defect list: a bug lives in the Known open issues section of the

@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.102.1. This is the fullest architecture write-up;
+*Current as of v0.103.0. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -290,6 +290,11 @@ anything about them having changed.
   and holdings from Yahoo Finance.
 - Group funds into one or more portfolios, with shares (or units) held
   per fund, plus cash positions.
+- See the same company once across every fund that holds it, on
+  **Portfolio → Holdings**. The **Funds** column says how many of your
+  funds hold each merged position and opens to name them, so a row you
+  did not expect to be that large can be traced back to where it came
+  from without filtering the funds table one fund at a time.
 - Read the **bond metadata** an issuer's holdings file carries — duration,
   maturity, coupon, effective date and credit rating — on import, in both
   holdings tables, and merged across funds at portfolio level. Ratings
@@ -742,9 +747,12 @@ leaves your machine. The only outbound traffic is:
 - justETF — only when you explicitly trigger the structure lookup, and
   only for ETFs by ISIN.
 - Anthropic API — only if you switch on the AI helper in Settings, and
-  only the factsheet document you uploaded. That document is public
-  issuer material; no holdings, portfolios or positions are ever sent.
-  Off by default, and the API key is read from the environment rather
+  only the factsheet you uploaded. No holdings, no portfolios, no
+  positions. Off by default. The API key is entered in Settings and
+  stored in `settings.json`, which is gitignored and never committed;
+  an `ANTHROPIC_API_KEY` environment variable is used instead when
+  Settings holds no key. The key is never sent back to the browser —
+  the page only ever sees a masked hint like `sk-ant…WXYZ`
   than stored.
 
 Bundles are files on your disk. Nothing is uploaded anywhere, and a
@@ -778,6 +786,6 @@ it does.
 
 ## Version
 
-Current release: **0.102.1** (2026-09-05)
+Current release: **0.103.0** (2026-09-05)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.
