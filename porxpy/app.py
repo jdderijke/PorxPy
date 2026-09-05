@@ -2843,6 +2843,65 @@ def create_app() -> Flask:
 
     # -- Bundles: pre-loaded fund sets and portfolio backups ----------
 
+    # -----------------------------------------------------------------------
+    # Bundle downloads
+    # -----------------------------------------------------------------------
+    def _bundle_response(data: bytes, filename: str) -> Response:
+        """A bundle download the client can prove arrived intact.
+
+        A 31MB bundle does not reliably survive the Werkzeug development
+        server: measured three times against the shipped fund set, every
+        response arrived short — by 7KB, 60KB and 65KB — with a correct
+        ``Content-Length`` and a 200 status. curl reports it (exit 56),
+        but ``fetch`` does not: ``response.ok`` is true and ``blob()``
+        resolves with whatever turned up, so the browser cheerfully
+        saved a truncated archive. That is how a 30MB "zip" with no
+        end-of-archive record reached the repository once already.
+
+        Two things are done about it here, and neither replaces the
+        other:
+
+        * The body is sent in fixed chunks rather than as one enormous
+          bytes object. This is what actually reduces the failure — a
+          single huge write is the case the dev server handles worst.
+        * The response states its own size and SHA-256 in headers the
+          app controls. ``Content-Length`` cannot be trusted for this:
+          it is exactly the header that was right while the body was
+          wrong, and a proxy may rewrite it. The client compares what it
+          received against these and refuses to save a mismatch, so the
+          remaining failures become a visible error rather than a
+          corrupt file.
+
+        Args:
+            data: The complete archive.
+            filename: Suggested download name.
+
+        Returns:
+            A streaming response carrying the integrity headers.
+        """
+        import hashlib
+        digest = hashlib.sha256(data).hexdigest()
+        total  = len(data)
+        CHUNK  = 256 * 1024
+
+        def _stream():
+            for i in range(0, total, CHUNK):
+                yield data[i:i + CHUNK]
+
+        return Response(
+            _stream(), mimetype="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length":      str(total),
+                # The app's own claim about the body, for a client that
+                # wants to verify rather than hope.
+                "X-PorxPy-Bytes":      str(total),
+                "X-PorxPy-SHA256":     digest,
+                # So a browser on another origin can read them at all.
+                "Access-Control-Expose-Headers":
+                    "Content-Disposition, X-PorxPy-Bytes, X-PorxPy-SHA256",
+            })
+
     @app.route("/api/bundles/funds/export", methods=["POST"])
     def api_bundle_export_funds() -> Response:
         """Download a pre-loaded fund bundle.
@@ -2864,20 +2923,15 @@ def create_app() -> Flask:
         finally:
             progress_finish(_tok)
         stamp = datetime.now().strftime("%Y%m%d")
-        return Response(
-            data, mimetype="application/zip",
-            headers={"Content-Disposition":
-                     f'attachment; filename="porxpy_funds_{stamp}.zip"'})
+        return _bundle_response(data, f"porxpy_funds_{stamp}.zip")
 
     @app.route("/api/bundles/portfolios/export", methods=["POST"])
     def api_bundle_export_portfolios() -> Response:
         """Download a portfolio backup (portfolios, targets, cash, settings)."""
         from porxpy.bundles import export_portfolios
         stamp = datetime.now().strftime("%Y%m%d")
-        return Response(
-            export_portfolios(_job_token()), mimetype="application/zip",
-            headers={"Content-Disposition":
-                     f'attachment; filename="porxpy_portfolios_{stamp}.zip"'})
+        return _bundle_response(export_portfolios(_job_token()),
+                                f"porxpy_portfolios_{stamp}.zip")
 
     @app.route("/api/bundles/inspect", methods=["POST"])
     def api_bundle_inspect() -> Response:

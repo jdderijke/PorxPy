@@ -3,6 +3,46 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.103.2] - 2026-09-05
+
+### Fixed — a bundle export could arrive truncated and be saved anyway
+
+The failure that put a corrupt archive into the repository once, now
+reproduced deliberately: three exports of the 31MB fund bundle over the
+development server, three short bodies — 7KB, 60KB and 65KB missing —
+each with status 200 and a correct `Content-Length`. curl reports it
+(exit 56). `fetch` does not: `response.ok` is true, `blob()` resolves
+with whatever turned up, and the browser saved it. A zip cut that way
+loses its end-of-archive record, so the file opens nowhere and explains
+nothing.
+
+Two changes, and neither replaces the other.
+
+**The body is streamed in 256KB chunks** rather than handed over as one
+enormous bytes object. That is what actually stops it: four consecutive
+exports of the same bundle now arrive complete, where three in a row had
+failed. A single huge write is the case the dev server handles worst.
+
+**The response states its own size and SHA-256**, in `X-PorxPy-Bytes`
+and `X-PorxPy-SHA256`, and the client checks both before writing
+anything to disk. `Content-Length` is not enough for this — it is
+precisely the header that was correct while the body was wrong, and a
+proxy may rewrite it, so the app makes its own claim. A mismatch throws
+with the byte count that went missing and saves nothing.
+
+The size check catches every truncation seen. The hash additionally
+catches corruption in transit and is skipped, not failed, when
+`crypto.subtle` is unavailable — some browsers withhold it outside a
+secure context, and refusing every download there would be worse than
+the size check alone.
+
+Both bundle endpoints go through one helper, so the portfolio backup is
+covered too. It is smaller, which made it luckier rather than safer.
+
+Verified in a browser: a body 100 bytes short throws and saves nothing;
+a complete one saves; a deliberately wrong checksum throws and saves
+nothing.
+
 ## [0.103.1] - 2026-09-05
 
 ### Changed — the shipped fund bundle re-exported against the current cache

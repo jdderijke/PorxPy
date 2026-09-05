@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.103.1. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.103.2. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -134,7 +134,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.103.1 (built 2026-09-05)
+  PorxPy  v0.103.2 (built 2026-09-05)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -454,6 +454,13 @@ treated very differently:
 
 Price history is off by default in the funds export, because it
 dominates the file size and one refetch replaces it.
+
+A download that does not arrive whole is refused rather than saved. The
+response states its own size and checksum, and the browser checks both
+before writing anything — so a truncated bundle produces a red message
+telling you how many bytes were missing, not a zip file that opens
+nowhere. If you hit it repeatedly, export without price history and
+factsheets: they are the bulk of the file.
 
 ### Starting over
 

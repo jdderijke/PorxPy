@@ -16822,10 +16822,58 @@ async function bkExportPortfolios(){
   } catch(e){ msg.innerHTML = `<span style="color:var(--red)">${escapeHtml(String(e.message||e))}</span>`; }
 }
 
+// Save a bundle, but only once it is known to have arrived whole.
+//
+// `response.ok` does not mean the body is complete. A 31MB export over
+// the development server arrives short often enough to have shipped a
+// corrupt archive to the repository once: status 200, a correct
+// Content-Length, and a blob missing its last few tens of KB. A zip
+// truncated that way loses its end-of-archive record, so the file opens
+// nowhere and says nothing about why.
+//
+// So the server states the body's size and SHA-256 in headers it
+// controls (see _bundle_response) and this checks both before writing
+// anything to disk. Size catches every truncation, which is the failure
+// actually seen; the hash additionally catches corruption in transit,
+// and is skipped rather than failed when the browser has no
+// crypto.subtle — on http:// that is the common case, and refusing to
+// download at all would be a worse answer than the size check alone.
+//
+// Throws on a mismatch, which the callers already surface in red.
 async function bkDownload(resp, fallbackName){
   const cd = resp.headers.get('Content-Disposition') || '';
   const m  = cd.match(/filename="([^"]+)"/);
   const blob = await resp.blob();
+
+  const want = parseInt(resp.headers.get('X-PorxPy-Bytes') || '', 10);
+  if (Number.isFinite(want) && blob.size !== want){
+    const short = want - blob.size;
+    throw new Error(
+      `download incomplete — ${blob.size.toLocaleString()} of `
+      + `${want.toLocaleString()} bytes (${short.toLocaleString()} missing). `
+      + `Nothing was saved. Try again; if it keeps happening, export with `
+      + `fewer options (price history and factsheets are the bulk of it).`);
+  }
+
+  const wantHash = (resp.headers.get('X-PorxPy-SHA256') || '').toLowerCase();
+  if (wantHash && window.crypto && crypto.subtle){
+    try {
+      const buf  = await blob.arrayBuffer();
+      const got  = await crypto.subtle.digest('SHA-256', buf);
+      const hex  = [...new Uint8Array(got)]
+        .map(b => b.toString(16).padStart(2, '0')).join('');
+      if (hex !== wantHash){
+        throw new Error('download corrupted — the file did not match its '
+                      + 'checksum. Nothing was saved. Please try again.');
+      }
+    } catch(e){
+      // A digest that could not be COMPUTED is not a failed check: some
+      // browsers withhold crypto.subtle outside a secure context. Only
+      // a real mismatch (thrown above) stops the download.
+      if (/did not match/.test(e.message || '')) throw e;
+    }
+  }
+
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = (m && m[1]) || fallbackName;
