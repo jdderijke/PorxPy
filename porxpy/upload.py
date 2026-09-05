@@ -42,7 +42,6 @@ import openpyxl
 from porxpy.config import (
     CACHE_CATEGORIES,
     DEFAULT_CACHE_CONFIG,
-    ENRICHABLE_FIELDS,
     UPLOAD_DIR,
     UPLOAD_SOURCE_KINDS,
     UPLOAD_TOKEN_TTL_MIN,
@@ -88,11 +87,11 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 # the request thread for minutes on a cold cache.
 _ENRICH_ROW_CAP = 1000
 
-# Fields that may appear in the ``enrich_fields`` list on a commit.
-# Mirrors the canonical :data:`~porxpy.config.ENRICHABLE_FIELDS` — the
-# upload dialog and the post-upload "Enrich through Yahoo" button share
-# one vocabulary so the user's options match across the two paths.
-_ENRICHABLE_FIELDS = set(ENRICHABLE_FIELDS)
+# The upload used to keep its own copy of the enrichable-field
+# vocabulary here, because the mapping dialog offered a per-field Yahoo
+# toggle. It does not any more: the commit takes a boolean and asks
+# utils.enrichment_fields which fields that means, exactly as the fund
+# page's button does. One vocabulary, one answer, one routine.
 
 
 # ---------------------------------------------------------------------------
@@ -873,7 +872,7 @@ def upload_commit(token: str, *,
                   sheet_name: str | None = None,
                   delimiter: str | None = None,
                   defaults: dict | None = None,
-                  enrich_fields: list[str] | None = None) -> dict:
+                  enrich: bool = False) -> dict:
     """Public entry point — wraps the implementation in a try/finally so
     the cancel-token registry is always cleaned up, regardless of how
     the commit exits (success, ValueError, UploadCancelled, etc.).
@@ -888,7 +887,7 @@ def upload_commit(token: str, *,
             header_row=header_row, decimal=decimal,
             weight_unit=weight_unit, sheet_name=sheet_name,
             delimiter=delimiter, defaults=defaults,
-            enrich_fields=enrich_fields,
+            enrich=enrich,
         )
     finally:
         clear_cancel(token)
@@ -904,7 +903,7 @@ def _upload_commit_impl(token: str, *,
                   sheet_name: str | None = None,
                   delimiter: str | None = None,
                   defaults: dict | None = None,
-                  enrich_fields: list[str] | None = None) -> dict:
+                  enrich: bool = False) -> dict:
     """Apply a column mapping to a previewed upload and write the cache.
 
     Args:
@@ -935,7 +934,12 @@ def _upload_commit_impl(token: str, *,
               type-coerced by ``coerce_holdings_row``.
             * any other key: silently ignored.
 
-        enrich_fields: list of optional fields (subset of ``{"sector",
+        enrich: run Yahoo enrichment over the imported rows or not.
+            WHICH fields it fills is not this caller's decision — it
+            comes from :func:`porxpy.utils.enrichment_fields`, the same
+            list the fund page's button uses, so the two paths cannot
+            drift. This was a per-field list until v0.100.0 (subset of
+            ``{"sector",
             "country", "currency", "asset_class"}``) for which the server
             should look up Yahoo per-symbol info for every row that has a
             ticker — overwriting the mapped/default value when Yahoo has
@@ -955,7 +959,12 @@ def _upload_commit_impl(token: str, *,
     # the original choice into upload_prefs so a subsequent upload that
     # re-orders the column mapping doesn't silently drop an enrichment
     # the user previously asked for.
-    enrich_requested_original = list(enrich_fields or [])
+    # Resolved once, here, from the one place that answers it. An empty
+    # list means the user has enrichment switched off in Settings, in
+    # which case asking for it on an upload does nothing — which is the
+    # honest reading of "off" and is what the fund page's button does too.
+    from porxpy.utils import enrichment_fields
+    enrich_fields = enrichment_fields() if enrich else []
 
     # Re-parse only when the user changed sheet / delimiter mid-flow.
     rows = payload["rows"]
@@ -1164,7 +1173,6 @@ def _upload_commit_impl(token: str, *,
     # holes was to leave the column unmapped and throw away the rows
     # that DID have a value.
     # ──────────────────────────────────────────────────────────────────
-    enrich_fields = [f for f in (enrich_fields or []) if f in _ENRICHABLE_FIELDS]
     enrich_stats: dict[str, Any] = {}
 
     if enrich_fields:
@@ -1228,7 +1236,7 @@ def _upload_commit_impl(token: str, *,
                    # Bond metadata (v0.12.7) — defaultable in the
                    # "user typed a value in the upload-dialog default
                    # input" sense. No Yahoo enrichment exists for any
-                   # of these (no _ENRICHABLE_FIELDS membership), but
+                   # of these, but
                    # a fixed-coupon issuer-fund spreadsheet that omits
                    # the bond columns can still get them filled this
                    # way. coerce_holdings_row will type-coerce later.
@@ -1429,7 +1437,7 @@ def _upload_commit_impl(token: str, *,
         "decimal":       decimal,
         "weight_unit":   weight_unit,
         "defaults":      dict(defaults or {}),
-        "enrich_fields": enrich_requested_original,
+        "enrich":        bool(enrich),
         "saved_at":      now_iso(),
     }
     cache_put(ticker, "upload_prefs", prefs_blob)
@@ -1509,6 +1517,11 @@ def _upload_commit_impl(token: str, *,
             # your holdings exist".
             "lookup_failed":        enrich_stats.get("rows_lookup_failed", 0),
             "lookup_error":         enrich_stats.get("lookup_error") or "",
+            # The run stopped itself because the lookups stopped
+            # completing. Distinct from lookup_failed, which counts
+            # failures the run absorbed and carried on past.
+            "aborted":              enrich_stats.get("aborted") or "",
+            "not_attempted":        enrich_stats.get("rows_not_attempted", 0),
         },
         "defaults_applied":   sorted(default_apply.keys()),
         # Rows whose asset_class was blank after file/enrich/user-default

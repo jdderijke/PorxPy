@@ -1,6 +1,6 @@
 # WISHLIST.md — possible future enhancements
 
-*Started 2026-08-18, at v0.72.3.*
+*Started 2026-08-18, at v0.72.3. Last swept at v0.102.1.*
 
 Things worth doing that nobody has promised. This is deliberately **not**
 a defect list: a bug lives in the Known open issues section of the
@@ -16,25 +16,6 @@ re-deriving it.
 ---
 
 ## Upload and enrichment
-
-### One answer to "which fields does enrichment fill"
-
-Enrichment reads its field list from two different places. The automatic
-top-10 pass and the fund page's Enrich button both take it from
-**Settings -> enrichment fields**. The holdings-upload dialog takes it
-from its own per-field Yahoo toggles, seeded from that fund's last
-upload and defaulting to nothing ticked. So somebody with all five
-fields ticked in Settings still gets a first upload with enrichment
-entirely off unless they turn the toggles on in the dialog.
-
-**Why not simply unify.** The per-file choice is defensible on its own
-terms: an issuer file that already carries good sector data is a
-reasonable place to want enrichment off for sector and on for currency,
-and Settings is the wrong grain for that. The improvement wanted is
-narrower — seed the dialog's toggles from Settings on a FIRST upload
-(where there are no saved prefs to restore), so the app-wide answer is
-the starting point and the per-file choice is a departure from it rather
-than a fresh start from nothing.
 
 ### Concurrent per-holding lookups
 
@@ -104,19 +85,6 @@ test that do not use it.
 
 ## Facet trees
 
-### Filter the cash picker on the branch, not the node name
-
-*Half done in v0.82.0.* `facet_alias_targets` now serves each node's
-`parent` alongside its level and path, so the vocabulary endpoint no
-longer withholds the chain — that was the blocking half, and the tree
-picker is built on it.
-
-What remains is the consumer: the cash tab's picker still filters by node
-NAME, excluding `bond future` — a derivative, not a deposit — by matching
-the word. It can now ask whether a node descends from `cash` instead.
-`facetTreeHtml` already takes a `filterFn` for exactly this, so the work
-is switching that picker over rather than building a mechanism.
-
 ### One name for the third country level
 
 `FACET_LEVELS` and the definitions file call it `super_region`; the
@@ -128,11 +96,16 @@ finds the other will expect a geographic parent above region and get
 
 ### Upload preview at the stated grain
 
-Item 5 of the v0.70.0 frontend plan, never started and always cosmetic:
-the preview would show the grain each row was stated at, with the full
-chain in the tooltip. Deliberately not level chips — the preview's job
-is to show what will be stored, and `unknown` at a chip-selected level
-would read as "this row will not be stored".
+Item 5 of the v0.70.0 frontend plan, and still cosmetic — but less
+absent than it was. The preview now resolves its five sample rows on the
+server and shows each cell's canonical value, with the file's own
+spelling in the tooltip and an unmatched cell in red. What it still does
+not show is the **grain** each row was stated at, with the full chain in
+the tooltip, which is the half that would reveal a file whose sector
+column is about to be recorded one level deeper than it was written
+(see `FACET_TREE.md` §17). Deliberately not level chips — the preview's
+job is to show what will be stored, and `unknown` at a chip-selected
+level would read as "this row will not be stored".
 
 ---
 

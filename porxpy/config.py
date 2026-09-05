@@ -1442,6 +1442,24 @@ RETURN_PERIODS: dict[str, int] = {
 # scoring._percentiles), which states the ordering without overstating
 # the confidence, so the gate now sits at the smallest group that HAS an
 # ordering.
+# How many lookups in a row may fail at the TRANSPORT level before an
+# enrichment run gives up. Not a retry budget: each of these is a
+# request that never reached an answer (TLS, DNS, proxy, or Yahoo
+# refusing to serve us), and the run has thousands more rows to go.
+#
+# Without this, a rate limit part-way through a large fund is invisible:
+# every remaining row fails the same way, the loop carries on to the end
+# because a failure is not a reason to stop, and the run "completes"
+# having filled nothing and spent an hour proving it. Twelve consecutive
+# failures is far past coincidence — a genuine unresolvable holding
+# comes back "Yahoo does not know this symbol", which is a different
+# counter and never trips this one.
+#
+# Deliberately not a delay between calls. A fixed sleep would make an
+# already-long run longer while doing nothing about the case it exists
+# for; stopping early and saying why is what the user can act on.
+ENRICH_TRANSPORT_FAILURE_LIMIT: int = 12
+
 MIN_PEER_GROUP: int = 2
 
 # Fund size is a FLOOR TEST, not a percentile.

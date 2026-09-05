@@ -44,7 +44,14 @@ Concretely, before finishing a change, sweep the parallel set it belongs to:
   `srcSegHtml` in the frontend.
 - Change a **table, filter, sort or level selector** in the frontend → check the
   other table that shares the behaviour; the fund-page and portfolio holdings
-  tables are meant to behave identically.
+  tables are meant to behave identically. Route any in-place re-render through
+  `preserveViewState` rather than restoring by hand: a panel rebuilt with
+  `innerHTML` loses the reader's scroll position, the field they were typing in
+  and their caret, and these panels repaint more than once (scores and quality
+  land separately), so a per-caller restore covers only the first repaint.
+  Filter state holds what the user TYPED; `searchNeedle` normalises at the
+  comparison, because a box re-rendered from normalised state rewrites the
+  user's text under the cursor.
 - Change a **by-row facet edit** → check both surfaces that write rows: the
   fund-page holdings table and the Resolve dialog's by-row tab. They share
   `ufBuildRowEditContext`, so add to that rather than to one caller.
@@ -132,8 +139,8 @@ Flask backend (`porxpy/`) + one 19k-line vanilla-JS file (`fund_explorer.html`) 
 |---|---|
 | `config.py` | Paths, TTLs, and the **registries** other modules read: `FACET_LEVELS`, `FACET_DEFAULT_LEVEL`, `BREAKDOWN_FACETS`, `BREAKDOWN_SOURCES`, `DERIVED_BREAKDOWN_SOURCES` (+ `sources_for_facet`), `HOLDINGS_SOURCES` (plus the variant maps `HOLDINGS_VARIANT_SOURCE` / `HOLDINGS_VARIANT_ROLLUP` and their lookups), `ENRICHABLE_FIELDS`, `CACHE_CATEGORIES`, `OVERRIDABLE_FIELDS`, `FIELD_SOURCES`. Does no I/O. |
 | `resources.py` | Loads the reference CSVs and resolves any raw string to a canonical facet node at every level (`resolve_sector_tree`, `resolve_country_tree`, `resolve_asset_tree`, `resolve_currency`). Also alias writing and `reload_resources()`. |
-| `extractors.py` | Yahoo fetching and per-holding enrichment. `load_fund_data()` is the composition point for `/api/fund` and the portfolio enrichment loop. `enrich_holdings_rows()` is THE holdings-enrichment loop — the fund-page button and the upload commit both call it, and neither may grow a copy. |
-| `resolver.py` | Ticker variant generation and the resolution fallback chain (variant probe → ISIN country prefix → identifier search → name search). |
+| `extractors.py` | Yahoo fetching and per-holding enrichment. `load_fund_data()` is the composition point for `/api/fund` and the portfolio enrichment loop. `enrich_holdings_rows()` is THE holdings-enrichment loop — the fund-page button and the upload commit both call it, and neither may grow a copy. They also ask it the same question: which fields may be filled comes from `utils.enrichment_fields()` alone (v0.100.0), so a caller never carries its own field list. The only thing a caller decides is WHICH ROWS. |
+| `resolver.py` | Ticker variant generation and the search helpers behind the resolution chain. The chain itself is ordered in `extractors.get_symbol_info_cached`, by strength of identifier: ISIN → the file's ticker (variants, then the ISIN's country suffix) → CUSIP → the row's country as an exchange hint → name. Documented for users in IMPORT_NEW_FUNDS_GUIDE.md §11b. |
 | `breakdowns.py` | Holdings → per-facet levelled breakdown (`rollup_holdings`, `build_fund_breakdowns`), and the portfolio aggregation pass (`aggregate_portfolio_holdings`, `rollup_portfolio_fundlevel`). |
 | `utils.py` | Cache I/O (`cache_get`/`cache_put`/`cache_read`/`cache_write`/`cache_purge`), portfolios, settings, overrides, ISIN map. |
 | `upload.py` / `bundles.py` / `scoring.py` / `targets.py` / `optimizer.py` / `trades.py` / `ai.py` | Holdings-file parsing; fund/portfolio bundle export-import; percentile scoring and peer groups; target-vs-actual deviation; greedy design solver (`optimise_portfolio`); atomic cash↔position trades; factsheet extraction via the Anthropic API. |
@@ -167,6 +174,21 @@ External services: Yahoo Finance (always), OpenFIGI (ISIN→ticker), justETF (op
 ## Conventions
 
 - **Version lives only in `porxpy/__init__.py`** (`NAME`/`VERSION`/`BUILD_DATE`), exposed via `/api/meta`. Bump `0.x.0` for features/refactors, `0.0.x` for fixes (a batch containing both takes the minor bump), and add a matching `CHANGELOG.md` entry (Keep a Changelog-ish, newest first, prose that explains the cause rather than just the symptom). Bump once per batch of work handed over, not once per session — a follow-up round reusing the previous round's number leaves "which build am I running?" unanswerable.
+- **A version bump updates EVERY `.md` file.** This is a standing rule, not a
+  best-effort. When the version in `porxpy/__init__.py` moves, walk the whole
+  set of Markdown files and either update each one or confirm it is still
+  correct: `README.md` (top stamp, the `Version` section at the bottom, the
+  feature tour, the documentation map), `GETTING_STARTED.md` and
+  `IMPORT_NEW_FUNDS_GUIDE.md` (both quote the startup banner, so both carry a
+  version number in prose), `FACET_TREE.md` and `OPTIMIZER.md` (their stamps
+  *and* their Known open issues sections, re-verified against the running code
+  rather than carried forward on trust), `CHANGELOG.md`, `WISHLIST.md` where a
+  shipped feature closes a deferred idea, and this file where the change alters
+  how the codebase is worked on. The docs are parallel by construction and each
+  claims to describe a named release: a stamp that lags does not fail loudly, it
+  quietly makes every claim in the file untrustworthy without saying which ones
+  went stale. Hand back the list of documents you checked, so the sweep is
+  visible rather than assumed.
 - **Comments record decisions, including rejected ones.** `config.py` in particular explains why sibling facets were backed out, why there is no geographic super-region, why a key was renamed. When changing something these comments cover, update the rationale rather than deleting it — and match the density: this codebase documents *why*, not *what*.
 - **Docstrings are Google-style with an explicit "why this exists" paragraph**, on modules and non-trivial functions alike.
 - Backend files are large and single-purpose; add to the existing module that owns the concern rather than creating a new one.
@@ -179,6 +201,20 @@ trees: asset, sector, geography, currency — how they behave today, plus
 the v0.70.0 design record that produced them). All three carry a version
 stamp naming the release they describe; keep it current when you edit
 them, and check it against `porxpy/__init__.py` before trusting a claim.
+
+`README.md` opens with a table saying which question each document owns.
+When a document is added, renamed or given away part of its subject,
+update that table in the same change — it is the only place the split is
+stated, and a reader who cannot find `FACET_TREE.md` will not know to
+look for it.
+
+The two user-facing guides are `GETTING_STARTED.md` (install, import the
+shipped `PreLoadedFunds/porxpy_funds.zip` set, and design a first
+portfolio: cash, targets, optimiser) and `IMPORT_NEW_FUNDS_GUIDE.md`
+(everything about getting one more fund in and fully described). They
+carry the same version stamp as the design docs, and the installation
+procedure lives in the first of them alone — README and the import guide
+point at it rather than repeating it.
 
 `WISHLIST.md` holds possible future enhancements — things worth doing that
 nobody has promised. It is deliberately not a defect list: add an idea there

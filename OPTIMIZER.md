@@ -1,8 +1,11 @@
 # The PorxPy Optimizer — how it works
 
-*Applies to `porxpy/optimizer.py` as of v0.91.0. Audited against the
-module at that version: every claim below was re-checked, and the two
-open issues in §13 were re-confirmed by running them.*
+*Applies to `porxpy/optimizer.py` as of v0.102.1. The full audit — every
+claim in the document re-checked against the module — was done at
+v0.91.0; since then the v0.96.0 peer-scoring change was folded into §7b
+and §13's one remaining open issue was re-confirmed by reading
+`_add_target_rows` at v0.97.0 and is unchanged at v0.98.0. Check the stamp against
+`porxpy/__init__.py` before trusting a claim.*
 
 ---
 
@@ -696,10 +699,12 @@ Defects specific to the optimiser, as opposed to the deliberate
 boundaries in §12. Each is something that should be fixed rather than
 something someone chose.
 
-One remains, re-confirmed against the code at v0.89.0 by reading the
-full facet weight still being applied once per `(facet, level)` block in
-`_add_target_rows`. The metadata-facet blindness recorded here since
-v0.30.0 was **fixed in v0.89.0** — see the resolved entry below.
+One remains, re-confirmed at v0.97.0: `_add_target_rows` still computes
+`scale = facet_weight / sqrt(len(keys) + 1)` inside a body called once
+per `(facet, level)` block, so the full facet weight is applied to every
+level of a facet that is targeted at more than one. The metadata-facet
+blindness recorded here since v0.30.0 was **fixed in v0.89.0** — see the
+resolved entry below.
 
 ### ~~The metadata facets are targetable, but the optimiser is blind to them~~ — fixed in v0.89.0
 
@@ -761,3 +766,10 @@ The honest fix is to divide each block's scale by the number of levels
 targeted for that facet, so a facet's total pull is the same however
 many grains it is expressed at. That is a behaviour change to existing
 designs, which is why it is recorded here rather than applied.
+
+Unchanged at v0.102.0, but easier to walk into: the targets editor's add
+control is now the facet tree picker, which makes every level of a facet
+visible and one click away, where the flat list it replaced buried the
+coarse levels among the fine ones. Nothing about the solver moved — the
+same design that was hard to express by accident is now easy to express
+on purpose.

@@ -1,4 +1,4 @@
-﻿type,name,description,parent_name,matches,is_default,attrs
+type,name,description,parent_name,matches,is_default,attrs
 super_region,developed,Developed Markets,,developed markets|developed world|msci world|world ex emerging|world ex-emerging|kokusai|Ontwikkelde markten|ontwikkeld|volwassen markten,FALSE,
 super_region,emerging,Emerging Markets,,emerging markets|emerging market|emerging|msci em|ftse emerging|Opkomende markten|opkomend|groeimarkten,FALSE,
 region,northAmerica,North America,developed,north america|s&p 500|sp 500|nasdaq|dow jones|russell 1000|russell 2000|canadian|Noord-Amerika,FALSE,
@@ -10,7 +10,7 @@ region,africaMiddleEast,Africa & Middle East,emerging,africa|african|middle east
 region,japan,Japan,developed,japanese|nikkei|topix,FALSE,
 region,australasia,Australasia,developed,australian|asx|Australazië|Australazie,FALSE,
 region,asiaDeveloped,Asia (Developed),developed,asia developed|developed asia|korean|kospi|taiwanese|hang seng|Azië (ontwikkeld)|Azie (ontwikkeld)|Azië,FALSE,
-region,asiaEmerging,Asia (Emerging),emerging,asia ex japan|emerging asia|chinese|csi 300|indian|nifty|sensex|Azië (opkomend)|Azie (opkomend),FALSE,
+region,asiaEmerging,Asia (Emerging),emerging,emerging asia|chinese|csi 300|indian|nifty|sensex|Azië (opkomend)|Azie (opkomend),FALSE,
 region,antartica,Antarctica,,Antarctica,FALSE,
 focus_group,europe,Europe,,european,FALSE,
 focus_group,asia,Asia,,asian|Azie,FALSE,

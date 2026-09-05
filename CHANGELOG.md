@@ -3,6 +3,845 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.102.1] - 2026-09-05
+
+### Fixed — a disabled button said "forbidden" when it meant "nothing to do"
+
+Reported against Save changes on the Cash sub-tab, which sits disabled
+after a successful save because there is genuinely nothing left to save.
+It wore `cursor:not-allowed` and 40% opacity, and a 🚫 appearing over the
+button you just pressed reads as a control that has broken — which is
+how it was reported, twice.
+
+The two states are not the same claim. "You may not do this" is a
+prohibition; "there is nothing to do yet" is the ordinary resting state
+of every Save button in the app, and of Enrich with no rows ticked, and
+of a breakdown source this fund does not have. None of them are
+forbidding anything.
+
+So the cursor stays a plain pointer-less default on every disabled
+control — the four sites that used `not-allowed` are now consistent —
+the dimming is lifted slightly so the label still reads as a real
+control, and the Cash tab's Save and Cancel now carry a title saying
+which state they are in ("Nothing to save — add or edit a position
+first."). The hint line beside them already said so; hovering the button
+itself now says it too, in the exact spot the 🚫 used to be.
+
+The underlying behaviour was already correct as of v0.102.0 and is
+unchanged: adding a position after a save re-enables Save, and the
+second position saves.
+
+## [0.102.0] - 2026-09-05
+
+Four reported bugs, each reproduced in a real browser before it was
+touched and re-checked there afterwards, plus the retirement of a notice
+that had outlived what it was warning about.
+
+### Fixed — saving a cash position could throw away the next one
+
+Adding a cash position, saving it, and adding another left the Save
+button lit but inert: clicking it did nothing, and the row could not be
+saved.
+
+`reloadPortfolio` decides whether it is loading a *different* portfolio
+(a full reset: caches dropped, sub-tab back to Funds) or refreshing the
+current one (preserve everything). It inferred that from
+`lastLoadedPid !== activePid` — and `lastLoadedPid` is only assigned once
+the `/view` fetch resolves. `/view` is the slowest call in the app, one
+Yahoo load per fund, so anything fired while the first load was still in
+flight — saving a cash position being the everyday case — evaluated as a
+switch.
+
+Two things then went wrong at once, and both are fixed:
+
+* **The reset was too wide.** By the time a switch's view lands, seconds
+  later, the user has been using the app: opening the Cash sub-tab loads
+  that portfolio's positions and adding a row starts a draft, both
+  already belonging to the portfolio now on screen. Clearing them threw
+  that work away. Each per-portfolio cache now says which portfolio it
+  is for and is dropped only when that is not the one just loaded, and
+  the sub-tab is only reset if the user has not navigated meanwhile —
+  their choice is the later one.
+* **The reset did not repaint.** It emptied `cashPositions` without
+  re-rendering, leaving rows on screen that no longer existed and a Save
+  button enabled over a discarded draft — which then did nothing,
+  because `cashSave` returns early on a clean draft. That is the inert
+  button. The clear now repaints.
+
+Which of the two a reload is, is also no longer inferred: the caller
+says so, and only the portfolio selector passes `isSwitch`. A `/view`
+that lands after the user has moved to another portfolio is now dropped
+rather than painted under the wrong name.
+
+### Changed — the targets editor was the last flat facet dropdown
+
+Every other place in the app where a canonical facet node is chosen uses
+the shared tree picker. The targets editor still built a `<select>` per
+facet listing every node of every level in one alphabetical run — for
+Region, roughly 250 rows with the regions sorted in among the countries
+they contain, each label prefixed with its level to say which was which.
+
+The four facets that have trees — asset class, sector, country,
+currency — now use the picker, which shows that containment instead of
+restating it, and whose filter box searches the vocabulary. Market cap
+and equity style keep a flat list: they are fund-level classifications,
+not facet trees, so there is nothing to expand. That asymmetry is
+commented at the site.
+
+The picker's value is a node key rather than the old `level||key` pair,
+so the level is read back off the vocabulary — which is where a node's
+level lives, and the reason it never needed to be in the value. Fixed in
+passing: the "focus the new row" selector matched on `level||key` while
+the row's attribute holds the bare key, so the focus had never landed.
+
+### Fixed — a near-miss on a level chip re-sorted the column
+
+Clicking a facet column's level chips is meant to change which grain is
+displayed and deliberately never to re-sort. The chip group is an
+inline-flex island inside a wider header cell, and only the group itself
+swallowed the click, so aiming at the leftmost chip and missing by a few
+pixels reached the `<th>` and reordered the table under the pointer.
+Measured before the fix, the guarded region was 27% of the header cell.
+
+The guard is now the whole bottom line of the cell, edge to edge —
+block-level, reaching into the cell's own padding with equal padding
+added back, so the chips do not move. The label line still sorts, which
+is the only part that should. One builder serves both holdings tables,
+so the fund page and Portfolio → Holdings cannot disagree about it.
+
+### Fixed — filter boxes lost focus, jumped the caret, and ate capitals
+
+Reported on the Pre-Loaded list's filter and true of the portfolio funds
+filter as well. Three faults in the same few lines:
+
+* **Focus was lost after one letter.** These panels are rebuilt with
+  `innerHTML`, so the input is a new element afterwards. Each box
+  re-focused it by hand — but only on the *first* repaint. Scores and
+  quality land separately and repaint again, and nothing restored
+  anything then.
+* **The caret jumped to the end.** That hand-rolled restore ended with
+  `setSelectionRange(len, len)`. Editing in the middle of a pasted value
+  moved the cursor to the end on every keystroke, and the edit was lost
+  with it.
+* **Typed capitals were rewritten.** The filter state held the
+  normalised (trimmed, lower-cased) text and the box was re-rendered
+  from it, so "iShares" became "ishares" mid-word.
+
+The restore now lives in `preserveViewState` — the wrapper every one of
+those re-renders already went through, renamed from `preserveScroll`
+because it now returns the reader to both the scroll position and the
+field they were typing in, with the caret where they left it. It acts
+only when the element was actually replaced, so it cannot fight typing
+during an async render. Filter state holds what the user typed, and
+`searchNeedle` normalises at the comparison — one helper for all four
+filter boxes, so they cannot disagree about what a search string means.
+
+### Changed — the pre-v0.76.0 purge notice retires when it stops applying
+
+Four funds still carried the amber notice saying their uploaded
+breakdown CSVs had been dropped by the v0.76.0 migration. It was true,
+and it had stopped being useful: all four have since been given full
+holdings covering 99.4–100.1% of the fund, every breakdown card on them
+is sourced from those holdings, and the missing CSVs would be a fourth
+selectable source rather than a gap. The notice asked, permanently, for
+a repair that would have changed nothing on screen, and its only exit
+was performing it.
+
+A notice now also retires when the dropped category has become *moot*,
+not only when it comes back. `holdings` is deliberately never moot — its
+absence is a visibly empty table that no other source fills — so this is
+one rule with a stated exception rather than a blanket timeout.
+## [0.101.1] - 2026-09-05
+
+No behaviour changed in this release. What changed is what the
+documentation says about behaviour that was already there, and what the
+shipped fund bundle contains.
+
+### Added — enrichment now has one home, IMPORT_NEW_FUNDS_GUIDE.md §11b
+
+Enrichment was described in four places and fully in none: the holdings
+tile's own subsection said what the button does, the upload section
+described the ticker chain, `FACET_TREE.md` explained refinement as a
+consequence of the sector fix that produced it, and `README.md`'s
+feature tour summarised the identifier order. A reader asking "what
+exactly gets filled, and what decides which security this row is?" had
+to assemble the answer from all four and would still have missed the
+caching.
+
+§11b answers it once: what the five fields are and which column each
+lands in, why facet values go to `*_raw` and never to a level column,
+the "finest answer that resolves" rule, what is never touched (weights,
+the bond columns, the derived levels, a pinned facet, a well-formed
+identifier), the resolution chain step by step, what counts as a
+*refinement* with a worked table, the two things that are deliberately
+overwritten, the three caches and why the negative one can surprise
+you, the early stop, and how to read each status line the run can
+produce. The places that used to carry fragments now point at it, so
+there is one place to correct when this changes again.
+
+### Fixed — two documents described the pre-v0.94.0 resolution order
+
+`IMPORT_NEW_FUNDS_GUIDE.md` ("How messy tickers get resolved") and
+`CLAUDE.md`'s `resolver.py` row both listed the chain as variant probe →
+ISIN country prefix → identifier search → name search. That was true
+until v0.94.0, which put the ISIN first and by right — an identifier
+naming one security outranks a symbol the file also supplied — and
+neither document was updated with it. Both now describe the order the
+code actually uses (ISIN → the file's ticker, variants then the ISIN's
+country suffix → CUSIP → the row's country as an exchange hint → name),
+and the guide's copy is a pointer to §11b rather than a second telling.
+
+A doc that is merely stale about an order is worse than one that is
+silent: the reader who wonders why a row with a good ISIN resolved to
+the wrong company had every reason to trust it.
+
+### Changed — the shipped fund bundle carries enriched holdings
+
+`PreLoadedFunds/porxpy_funds.zip` was last exported before the holdings
+enrichment campaign finished, so it shipped rows the app could no longer
+be said to have. The remaining 48 equity funds — 6,951 rows, dedup'd by
+ISIN so share-class pairs like `IWDA.L` / `SWDA.L` were enriched once —
+have now been swept in 250-row batches, 106 minutes end to end, with no
+aborted batch and no failed lookup. 5,168 of those rows gained a
+sub-sector, taking per-fund coverage from 0–12% to 42–100% and the whole
+equity side to 71%.
+
+The four fixed-income funds are deliberately excluded, and stay
+excluded. They hold 11,609 rows of which 3,510 carry no ticker at all,
+individual bonds are not listed on Yahoo, and a row with no ticker has
+no alias-cache key — so it re-probes from scratch every run and fails
+every time. They are the most expensive rows to enrich and the least
+rewarding, which is the opposite of what their row count suggests.
+
+## [0.101.0] - 2026-09-04
+
+### Added — enrichment stops itself when Yahoo stops answering
+
+Enrichment is one network call per holding, and the cached set here is
+25,000 holdings across 59 funds — roughly 10,000 live lookups, six to
+eight hours end to end. Yahoo publishes no rate limit for these
+endpoints and there is no throttle in this code, so a long run tripping
+one was a question of when.
+
+What happened then was the problem. A failed lookup was counted and the
+loop moved on, which is right for one bad symbol and wrong for a wall:
+every remaining row failed identically, the run reached the end, and the
+summary said nothing was filled — after an hour of proving it, and with
+no indication that the cause was external and temporary.
+
+`enrich_holdings_rows` now stops after `ENRICH_TRANSPORT_FAILURE_LIMIT`
+(12) consecutive lookups that fail to **complete**, reporting
+`aborted` and `rows_not_attempted` alongside the usual counts. Both
+surfaces show it: the fund page replaces its summary line with the
+reason, and the upload dialog leads its warning list with it.
+
+Three things it deliberately does not do:
+
+* **It does not count "Yahoo has never heard of this symbol".** That is
+  a different counter (`rows_yahoo_not_found`), and a bond fund whose
+  holdings are unlisted must run to the end rather than abort on its
+  twelfth row. Verified: 20 scattered transport failures across 60 rows
+  do not trip it, and 40 rows still enrich.
+* **It does not sleep between calls.** A fixed delay makes an
+  already-long run longer while doing nothing about the case the
+  breaker exists for. Stopping early and saying why is what the user
+  can act on.
+* **It does not retry.** The failures are consecutive and external;
+  retrying inside the run is how a rate limit becomes a longer rate
+  limit.
+
+Verified by simulating an outage: 100 rows, every lookup raising, stops
+after 12 with `rows_not_attempted: 88`.
+
+### Changed — four orphaned fund records deleted, and the bundle re-exported
+
+`cache/funds/` held four fund-level records with no listing file
+anywhere referencing their ISIN: `IE00B78CT216`, `LU1681044480`,
+`LU2115356797`, `NL0011683594`. The Pre-Loaded list enumerates
+*listings*, so these were invisible in the UI, invisible to the
+optimiser (whose universe is the listings directory), and impossible to
+delete from the app — while still being exported in every fund bundle,
+where their manifest entries carried an ISIN in place of a name because
+the name lives on the listing that no longer existed.
+
+The likely origin is the ✕ in the Pre-Loaded list, which deletes the
+listing and leaves the fund record: correct in itself, since two share
+classes can share one fund file, but with the last listing gone the
+record becomes unreachable rather than shared.
+
+The four are deleted and `PreLoadedFunds/porxpy_funds.zip` re-exported
+from the 56 that remain — 30.8 MB, with price history and 106
+factsheets. Every manifest entry now carries a real name. A check for
+the mirror case (a listing whose fund record is missing) found none.
+
+## [0.100.1] - 2026-09-04
+
+### Fixed — dead CSS left behind by the enrichment consolidation
+
+Removing the mapping dialog's four per-field Yahoo buttons in v0.100.0
+left their styling in the sheet: `.uvmenrich` plus its `:hover`, `.on`
+and `:disabled` rules, matching nothing. Worse, the base rule had been
+renamed to `.uvmenrich-removed` and commented as deliberately kept —
+which described the opposite of what was there, since a class invented
+to match nothing is not a decision, and the other three rules still
+carried the old name anyway. All four rules and the comment are gone.
+
+A note on the convention this bumps against: comments in this codebase
+record decisions, including rejected ones, and that is worth keeping —
+but a comment explaining why dead code is still present is not a
+decision record, it is the dead code arguing for itself. The changelog
+is where a removal gets explained.
+
+## [0.100.0] - 2026-09-04
+
+### Changed — one enrichment, asked for one way
+
+Yahoo enrichment had two front doors with different manners. The
+holdings-upload dialog offered a **📥 Yahoo** button per field, over all
+rows; the fund page's holdings tile offered all fields, over the ticked
+rows. The backend loop was already shared (`enrich_holdings_rows`, since
+v0.86.0) — what diverged was the question each one asked it.
+
+The per-field toggles were a false economy, and that is the whole
+argument for removing them: the lookup is **one network call per row**
+that answers every field at once, so restricting the fields never saved
+a single call. All they bought was a second opinion about what
+enrichment does — one that defaulted to nothing ticked, so somebody with
+all five fields enabled in Settings still got an import that enriched
+nothing unless they also found the toggles in the mapping dialog. That
+divergence was on the wishlist as "one answer to which fields does
+enrichment fill"; this closes it.
+
+Now:
+
+* **`utils.enrichment_fields()` is the only answer to which fields get
+  filled.** Settings is the source of truth; an empty list means the
+  user has switched enrichment off, and every caller reads that as "do
+  nothing" rather than "do everything".
+* **The upload dialog has one checkbox** — *Fill blanks from Yahoo after
+  import* — where four buttons were. It is disabled until the Name
+  column is mapped, and says what it will cost when it is on.
+* **`upload_commit` takes `enrich: bool`**, not a field list. The route
+  passes the boolean; the commit resolves the fields from the same
+  function the fund page uses.
+* **Both paths run the same routine over the same row shape**:
+  `enrich_holdings_rows` for the loop, `_apply_lookup_to_row` for the
+  row. The only difference left is which rows they hand it — every
+  imported row, or the ones the user ticked — which is the difference
+  that should exist.
+
+### Fixed — the upload refused name-only enrichment
+
+The commit blocked with *"Yahoo enrichment requires a Ticker, CUSIP, or
+ISIN column to be mapped"*. That has been wrong since v0.77.0, when the
+resolver learned to match on a name alone — which is exactly what a
+factsheet's position table gives you, names and weights and nothing
+else. The refusal is gone; the note beside the checkbox says name-only
+matching is slower and less certain, which is the right response to a
+weaker signal.
+
+### Verified
+
+Driven through the running app rather than by inspection: a two-row CSV
+of `CAP,CAPGEMINI` and `ASML,ASML HOLDING` with no country, currency or
+sector columns, committed with `enrich: true` and no field list, comes
+back as `CAP.PA` / Capgemini / `it services` and `ASML` / ASML Holding /
+`semiconductors`, with country and currency filled from Yahoo. The test
+fund was written under a throwaway ISIN and removed afterwards.
+
+## [0.99.2] - 2026-09-04
+
+### Fixed — holdings rows were being resolved to entirely different companies
+
+The sub-sector complaint turned out to be the visible edge of a much
+larger problem, found by enriching the 60 largest holdings of the
+iShares STOXX Europe 600 file and reading the result against the
+issuer's own CSV. Before this release, 26 of those 60 rows had no
+sub-sector — and several had been renamed to companies the fund does not
+hold:
+
+| The file says | It had become |
+|---|---|
+| SAFRAN SA (`SAF`) | Saratoga Investment Corp 6.25% |
+| ANHEUSER-BUSCH INBEV (`ABI`) | VictoryShares Pioneer Asset-Based Inc ETF |
+| HERMES INTERNATIONAL (`RMS`) | Rydex Inverse 2x S&P MidCap 400 |
+| INTESA SANPAOLO (`ISP`) | ING Groep NV |
+| SIEMENS N AG (`SIE`) | 416520 |
+| SANOFI SA (`SAN`) | Banco Santander, S.A. |
+
+Bare local tickers were probed on Yahoo, which answered with whichever
+company owns that symbol somewhere in the world, and because an
+identifier match is trusted to correct the row's name (v0.94.0), the
+issuer's name was overwritten with it. Foreign ISINs came along for the
+ride — a Canadian one on Nestlé, a Colombian one on BBVA, a Jordanian
+one on BP.
+
+Four changes, each narrow, together closing the class:
+
+**The currency column decides when it is per-listing.** The check added
+in v0.99.0 required currency *and* country to contradict before a
+ticker-variant candidate was rejected, which let everything above
+through: Yahoo returns no country at all for many funds and foreign
+lines, and a missing country counted as "no evidence". Now the caller
+works out from the file itself whether its currency column varies across
+rows — eight currencies in this one, so it describes each listing rather
+than the fund — and where it does, a candidate must positively AGREE on
+currency. A blank currency is no longer agreement.
+
+**Agreeing on currency is not enough.** `SAN` in a Spanish row is Banco
+Santander; `SAN.PA` is Sanofi, also EUR, and it sailed through on the
+currency alone. Where both sides also name a country, they must now
+agree — read through the geography tree, so "Frankrijk", "France" and
+"FR" are one answer.
+
+**The alias cache was keyed by the raw ticker alone.** That is not a
+unique key: this one file writes `SAN` for Santander in Madrid and `SAN`
+for Sanofi in Paris. Whichever row resolved first answered for both, and
+the name overwrite then made the second row into the first one's
+company. The key now carries the row's country when it has one. Rows
+without a country keep the bare key, so nothing already cached is
+invalidated.
+
+**A new probe step: the row's own country as an exchange hint.**
+`resolver.country_suffix_variant` does for the country column what
+`isin_country_variant` does for an ISIN prefix — `SIE` plus "Duitsland"
+becomes `SIE.DE` — reusing the same suffix table rather than copying it.
+It is tried after the ISIN step and before the name search, because a
+ticker plus a country is a stronger claim than a name. This is what
+rescues the German and Italian rows that previously resolved to nothing:
+SIE.DE, MUV2.DE, DTE.DE, ENEL.MI, DB1.DE.
+
+**Measured on the same 60 rows, after restoring them from the issuer's
+file:** sub-sector filled on **56 of 60**, up from 34, with **no row
+renamed to a different company**. The four still blank are honest
+misses — `NOVO B`, `INVE B` and other Bloomberg-spaced Nordic forms the
+variant generator does not yet produce.
+
+### Fixed — the damaged rows, restored from the issuer's file
+
+Every affected row in `cache/funds/DE0002635307.json` is restored to
+what the uploaded CSV says: name and ticker as the issuer wrote them,
+and the identifiers that a mis-resolution had invented cleared. Facet
+values were left in place and re-derived, so nothing legitimate was
+lost. Correct ticker corrections were reverted along with the wrong ones
+and simply re-earned on the next pass — a fund whose rows all match its
+source file is worth more than a few saved lookups.
+
+The damage was local to the cache. `PreLoadedFunds/porxpy_funds.zip`,
+exported before any of it, carries the issuer's names and no invented
+ISINs, and was verified row by row against the file.
+
+### Added — two sub-sectors the vocabulary was missing
+
+`integrated oil and gas` under energy and `building products` under
+industrials. Both were noted in v0.98.0 as industries deliberately left
+unmapped because no existing node could hold them honestly — which was
+the right reading of the alias question and the wrong answer to it. A
+node of its own contradicts nothing and partitions cleanly, which is all
+a level has to do, and "Shell has no sub-sector" was the cost of not
+adding one. Yahoo's `Oil & Gas Integrated` and
+`Building Products & Equipment` now land.
+
+One ambiguous alias was caught by the loader while doing it —
+`integrated oil` also belonged to `oil and gas midstream` — and removed.
+
+## [0.99.1] - 2026-09-04
+
+### Fixed — the sub-sector still did not arrive, because the symbol cache predated it
+
+Reported on ASML, in the same fund, right after v0.99.0 fixed the
+Capgemini row. Same symptom, entirely different cause — and the reason
+Capgemini worked was luck: `CAP.PA` had never been looked up before, so
+its answer was fetched fresh.
+
+Per-symbol Yahoo answers are cached for 90 days. Entries written before
+v0.98.0 have no `sub_sector` key, because nothing was reading Yahoo's
+`industry` then. The enrichment loop reads a missing key as "Yahoo has
+no industry for this symbol", falls back to the sector, finds it no
+finer than the `IT` the file already stated, and writes nothing. So the
+feature worked only on symbols the user had never looked up, which is
+the inverse of what anyone would test.
+
+`symbol_info_get` now treats an entry that predates the current field
+set as a miss, so one lookup replaces it — a schema check, not a value
+check. Only positive entries are held to the shape: a negative entry
+means "Yahoo does not know this symbol", which no new field changes, and
+re-probing every unresolvable row would cost a network call for nothing.
+This is the standing preference in this codebase — purge what a schema
+change invalidated rather than carry a fallback path for it.
+
+**What it costs on first use.** 1,476 of the 1,479 positive entries in
+this cache are pre-v0.98.0, so the first enrichment pass over a fund
+re-asks Yahoo once per symbol. Subsequent passes are cached again. The
+800 negative entries are untouched.
+
+Verified through the running app rather than a simulation: `POST
+/api/funds/EXSA.DE/enrich_holdings` on the ASML row now stores
+`sector_raw` *Semiconductor Equipment & Materials*, `sub_sector`
+`semiconductors`, `sector_level` `sub_sector`.
+
+### Known limit — a same-domicile listing on another exchange still passes
+
+The v0.99.0 guard rejects a ticker-variant hit only when currency **and**
+domicile both contradict the row. ASML's bare `ASML` on Yahoo is the US
+line: USD against the file's EUR, but the Netherlands either way, so it
+is accepted and the row now carries the US ISIN. It is the same company
+and the sector data is identical, so nothing downstream is wrong, but
+the prices behind that row are the US listing's.
+
+Tightening to "currency alone decides" is the obvious next step and is
+deliberately not taken: some issuers report every row in the fund's own
+currency, and that rule would then reject every foreign holding in such
+a file. The honest fix is to prefer the listing whose currency matches
+when several candidates resolve, rather than to reject on one signal —
+recorded here rather than guessed at.
+
+## [0.99.0] - 2026-09-04
+
+### Fixed — a bare ticker could resolve to a different company, and erase the evidence
+
+Reported as "enriching Capgemini doesn't fill the sub-sector". It was not
+the sub-sector. The row had stopped being Capgemini.
+
+In the iShares STOXX Europe 600 file the holding is `CAP` / `CAPGEMINI` /
+Frankrijk / EUR, with no ISIN. Enrichment probed the bare `CAP` on Yahoo,
+which answered `CAP.SN` — **CAP S.A., a Chilean steel producer** — and
+because an identifier match is trusted to correct the row's name
+(v0.94.0), the row was rewritten to `CAP S.A.`, ticker `CAP.SN`, ISIN
+`CLP256251073`. Searching the holdings for "Capgemini" then found
+nothing, which is the worst shape this kind of bug can take: the wrong
+answer also deletes the question.
+
+Two independent defects were behind it, both now fixed.
+
+**A ticker-variant hit must agree with what the file said.** A short
+ticker is a guess about which listing is meant, and Yahoo will answer
+with whichever company owns that symbol somewhere. A candidate whose
+currency *and* domicile both contradict the row's own is now rejected and
+probing continues. Both have to disagree before anything is discarded,
+because either alone is legitimately noisy — some issuers report every
+row in the fund's own currency, and Yahoo's country is the company's
+domicile rather than the listing's. Only the ticker path is checked: an
+ISIN or CUSIP names one security by construction, and the name path is
+already strict, so second-guessing those would let a weaker signal
+override a stronger one. The row's country is read through the country
+tree, so "Frankrijk", "France" and "FR" are one answer.
+
+**Yahoo's "not found" looked like a hit.** `_info_looks_found` accepted
+any non-empty `quote_type`, and Yahoo answers an unknown symbol with
+`quoteType: "NONE"` and every other field blank. So the bare `CAP`
+counted as found on the first candidate, ended the variant chain, and
+was written into the alias cache as the answer — after which the row
+enriched to nothing at all, every time, and read on screen as "Yahoo has
+no data for this holding". `"NONE"` is now treated as not found, so the
+chain continues to the variants, the ISIN-suffix probe and the name
+search.
+
+With both in place the same row resolves through the name search to
+`CAP.PA`, Capgemini SE: ticker corrected, name left alone (a name match
+never rewrites the name it searched on), `sector_raw` refined to
+*Information Technology Services* and the sub-sector landing on
+`it services` — which is what the original report was asking for.
+
+### Fixed — the damaged row in the cached fund
+
+`cache/funds/DE0002635307.json` (iShares STOXX Europe 600) carried the
+rewritten row. It is restored to what the issuer's file says — name
+`CAPGEMINI`, ticker `CAP`, no ISIN — and re-derives to technology at
+sector level.
+
+A sweep of every cached fund for rows whose resolved ticker sits on a
+market its own country contradicts found this one and no other. The
+second candidate it surfaced, `SWIRE PACIFIC LTD A` on `00019.HK`, is
+correct — the row simply carries no country to compare against.
+
+### Note — the shipped fund bundle still holds the pre-fix rows
+
+`PreLoadedFunds/porxpy_funds.zip` was exported before any of this and
+carries the affected sector spellings as they were. Nothing in it is
+wrong in a way that survives import — the vocabulary fix in v0.98.0
+applies on read, and the Capgemini row in *that* file is the issuer's
+own, since the damage happened locally after import. Re-exporting the
+bundle is worth doing once the sub-sector enrichment pass has been run,
+so recipients get the finer grain rather than having to fetch it again.
+
+## [0.98.0] - 2026-09-04
+
+### Fixed — a sector column saying "IT" no longer decides the sub-sector
+
+The report, in one sentence: Capgemini and ASML arrive in the same file
+with the same raw sector value, `IT`, and they belong in different
+sub-sectors. That is not something the file can answer, and the app was
+answering it anyway.
+
+**What was happening.** `IT` was an alias on the `semiconductors`
+sub-sector row and `information technology` on `it services`, so both
+sector-level labels resolved to a sub-sector — a grain no source had
+stated. Measured against the shipped fund cache: 1,057 rows carrying
+`IT` were stored as semiconductors (ASML, SAP, Infineon, Nokia,
+Ericsson, **Capgemini**) and 319 carrying `Information Technology` as IT
+services (**TSMC**, Samsung, SK Hynix, MediaTek, Hon Hai, Xiaomi). The
+two were very nearly inverted, and neither was visible as a problem: a
+wrong sub-sector never reaches the Resolve dialog, because from the
+app's point of view nothing failed. `unknown` is a gap somebody can
+close; a confident wrong answer is not.
+
+The fix is in two halves, because the problem is in two places.
+
+**The vocabulary now records what the file said.** In
+`Sector_definitions.csv`, `it`, `information technology`, `info tech`
+and the Dutch forms move onto the `technology` **sector** row, where
+they belong — that row's own description is "Software, hardware,
+semiconductors, IT services", which is what an issuer naming the sector
+means. `it services` keeps the spellings that really name the industry
+(`information technology services`, `it consulting`, `data processing`).
+Nothing needs re-importing: resolution happens at derivation time and
+cached funds re-evaluate themselves when the file's fingerprint changes,
+so those ~1,400 rows read back as technology at sector level with the
+sub-sector honestly blank.
+
+**Enrichment now asks Yahoo for the grain the file lacks.** Yahoo
+publishes `industry` beside `sector` and the app had never read it —
+zero references in the codebase. `_symbol_info` returns it as the sector
+facet's finer answer, and `_ENRICH_SOURCE_KEYS` gains
+`"sector": ("sub_sector", "sector")`, mirroring the rule asset already
+had. So ASML resolves through *Semiconductor Equipment & Materials* and
+Capgemini through *Information Technology Services* — the distinction
+the file could not carry, from the source that has it.
+
+Two guards make that safe, and both are new shared helpers rather than
+special cases:
+
+* **`_pick_enrich_value` prefers the finer answer only when the
+  definitions file can place it.** Yahoo's industry list is its own
+  ~145-value taxonomy and roughly half of it does not resolve here yet;
+  writing an unplaceable industry over a placeable sector would turn a
+  correct sector into `unknown`, which is a regression dressed as more
+  detail. A missing alias now costs nothing until somebody adds it.
+* **`_is_refinement` decides when a non-blank cell may still be
+  written.** Enrichment is blank-only, and a row whose file said "IT"
+  has an occupied cell and an unanswered sub-sector — so blank-only
+  alone would leave the finer level empty forever. A value that resolves
+  strictly finer *and* agrees at every level the row already states is a
+  refinement and is written; anything that contradicts the row is left
+  to the user, because a disagreement between two sources is not the
+  tool's to settle silently.
+
+### Added — the sector vocabulary now speaks Yahoo's industry names
+
+Asking Yahoo for the industry only helps if the definitions file can
+place the answer, and it mostly could not: on a 60-value sample of
+Yahoo's industry taxonomy, **31 resolved**. Every unplaceable one would
+have been skipped by `_pick_enrich_value` and silently cost that holding
+its sub-sector.
+
+So the industries were added as **matches on the sub-sectors that
+already exist** — no new nodes, because the taxonomy is not wrong, it
+was just missing the other side's wording. 39 sub-sector rows gained
+aliases across all eleven sectors: `banks—diversified` and
+`banks—regional` onto `banks`, `drug manufacturers—general` onto
+`pharmaceuticals`, `diagnostics & research` onto `life sciences tools`,
+`utilities—regulated electric` onto `electric utilities`, the eight
+`reit—*` industries onto `equity reits` (and `reit—mortgage` onto
+`mortgage reits`), `gold` / `silver` / `copper` / `uranium` onto `metals
+and mining`, `waste management` onto `business services`, and so on.
+Yahoo writes these with an em dash and some feeds use a hyphen, so both
+spellings are carried rather than asking anyone to clean a file first.
+
+The sample now resolves **58 of 60**. The two left out are deliberate,
+and they are the shape of the rule rather than an omission:
+`Oil & Gas Integrated` (a major is upstream *and* downstream, so any
+sub-sector would be a guess) and `Building Products & Equipment` (Yahoo
+files it under Industrials while our nearest node sits under Basic
+Materials, and a cross-sector alias would contradict the row's own
+sector). Both fall back to Yahoo's sector, which is exactly what the
+fallback exists for. `Solar` and `Conglomerates` are left alone for the
+same reason.
+
+One duplicate was caught by the file's own loader while doing this —
+`luxury goods` was added to `retail cyclical` when `apparel and luxury`
+already claimed it — and removed. That validator earning its keep is
+worth recording: one token meaning two nodes is exactly what it is for.
+
+### Fixed — `Asia ex-Japan` no longer answers "emerging Asia"
+
+`asia ex japan` was a plain alias on the `asiaEmerging` row, so the
+phrase resolved to emerging Asia at region level. Korea, Taiwan,
+Singapore and Hong Kong are developed in this taxonomy and are exactly
+what the phrase keeps, so the alias converted "we cannot place this"
+into a confident wrong region — and silently, since a resolved value
+never reaches the amber banner.
+
+The alias is deleted rather than moved. The phrase spans
+`asiaDeveloped`, `asiaEmerging` and, written as "Pacific", `australasia`
+too; no single region holds it, and a node for it would overlap the ones
+it is made of, in a tree whose levels are supposed to partition. It now
+resolves to nothing and lands in the Resolve dialog, where the user says
+what they meant for that fund. `Europe ex-UK` still resolves, because
+there the exclusion really does name one node.
+
+Worth knowing where the phrase actually occurs: in the shipped cache
+every instance is in a **fund name** — *iShares Core MSCI Pacific
+ex-Japan*, *Vanguard FTSE Developed Asia Pacific ex Japan* — and a fund's
+pan-regional span already has a home in the `focus_group` rows (`asia`,
+`pacific`), which sit outside the country chain precisely because a
+holding does not belong to "pacific" uniquely.
+
+**What this asks of you.** Nothing, for the sector level: the vocabulary
+fix applies on the next read. The sub-sector is different — it was never
+in your files, so it can only arrive from Yahoo, which means one
+**Enrich through Yahoo** pass on the funds where you want sub-sector
+grain. It is per fund and on demand, not a global rebuild, and it is
+optional: `FACET_DEFAULT_LEVEL` reads sector at `sector`, so cards,
+targets and the optimiser are unaffected until you look or target one
+level deeper.
+
+## [0.97.0] - 2026-09-04
+
+### Added — `GETTING_STARTED.md`, and a pre-loaded fund set to start from
+
+The repository now ships a curated fund bundle at
+`PreLoadedFunds/porxpy_funds.zip` — around sixty funds with holdings,
+factsheets, corrected structure fields and per-facet source pins, plus
+the resource CSVs they were classified against. It is the answer to the
+first-run problem: the optimiser designs from the pre-loaded set, so on
+an empty install there is nothing for it to design *with*, and building
+a usable universe by hand is days of work before anything interesting
+happens.
+
+`GETTING_STARTED.md` is the path through it, end to end: install, start
+the app, import the bundle from Settings → backup & restore, create a
+portfolio, give it a cash position, set exposure targets (including the
+cash-held-by-me reservation), run the optimiser and apply the proposed
+trades. It closes with what to read afterwards, how to back the work up,
+and the failures that actually happen — a second server on port 5000,
+the amber unmatched-values banner, a targeted facet no candidate can
+answer.
+
+The from-scratch flow works without any special-casing because the
+solver already treats construction and rebalancing as one problem, and
+because applying trades adds funds the design bought but the portfolio
+did not hold. Both were true before; nothing said so anywhere a new user
+would look.
+
+### Changed — the installation procedure now lives in exactly one place
+
+`README.md`'s Installation and Running sections are gone, replaced by a
+short Getting started section pointing at the new guide. The same
+procedure was in `README.md` and in the import guide's §1, which is two
+copies of a thing that changes when the requirements change — and the
+copies had already begun to drift on the version shown in the banner.
+
+### Changed — `IMPORT_GUIDE.md` is now `IMPORT_NEW_FUNDS_GUIDE.md`
+
+The name said "import guide" while the document is specifically about
+getting *one more fund* in and fully described — a different subject
+from importing the shipped bundle, which is now section 4 of the getting
+started guide. With two documents in play the old name was the ambiguous
+one. Its install instructions are replaced by a pointer, and the guide
+was brought up to date from v0.87.1 to current:
+
+* **Enrichment** is described as it now behaves: resolution by
+  identifier in a fixed order of trust (ISIN → ticker → CUSIP → name),
+  an identifier match correcting the row's name where a name match never
+  does, malformed identifiers replaced while well-formed ones are left
+  alone, the name search running on the head of the name, fills and
+  corrections reported as separate sentences, and the run reporting on
+  the shared progress bar.
+* **Rating** — the fifth bond column added in v0.93.0 — was missing from
+  the holdings-table description, the upload column-mapping table and
+  the holding editor's field list.
+* **The peer-group minimum is two**, not three, and the percentile
+  formula that made a pair unrankable is gone (v0.96.0).
+* The **Quality** column (five dots, how completely a fund is described)
+  was missing from the pre-loaded list's column table — worth naming
+  precisely, since a holdings table's Rating column means the opposite
+  thing about a bond.
+* The **portfolio sub-tabs** are listed in the grouped order they have
+  had since v0.91.0.
+
+`CLAUDE.md` gained a paragraph naming both user guides and stating that
+the installation procedure belongs to the getting started guide alone,
+so the next edit does not reintroduce a second copy.
+
+### Added — `README.md` now says what each document is for
+
+Six documents and no map: a reader wanting to understand facets had no
+way to learn that `FACET_TREE.md` exists, and the two guides were
+indistinguishable by name. The README opens with a table saying which
+question each document owns and when to read it — the guides as the user
+path, the reference documents as the why path — which is also the
+statement that keeps them from re-absorbing each other's content.
+
+### Changed — `FACET_TREE.md` re-verified at v0.97.0, and §17 moved
+
+Every item in the Known open issues section was re-checked against the
+running code rather than carried forward, and three of them had changed.
+Two are worse than they were recorded as being, because a value that
+resolves wrongly never reaches the amber banner while an unresolved one
+does:
+
+* **The technology sector's own names resolve to sub-sectors.**
+  Measured against the shipped cache: `IT` (1,057 rows) is recorded as
+  `semiconductors` and `Information Technology` (319 rows) as
+  `it services`, which is very nearly inverted — Capgemini is stored as
+  a semiconductor company, TSMC and Samsung as consultancies. Both are
+  sector-level labels an issuer writes to mean the whole sector, and
+  both are aliased onto sub-sector rows, so the app records a grain the
+  source never asserted and nothing reaches the Resolve dialog because
+  nothing failed. The `technology` row carries the phrase only in
+  `style_match`, which reads a *fund's* name and never sees a holding's
+  sector cell. Recorded with the three-line `Sector_definitions.csv`
+  fix, deliberately not applied: it re-grains roughly 1,400 stored
+  holdings on the next read.
+* **`Asia ex-Japan` now resolves to `asiaEmerging`.** Korea, Taiwan,
+  Singapore and Hong Kong are developed in this taxonomy and are exactly
+  what the phrase keeps, so the alias converts "we cannot place this"
+  into a confident wrong region. Every occurrence of the phrase in the
+  shipped cache is in a **fund name** rather than a breakdown value, and
+  a fund's pan-regional span already has a home — `focus_type:
+  geography` with one of the `focus_group` rows (`asia`, `pacific`). As
+  a breakdown value it should resolve to nothing and be decided per fund.
+  `World ex-US` still correctly does not resolve. The fix is to delete
+  the alias, not to move it and not to add a node.
+* **The asset picker's name filter was closed in v0.89.0** and is now
+  recorded as fixed rather than open.
+
+Also corrected: the node counts in §1 (26/7/4 asset, 51/12/4 sector —
+the fourth super-sector is the `n/a` residual, and the file's four
+`focus_group` rows are not a country level at all), and item 5's status,
+half of which arrived when the upload preview began resolving its sample
+rows server-side. What is still missing there is the *grain*, which is
+the half that would have shown the Information Technology problem at
+import time.
+
+### Changed — the documentation sweep is now part of a version bump
+
+Standing rule, recorded in `CLAUDE.md`: when the version in
+`porxpy/__init__.py` moves, every `.md` file is checked and either
+updated or confirmed still correct — not only the changelog and not only
+the document the change happened to touch. The docs are parallel by
+construction and each claims to describe a named release, so a stamp
+that lags does not fail loudly; it quietly makes every claim in the file
+untrustworthy without saying which ones went stale.
+
+Applied to this release: `OPTIMIZER.md`'s stamp now says what was
+audited when (the full audit stands at v0.91.0; §13's remaining issue
+was re-confirmed at v0.97.0 by reading `_add_target_rows`), and
+`WISHLIST.md` was swept — the cash-picker entry it still carried was
+shipped in v0.89.0 and is removed, and the upload-preview entry now
+describes the half that arrived.
+
+### Added — `FACET_TREE.md` §8c, a credit rating is not a facet
+
+The third instance of the boundary §8 and §8b already draw. A rating
+looks like a facet — small ordered vocabulary, arriving as raw text from
+an issuer — but it is stored exactly as written, has no canonical node
+to resolve to and no parent to derive, so it is never a breakdown, a
+target, or something the optimiser reads. What the app owns is the
+ordering, and `config.credit_quality_rank` reads both agencies' scales
+onto one ordinal so an unknown spelling ranks as a gap rather than junk.
+
 ## [0.96.0] - 2026-09-03
 
 ### Changed — a peer group of two is now ranked, and no percentile reaches 0 or 100

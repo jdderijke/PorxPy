@@ -1,6 +1,7 @@
 # FACET_TREE.md — the four facet trees
 
-*Current as of v0.93.1.*
+*Current as of v0.102.1. Check the stamp against `porxpy/__init__.py`
+before trusting a claim.*
 
 Sections 1–5 describe how the facet trees behave **today**, across all
 four facets. Sections 6–16 are the v0.70.0 design record that produced
@@ -25,10 +26,19 @@ on whether a facet has levels.
 
 | Facet | Levels (finest first) | Default | Definitions file | Nodes |
 |---|---|---|---|---|
-| `asset_class` | `sub_class` → `asset_class` → `super_class` | `super_class` | `Asset_definitions.csv` | 25 / 7 / 4 |
-| `sector` | `sub_sector` → `sector` → `super_sector` | `sector` | `Sector_definitions.csv` | 50 / 12 / 3 |
+| `asset_class` | `sub_class` → `asset_class` → `super_class` | `super_class` | `Asset_definitions.csv` | 26 / 7 / 4 |
+| `sector` | `sub_sector` → `sector` → `super_sector` | `sector` | `Sector_definitions.csv` | 51 / 12 / 4 |
 | `country` | `country` → `region` → `super_region` | `country` | `Geography_definitions.csv` | 250 / 11 / 2 |
 | `currency` | `currency` | `currency` | `Currency_definitions.csv` | 162 |
+
+Counts are of rows in the file, re-counted at v0.97.0, and two of them
+need a word. The fourth `super_sector` is `n/a` — the residual for
+positions the equity sector question does not apply to, carried as a
+row so it has a name and a description rather than being a special case
+in code. `Geography_definitions.csv` also holds 4 `focus_group` rows,
+which are not a level of the country tree at all: they are pan-regional
+labels a *fund* can be focused on, read by peer grouping rather than by
+a breakdown.
 
 Four rules hold for all of them.
 
@@ -365,6 +375,44 @@ describing.
 
 ---
 
+## 8c. A credit rating is not a facet either (v0.93.0)
+
+Bond holdings carry a rating — `quality` in the row schema, shown as the
+**Rating** column — and it looks like a facet from a distance: a small
+vocabulary, ordered, arriving as a raw string from an issuer's file. It
+is deliberately not one, and the difference is worth stating because it
+is the same boundary §8 and §8b draw from the other side.
+
+A facet is a *tree the app owns*: raw text resolves to a canonical node,
+the node carries its ancestors, and every level is derivable. A rating is
+**stored exactly as the source wrote it** — "BBB-", "Baa3" and "AA (sf)"
+all survive verbatim — because rewriting Moody's spellings into S&P's on
+ingest would silently restate what the issuer's document said, which is
+the one thing a holdings row must never do. There is no canonical node to
+resolve to and no parent to derive, so there is nothing for
+`normalise_facets` to do with it and nothing for a breakdown to roll it
+up into.
+
+What the app does own is the **ordering**, which is a separate question
+and did need answering: alphabetical sort puts AA+ before AAA and B
+before BBB, which is worse than not sorting because it looks sorted.
+`config.credit_quality_rank` reads both agencies' scales onto one ordinal
+— Moody's Baa2 *is* S&P's BBB — and strips the decorations that ride
+along with a rating without changing it. A spelling the table does not
+know ranks as `None` rather than as junk: an unknown rating is a gap in
+our table, not a claim about the bond, so it sorts to the end in both
+directions alongside the blanks. The scale is served to the frontend with
+the rest of the config rather than mirrored in the page, for the same
+reason the facet vocabularies are.
+
+So: rating is aggregated across funds (two funds holding the same bond
+should agree on it, and the source-rank rule that settles a facet
+disagreement settles this one too), it is sortable and filterable in both
+holdings tables, and it is editable per row. It is never a breakdown, a
+target, or something the optimiser reads.
+
+---
+
 ## 9. Defaults and grain
 
 `FACET_LEVELS["asset_class"] = ("sub_class", "asset_class", "super_class")`
@@ -679,9 +727,17 @@ Items 1–3 are the minimum for a releasable 0.70.0.
 ## 17. Known open issues
 
 Defects in the facet-tree machinery, grouped by the tree they belong to.
-Verified against the code at v0.70.1 rather than carried forward on
-trust. Deliberate boundaries are described in the sections above;
-everything here is something that should be fixed.
+Every item was re-checked against the running code at **v0.97.0** rather
+than carried forward on trust, and against the shipped fund cache where
+a claim could be measured instead of reasoned about. That moved three of
+them, and v0.98.0 then fixed two: the technology sector aliases and
+`Asia ex-Japan` were both resolving to the wrong thing, which is a
+quieter defect than the "does not resolve" recorded before, because a
+wrong answer never reaches the amber banner. Both are kept below as
+records rather than deleted. The asset picker's name filter was closed
+in v0.89.0.
+Deliberate boundaries are described in the sections above; everything
+here is something that should be fixed.
 
 ### Fixed in v0.93.1 — the asset card ignored its own default level
 
@@ -792,13 +848,48 @@ carries aliases for the common spellings, so `Europe ex-UK`,
 than approximate, because `unitedKingdom` is its own region in this
 taxonomy and `europeDeveloped` therefore already excludes it.
 
-What remains unresolvable is the class of "ex" phrasings that name more
-than one region. `Asia ex-Japan` spans `asiaDeveloped` and
+The class of "ex" phrasings that names more than one region is the part
+that has no honest answer. `Asia ex-Japan` spans `asiaDeveloped` and
 `asiaEmerging`; `World ex-US` spans nearly all of them. Neither is a
 single node, so neither can be an alias of one, and inventing a node for
 each would put overlapping buckets into a tree whose levels are supposed
-to partition. They correctly land in the Resolve-unmatched-values dialog
-instead, where the user can say which region they meant for that fund.
+to partition. `World ex-US` behaves accordingly: it does not resolve, and
+lands in the Resolve-unmatched-values dialog where the user can say what
+they meant for that fund.
+
+**Fixed in v0.98.0 — `Asia ex-Japan` resolved to `asiaEmerging`.**
+`asia ex japan` was a plain alias on the `asiaEmerging` row of
+`Geography_definitions.csv`, so the phrase answered *emerging Asia* at
+region level. Asia ex-Japan is not emerging Asia — Korea, Taiwan,
+Singapore and Hong Kong are developed in this taxonomy and are exactly
+what the phrase keeps. The alias converted "we cannot place this" into a
+confident wrong region, and did it silently: an unresolved value reaches
+the amber banner and gets a decision, a resolved one never appears again.
+
+Where the phrase actually occurs is the useful part of the answer.
+Searching the shipped cache at v0.97.0, every occurrence is in a **fund
+name** — *iShares Core MSCI Pacific ex-Japan*, *Vanguard FTSE Developed
+Asia Pacific ex Japan*, *Xtrackers MSCI Pacific ex Japan* — and not one
+is a value in a country breakdown or a holdings cell. A fund name is not
+a breakdown bucket, and it already has a home: `focus_type: geography`
+with a `focus_detail`, where `Geography_definitions.csv`'s `focus_group`
+rows (`asia`, `pacific`, `europe`, `world`) exist precisely to name a
+pan-regional span that is not a level of the country tree. That is where
+"Pacific ex-Japan" belongs, and it costs the breakdown nothing.
+
+As a breakdown value the phrase has no honest node, which is the general
+rule stated above: it spans `asiaDeveloped` and `asiaEmerging` (and
+`australasia` when written as "Pacific"), so no single region holds it
+and a new node would overlap the ones it is made of. It resolves to nothing
+now and is decided per fund in the Resolve dialog. Moving the alias to
+`asiaDeveloped` was considered and rejected: the funds in this cache
+carrying the phrase are developed-market funds, so it would have been
+the less wrong guess — but still a guess, baked into the vocabulary and
+applied to every future fund silently, which is the thing worth avoiding.
+The alias was deleted rather than moved: the phrase now resolves to
+nothing and reaches the Resolve dialog, which is the honest behaviour for
+a span no node covers. `Europe ex-UK` still resolves, because there the
+exclusion really does name one node.
 
 ### Sector
 
@@ -816,14 +907,62 @@ super-sector rather than sitting outside the distribution. The eleven
 Morningstar sectors are a taxonomy of operating businesses; cash is not
 one, and the twelfth row makes the level mean two things at once.
 
-**`Information Technology` does not resolve.** It returns `unknown` at
-every level, confirmed by calling `resolve_sector_tree`. This is the
-canonical issuer spelling, and `config.py` documents it as the worked
-example of what the file is for: *"Drives the Sector dropdown and the
-upload-side coercion of issuer spellings ('Information Technology' →
-'technology')"*. The alias is simply absent from the `matches` column
-that comment describes. An alias gap rather than a code fault, but a
-conspicuous one, since it is the exact case the design cites.
+**Fixed in v0.98.0 — the technology sector's own names resolved to
+sub-sectors.** Kept as a record, because it is the clearest instance of
+why the stated level is stored at all, and because the second half of
+the fix is a rule the next facet will want.
+
+Two spellings an issuer writes to mean *the technology sector* each
+resolved to a different sub-sector, and the app recorded that the issuer
+had asserted that finer grain. Measured against the shipped fund cache
+at v0.97.0:
+
+| Raw value in a sector column | Rows | Was recorded as | What those rows actually are |
+|---|---|---|---|
+| `IT` | 1,057 | `semiconductors` | ASML, SAP, Infineon, Nokia, Ericsson, Capgemini, Dassault Systèmes |
+| `Information Technology` | 319 | `it services` | TSMC, Samsung Electronics, SK Hynix, MediaTek, Hon Hai, Xiaomi, ASE |
+
+The two were very nearly inverted — Capgemini stored as a semiconductor
+company, TSMC as a consultancy — and neither was visible: a wrong
+sub-sector never reaches the Resolve dialog, because nothing failed.
+
+The language is what made it easy to get wrong. "Information Technology"
+does contain "IT", so `it services` looks like its home. But `it
+services` is not "IT" in this vocabulary: that row's description is
+*"Consulting, outsourcing, and technology services"* — the Accenture /
+Capgemini industry — while `technology`'s is *"Software, hardware,
+semiconductors, IT services"*, which is the whole sector the issuer
+named. `Information Technology` is GICS sector 45's label and `IT` is
+that label abbreviated; neither says which industry inside the sector a
+holding belongs to. `style_match` was never involved: it is matched
+against a **fund's** name and category to find what the fund is focused
+on, and is never consulted when a holding's sector cell is resolved.
+
+**The half that is a vocabulary fix.** Those spellings now sit on the
+`technology` sector row. The rows re-derive on the next read — sector
+`technology`, sub-sector honestly blank — with no re-import, because
+resolution happens at derivation time.
+
+**The half that is a rule.** A blank sub-sector is the truthful answer,
+but it is not the useful one, and no re-derivation can invent it: the
+grain is not in the file. It is in Yahoo, whose `industry` field the app
+had never read. Enrichment now offers it as the sector facet's finer
+answer, exactly as `sub_class` is offered ahead of `asset_class`, under
+two conditions worth stating because they generalise:
+
+- *Finest that resolves.* A finer answer is preferred only where the
+  definitions file can place it — about half of Yahoo's ~145 industries
+  cannot be placed here yet — so a missing alias costs nothing instead
+  of turning a good sector into `unknown`.
+- *Refinement, not overwrite.* An occupied cell is not an answered one.
+  A value that resolves strictly finer **and** agrees at every level the
+  row already states adds grain without changing a claim, and is
+  written; anything that contradicts the row is left to the user.
+
+Both rules, with worked examples of what does and does not count as a
+refinement, are set out for users in
+[IMPORT_NEW_FUNDS_GUIDE.md §11b](IMPORT_NEW_FUNDS_GUIDE.md#11b-how-enrichment-works),
+which is where enrichment is documented as a whole.
 
 **Unresolved asset values are invisible to the rollup.** A holdings row
 whose asset text does not resolve produces nothing in
@@ -853,10 +992,32 @@ builder will find sector shallower than its siblings.
 
 ### Asset
 
-**`cashAssetOptions` filters by node NAME.** The vocabulary endpoint
-serves each node's level but not its parent, so the cash tab excludes
-`bond future` — a derivative, not a deposit — by matching its name.
-Serving the parent chain and filtering on the branch is the honest fix.
+**Fixed in v0.89.0 — `cashAssetOptions` filtered by node NAME.** Kept as
+a record because the shape recurs. The cash position picker restricted
+its list by testing node *names*, so `bond future` — a derivative, not a
+deposit — had to be excluded by name too, and any future node whose name
+happened to contain "cash" or "bond" would have been offered whether it
+belonged in the branch or not. It is now `cashAssetFilter`, which tests
+the node's **branch** against the tree the picker already indexes, so the
+restriction follows the taxonomy instead of imitating it. The limitation
+was closed rather than moved.
+
+**`futures` means two nodes, and the loader says so.** Verified at
+v0.98.0 by starting the app: `Asset_definitions.csv` reports *"match
+'futures' is claimed by 'shares and options' and 'stock future'; the
+deeper node wins, but one spelling meaning two things is an authoring
+mistake"* on every load. Both rows list it — the `shares and options`
+asset class alongside `futures contracts`, and the `stock future`
+sub-class alongside `share futures` and `stock futures`. The deeper node
+wins, so a holding whose asset column says "futures" is recorded as a
+stock future specifically, at sub-class grain, which is the same
+too-deep claim the sector aliases were making: a file writing "futures"
+has not said *which* future. Dropping it from the sub-class row leaves
+the coarser, truthful answer. It is one edit, left here rather than
+applied because it re-grains stored rows and nobody has asked for it.
+
+Beyond that, the entries recorded under Sector above are about the
+rollup rather than the vocabulary.
 
 ### Currency
 
@@ -886,8 +1047,14 @@ struck through, on the three cards it can never mean anything on.
 
 ### Cross-cutting
 
-**Item 5, upload preview grain.** Not started, and cosmetic: the preview
-would show the stated grain with the chain in the tooltip. Deliberately
-not chips — the preview's job is to show what will be stored, and
-`unknown` at a chip-selected level would read as "this row will not be
-stored".
+**Item 5, upload preview grain.** Still open, and still cosmetic. Half of
+it arrived in the meantime: the mapping preview now resolves its five
+sample rows on the server (`/api/upload/normalise_sample` — the resolver
+is never mirrored in JavaScript) and shows each cell's canonical value,
+in accent colour with the file's own spelling in the tooltip, or in red
+where nothing matched. What it still does not show is the **grain** — the
+level the value was stated at — which is the half that would tell you a
+file saying "Information Technology" is about to record a sub-sector
+rather than a sector. Deliberately not chips: the preview's job is to
+show what will be stored, and `unknown` at a chip-selected level would
+read as "this row will not be stored".

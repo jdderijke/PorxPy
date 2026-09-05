@@ -647,13 +647,19 @@ def cache_read(key: str, category: str) -> dict:
 
 
 def _legacy_purge_settle(data: dict) -> None:
-    """Retire the ``_legacy_purge`` notice for categories that are back.
+    """Retire the ``_legacy_purge`` notice once it no longer says anything.
 
     The v0.76.0 migration drops any cached category stored before every
     facet kept the source's own wording, and leaves a marker naming what
     it dropped so the fund page can say why the screen went empty. The
-    marker has to go away again once the user has acted on it, and the
-    only honest signal for that is the category reappearing in the blob.
+    marker has to go away again once the notice stops describing
+    anything the user would see, and there are two ways that happens:
+    the category REAPPEARS in the blob (they re-imported it), or it
+    becomes MOOT because something else now answers the screen it warned
+    about (see :func:`_legacy_purge_moot`). Only the first was checked
+    until v0.101.2, which left four funds carrying a permanent banner
+    asking for breakdown CSVs whose cards were all being answered from
+    holdings.
 
     Done here, in the one function every writer goes through, rather
     than at each of the eight ``cache_write``/``cache_put`` call sites.
@@ -668,11 +674,60 @@ def _legacy_purge_settle(data: dict) -> None:
     marker = data.get("_legacy_purge")
     if not isinstance(marker, dict):
         return
-    remaining = [c for c in (marker.get("categories") or []) if c not in data]
+    remaining = [c for c in (marker.get("categories") or [])
+                 if c not in data and not _legacy_purge_moot(c, data)]
     if not remaining:
         data.pop("_legacy_purge", None)
     else:
         marker["categories"] = remaining
+
+
+def _legacy_purge_moot(category: str, data: dict) -> bool:
+    """Has a still-missing category stopped being worth telling the user about?
+
+    The SECOND way a purge notice retires. The first is the category
+    coming back - the user re-imported it - which
+    :func:`_legacy_purge_settle` reads straight off the blob. This is the
+    other one: the category is still gone, but nothing on the screen is
+    missing any more, so the notice is asking for a repair that would
+    change nothing on it.
+
+    The two categories the notice knows about differ here, and the
+    asymmetry is deliberate:
+
+    * ``uploaded_breakdowns`` fed the four breakdown cards. Once the fund
+      has holdings rows, every card is answered by the look-through
+      rollup instead, and the dropped CSVs would be one more SELECTABLE
+      source rather than a gap on the screen. Four funds in the shipped
+      cache sat in exactly that state for two weeks after the v0.76.0
+      migration - full holdings, every card sourced from them, and a
+      permanent banner asking for CSVs that would have changed nothing
+      (v0.101.2).
+    * ``holdings`` is deliberately never moot. Its absence IS the visible
+      symptom - an empty holdings table - and no other source fills it: a
+      breakdown card pinned to the factsheet does not put rows on the
+      screen. It retires only when rows arrive, which the "came back"
+      rule already covers.
+
+    Args:
+        category: The dropped cache category named in the marker.
+        data: The full cache blob being written.
+
+    Returns:
+        True when the notice for ``category`` no longer describes
+        anything the user would see.
+    """
+    if category != "uploaded_breakdowns":
+        return False
+    entry = data.get("holdings")
+    val   = entry.get("value") if isinstance(entry, dict) else None
+    # Read through the same shape-tolerant migrator every other holdings
+    # reader uses, rather than a second private walk of the store: this
+    # runs on blobs old enough to predate the source map, which is
+    # exactly the population the marker exists for.
+    store, _ = _migrate_holdings_value(val if isinstance(val, dict) else None)
+    return any((blob or {}).get("rows")
+               for blob in (store.get("sources") or {}).values())
 
 
 def cache_write(key: str, category: str, data: dict) -> None:
@@ -2002,8 +2057,9 @@ def symbol_info_get(symbol: str) -> dict | None:
 
     Returns:
         ``{"country", "currency", "asset_class", "sub_class", "sector",
-        "name", "quote_type"}`` or ``None`` if the entry is missing,
-        malformed, or older than :data:`porxpy.config.SYMBOL_INFO_TTL_DAYS`.
+        "sub_sector", "name", "quote_type"}`` or ``None`` if the entry is
+        missing, malformed, written before the current field set, or
+        older than :data:`porxpy.config.SYMBOL_INFO_TTL_DAYS`.
     """
     if not symbol:
         return None
@@ -2016,6 +2072,22 @@ def symbol_info_get(symbol: str) -> dict | None:
         return None
     val = entry.get("value")
     if not isinstance(val, dict):
+        return None
+    # Schema check, not a value check (v0.99.0). Entries written before
+    # `sub_sector` existed carry no such key, and the enrichment loop
+    # reads a MISSING key as "Yahoo has no industry for this symbol" —
+    # so every symbol looked up in the last 90 days would answer at
+    # sector grain forever, and the sub-sector feature would appear
+    # broken on exactly the holdings the user has already worked with.
+    # A stale-shaped entry is therefore a miss, and one lookup replaces
+    # it. That is this codebase's standing preference: purge what a
+    # schema change invalidated rather than carry a fallback path for it.
+    #
+    # Only positive entries are held to the shape. A negative entry says
+    # "Yahoo does not know this symbol", which no new field changes, and
+    # re-probing every known-bad symbol would cost a network call per
+    # unresolvable row for nothing.
+    if val.get("_found", True) and "sub_sector" not in val:
         return None
     # A cached "we found nothing" gets the short TTL, for the same
     # reason a negative alias does: the thing that produced it may have
@@ -4436,6 +4508,34 @@ def normalise_settings(raw: dict | None) -> dict:
         },
         "group_ttl_days": group_ttl,
     }
+
+
+def enrichment_fields() -> list[str]:
+    """Which fields Yahoo enrichment is allowed to fill. The only answer.
+
+    Every enrichment path asks this: the fund page's "Enrich through
+    Yahoo" button, the holdings upload's commit pass, and the top-10
+    build. They are one operation and must agree about what it does.
+
+    Until v0.100.0 they did not. The upload dialog carried its OWN
+    per-field Yahoo toggles, defaulting to nothing ticked, so somebody
+    with all five fields enabled in Settings still got an import that
+    enriched nothing unless they also found the toggles in the mapping
+    dialog — and the two lists could disagree indefinitely because
+    neither knew about the other. The per-field toggles bought nothing
+    in return: the lookup is one network call per ROW that answers every
+    field at once, so restricting the fields never saved a single call.
+    It only decided which answers were allowed to land.
+
+    Returns:
+        The user's chosen fields, validated against
+        :data:`~porxpy.config.ENRICHABLE_FIELDS`. An empty list means
+        the user has switched enrichment off, and every caller treats
+        that as "do nothing", not as "do everything".
+    """
+    settings = load_settings()
+    chosen = (settings.get("enrichment") or {}).get("fields") or []
+    return [f for f in chosen if f in ENRICHABLE_FIELDS]
 
 
 def load_settings() -> dict:

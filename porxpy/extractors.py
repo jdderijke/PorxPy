@@ -38,6 +38,7 @@ from porxpy.yf_session import install as _install_yf_session
 _install_yf_session()
 
 from porxpy.config import (
+    ENRICH_TRANSPORT_FAILURE_LIMIT,
     rollup_label_of,
     BREAKDOWN_FACETS,
     DEFAULT_FUND_STRUCTURE,
@@ -57,6 +58,7 @@ from porxpy.resolver import (
     isin_country_variant,
     search_id_variant,
     search_name_variant,
+    country_suffix_variant,
 )
 from porxpy.breakdowns import build_fund_breakdowns, rollup_holdings
 from porxpy.utils import (
@@ -1962,14 +1964,14 @@ def extract_symbol_info(symbol: str) -> dict:
 
     Returns:
         ``{"country", "currency", "asset_class", "sub_class", "sector",
-        "name", "quote_type"}``. Empty strings indicate "Yahoo had
-        nothing useful for this symbol".
+        "sub_sector", "name", "quote_type"}``. Empty strings indicate
+        "Yahoo had nothing useful for this symbol".
     """
     # Local import — resources depends only on config, no circular risk.
     from porxpy.resources import country_to_mstar
 
     out = {"country": "", "currency": "", "asset_class": "",
-           "sub_class": "", "sector": "",
+           "sub_class": "", "sector": "", "sub_sector": "",
            "name": "", "quote_type": ""}
     if not symbol:
         return out
@@ -1989,6 +1991,22 @@ def extract_symbol_info(symbol: str) -> dict:
     qt          = (info.get("quoteType") or "").strip().upper()
     name        = (info.get("longName") or info.get("shortName") or "").strip()
     sector      = (info.get("sector") or "").strip()
+    # Yahoo's `industry` is the sector facet's FINER grain, and it is the
+    # only source in the app that knows one holding's industry from
+    # another's. It matters because an issuer's sector column is often a
+    # sector-level word — "IT", "Information Technology" — which says
+    # ASML and Capgemini are both technology and cannot say that one is
+    # semiconductors and the other IT services. The file is not wrong;
+    # it simply does not carry the grain. Yahoo does: ASML's industry is
+    # "Semiconductor Equipment & Materials", Capgemini's is "Information
+    # Technology Services".
+    #
+    # It is read here and offered to the enrichment loop as the finer of
+    # the sector facet's two answers, exactly as `sub_class` is offered
+    # ahead of `asset_class` — see _ENRICH_SOURCE_KEYS, which also
+    # states the rule that a finer answer is only preferred when the
+    # definitions file can actually place it.
+    sub_sector  = (info.get("industry") or "").strip()
 
     # Yahoo's own wording, passed through (v0.76.0). This used to fold
     # "United States" to the mstar form here so it would merge with
@@ -2017,6 +2035,7 @@ def extract_symbol_info(symbol: str) -> dict:
         "asset_class": ac,
         "sub_class":   sub,
         "sector":      sector,
+        "sub_sector":  sub_sector,
         "name":        name,
         "quote_type":  qt,
     })
@@ -2059,9 +2078,113 @@ _ENRICH_FACET: dict[str, str] = {
 # enrichment loop, so the fund-page button and the top-10 build coarsened
 # every asset answer Yahoo gave them. Stating it here, at the one writer,
 # is what stops the two disagreeing again.
+#
+# Sector is the same shape and gets the same rule (v0.98.0): Yahoo's
+# `industry` is the sub-sector, its `sector` the sector. An issuer's own
+# sector column frequently states the coarse grain and nothing finer, so
+# without this the app can never learn that one technology holding is a
+# chip maker and the next a consultancy — the information exists, and we
+# were not asking for it.
+#
+# The finer answer is preferred only when the definitions file can place
+# it. Yahoo's industry list is its own ~145-value taxonomy and roughly
+# half of it does not resolve here today; writing an unplaceable value
+# over a placeable one would turn a correct sector into `unknown`, which
+# is a regression dressed as more detail. `_pick_enrich_value` applies
+# that test, so a missing alias costs nothing until somebody adds it.
 _ENRICH_SOURCE_KEYS: dict[str, tuple[str, ...]] = {
     "asset_class": ("sub_class", "asset_class"),
+    "sector":      ("sub_sector", "sector"),
 }
+
+
+def _facet_of_enrich_field(field: str) -> str:
+    """The facet an enrichable field belongs to, or ``""``."""
+    return _ENRICH_FACET.get(field, "")
+
+
+def _pick_enrich_value(field: str, info: dict) -> str:
+    """Choose the answer to write for ``field``: finest that resolves.
+
+    Walks ``_ENRICH_SOURCE_KEYS[field]`` finest-first and takes the
+    first non-blank candidate that the facet's definitions file can
+    actually place. The coarsest candidate is accepted whether or not it
+    resolves — it is the last answer available, and an unresolved value
+    stored as the source wrote it is exactly what the Resolve dialog
+    exists to collect. Only the *finer* candidates have to earn their
+    place, because preferring one that resolves to nothing would throw
+    away a coarser answer that resolves to something.
+
+    Returns:
+        The chosen value, stripped, or ``""`` when Yahoo said nothing.
+    """
+    from porxpy.resources import resolve_facet_tree
+
+    facet = _facet_of_enrich_field(field)
+    keys = _ENRICH_SOURCE_KEYS.get(field, (field,))
+    for i, key in enumerate(keys):
+        cand = str(info.get(key) or "").strip()
+        if not cand:
+            continue
+        is_last = (i == len(keys) - 1)
+        if not is_last and facet:
+            if not (resolve_facet_tree(facet, cand).get("level") or ""):
+                continue
+        return cand
+    return ""
+
+
+def _is_refinement(facet: str, new_raw: str, cur_raw: str) -> bool:
+    """Does ``new_raw`` say what ``cur_raw`` says, only at a finer grain?
+
+    The question a blank-only enrichment cannot answer on its own. A row
+    whose file said "IT" has a sector and no sub-sector: the cell is
+    occupied, so blank-only skips it, and the sub-sector stays empty
+    forever even though Yahoo knows it. But "occupied" and "answered at
+    every level" are different things, and only the second is a reason
+    not to write.
+
+    A value is a refinement when it resolves at a strictly finer level
+    than the current one **and** agrees with it at every level the
+    current one states. "Semiconductor Equipment & Materials" refines
+    "IT" — both are technology, one also names the industry. "Banks"
+    does not refine "IT": it contradicts it, and a contradiction between
+    two sources is not ours to settle silently. Neither refines the
+    other when the current value is already the finer of the two.
+
+    Args:
+        facet: The facet both values belong to.
+        new_raw: The candidate value.
+        cur_raw: What the row already carries in its raw column.
+
+    Returns:
+        True when writing ``new_raw`` adds grain without changing any
+        claim the row already makes.
+    """
+    from porxpy.config import FACET_LEVELS
+    from porxpy.resources import resolve_facet_tree
+
+    levels = FACET_LEVELS.get(facet) or ()
+    if not levels or not new_raw.strip() or not cur_raw.strip():
+        return False
+
+    new_t = resolve_facet_tree(facet, new_raw)
+    cur_t = resolve_facet_tree(facet, cur_raw)
+    new_lvl, cur_lvl = new_t.get("level") or "", cur_t.get("level") or ""
+    # Something that places nothing cannot refine, and cannot be refined
+    # — an unresolved value is a question for the Resolve dialog, not a
+    # claim to be deepened.
+    if new_lvl not in levels or cur_lvl not in levels:
+        return False
+    # FACET_LEVELS is finest-first, so a lower index is a finer grain.
+    if levels.index(new_lvl) >= levels.index(cur_lvl):
+        return False
+    # Every level the current value states must survive unchanged.
+    for lvl in levels[levels.index(cur_lvl):]:
+        stated = (cur_t.get(lvl) or "").strip()
+        if stated and stated != "unknown" and (new_t.get(lvl) or "") != stated:
+            return False
+    return True
 
 
 def _info_looks_found(info: dict) -> bool:
@@ -2074,7 +2197,17 @@ def _info_looks_found(info: dict) -> bool:
     """
     if not isinstance(info, dict):
         return False
-    return bool(info.get("currency")) or bool(info.get("quote_type"))
+    # Yahoo answers an unknown symbol with quoteType "NONE" and every
+    # other field blank, and "NONE" is a non-empty string — so a bare
+    # ticker it has never heard of used to look FOUND, stop the variant
+    # chain on its first candidate, and get written into the alias cache
+    # as the answer. The row was then enriched with nothing at all, which
+    # reads on screen as "Yahoo has no data for this holding" rather than
+    # "we asked the wrong question". Seen with "CAP" (Capgemini in a
+    # European fund file): Yahoo has CAP.PA and CAP.SN, and NONE for the
+    # bare form.
+    qt = (info.get("quote_type") or "").strip().upper()
+    return bool(info.get("currency")) or (qt not in ("", "NONE"))
 
 
 # Maximum number of candidate forms to probe for a single raw input.
@@ -2088,6 +2221,9 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False,
                            isin: str | None = None,
                            cusip: str | None = None,
                            name: str | None = None,
+                           expect_currency: str | None = None,
+                           expect_country: str | None = None,
+                           currency_decides: bool = False,
                            retry_negative: bool = False) -> dict:
     """Resolve a possibly-non-Yahoo ticker via the variant-probe chokepoint.
 
@@ -2139,6 +2275,20 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False,
         name: Optional security name from the holdings file. Used as a
             last-resort fallback via Yahoo name search when all other
             probes have failed.
+        expect_currency: The trading currency the holdings file gave for
+            this row, if any. Used only to reject a ticker-VARIANT hit
+            that contradicts it; see ``_candidate_agrees``.
+        expect_country: The country the holdings file gave for this row,
+            in the issuer's own wording ("Frankrijk" is fine). Same use.
+            Both are needed before a candidate can be rejected, so a row
+            carrying only one of them is unaffected — unless
+            ``currency_decides`` says otherwise.
+        currency_decides: True when the holdings file's currency column
+            varies across its rows, which means it states each LISTING's
+            trading currency rather than the fund's reporting currency.
+            A mismatch is then decisive on its own, because a different
+            trading currency is a different listing. Worked out by the
+            caller from the file it holds, not assumed here.
 
     Returns:
         The same dict shape as :func:`extract_symbol_info` plus
@@ -2151,6 +2301,101 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False,
     _probe_error = ""
 
     cleaned = clean_holding_ticker_input(symbol)
+
+    # The alias cache is keyed by the RAW input, and a raw input is not
+    # unique: an issuer file writes `SAN` for Banco Santander in Madrid
+    # and `SAN` for Sanofi in Paris, in the same file. One key for two
+    # companies means whichever row resolved first answers for both —
+    # and since a ticker match rewrites the name, the second row became
+    # the first one's company outright.
+    #
+    # So the key carries the row's country when there is one. Rows
+    # without a country keep the bare key, which is what every previously
+    # written entry uses, so nothing is invalidated: a country-bearing
+    # row simply looks up a key that does not exist yet and probes once.
+    def _alias_key(raw: str) -> str:
+        if not (raw and expect_country):
+            return raw
+        from porxpy.resources import resolve_country_tree
+        node = (resolve_country_tree(expect_country) or {}).get("country") or ""
+        return f"{raw}|{node}" if node and node != "unknown" else raw
+
+    def _country_agrees(cand_ctry: str) -> bool:
+        """Do the file's country and the candidate's name the same place?
+
+        True when either side is silent or unresolvable — this decides
+        whether to keep a candidate, and an unknown is not a reason to
+        throw one away. Both are read through the country tree, so
+        "Frankrijk", "France" and "FR" are one answer: the wording in a
+        holdings file is the issuer's, not ours.
+        """
+        if not (expect_country and cand_ctry):
+            return True
+        from porxpy.resources import resolve_country_tree
+        want = (resolve_country_tree(expect_country) or {}).get("country") or ""
+        got = (resolve_country_tree(cand_ctry) or {}).get("country") or ""
+        if not want or not got or "unknown" in (want, got):
+            return True
+        return want == got
+
+    def _candidate_agrees(info: dict) -> bool:
+        """Does a ticker-variant hit match what the file said about the row?
+
+        Answers True whenever there is not enough evidence to reject —
+        no expectations passed, or either side silent — so a caller that
+        knows nothing about the row loses nothing, and this cannot turn
+        a working resolution into a miss on thin grounds.
+
+        Args:
+            info: A candidate's symbol-info dict.
+
+        Returns:
+            False only when the file's currency AND its country both
+            contradict the candidate's own.
+        """
+        cand_cur = (info.get("currency") or "").strip().upper()
+        cand_ctry = (info.get("country") or "").strip()
+        want_cur = (expect_currency or "").strip().upper()
+
+        # Currency first, and on its own when the file's currency column
+        # is known to describe the LISTING rather than the fund
+        # (``currency_decides``, worked out by the caller from whether the
+        # column varies across the file). A different trading currency
+        # means a different listing, and usually a different company:
+        # "SAF" in a European file is Safran in Paris, and Yahoo's bare
+        # SAF is Saratoga Investment Corp in USD.
+        #
+        # Requiring the country to disagree as well — which this did
+        # until v0.99.2 — let all of those through, because Yahoo returns
+        # no country at all for many non-US listings, ETFs and bonds, and
+        # a missing country counted as "no evidence to reject".
+        # Positive agreement, not merely absence of contradiction. A
+        # candidate that states NO currency is not evidence that it is
+        # the right listing, and Yahoo returns none for many funds and
+        # foreign lines — which is how "RMS" in a French file matched a
+        # Rydex inverse ETF: no currency, no country, nothing to
+        # contradict. When the file's column is per-listing we have a
+        # real expectation, so a guess must meet it.
+        if currency_decides and want_cur:
+            if cand_cur != want_cur:
+                return False
+            # Currency agreeing is not the same as being the right
+            # company. "SAN" in a Spanish row is Banco Santander; SAN.PA
+            # is Sanofi, also EUR, and the match sailed through on
+            # currency alone. So where both sides also name a country,
+            # they have to agree. Yahoo's country is the company's
+            # domicile and the file's is often the listing's, so a
+            # disagreement is not proof of anything — but on a GUESSED
+            # ticker it is enough to move on and let the name search,
+            # which matches on the company name itself, decide.
+            return _country_agrees(cand_ctry)
+        if not (want_cur and expect_country):
+            return True
+        if not (cand_cur and cand_ctry):
+            return True
+        if cand_cur == want_cur:
+            return True
+        return _country_agrees(cand_ctry)
 
     def _probe(cand: str | None, *, via: str,
                alias_for: str = "", note: str = "") -> dict | None:
@@ -2194,8 +2439,35 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False,
                 print(f"[SymbolInfo] resolved via {note} → {cand}")
         if not info["_found"]:
             return None
+        # A variant probe is a GUESS about which listing a short ticker
+        # means, and Yahoo will happily answer with a different company
+        # that happens to own that symbol somewhere else. "CAP" in an
+        # iShares STOXX Europe 600 file is Capgemini in Paris; Yahoo
+        # answers CAP.SN, a Chilean steel producer — and because an
+        # identifier match is trusted to correct the row's name
+        # (v0.94.0), the row stopped saying Capgemini at all. A wrong
+        # answer that also erases the evidence is the worst shape a bug
+        # can have here.
+        #
+        # So a ticker-variant hit has to agree with what the file itself
+        # said about the holding. Both signals must contradict before the
+        # candidate is thrown away, because either one alone is
+        # legitimately noisy: some issuers report every row in the fund's
+        # own currency, and Yahoo's country is the company's domicile
+        # rather than the listing's. Currency AND domicile both landing
+        # elsewhere is not noise.
+        #
+        # Only the ticker path is second-guessed. An ISIN or CUSIP names
+        # one security by construction, and the name path is already
+        # strict (see resolver.search_name_only), so checking those would
+        # be overriding a stronger identifier with a weaker signal.
+        if via == "ticker" and not _candidate_agrees(info):
+            print(f"[SymbolInfo] rejected {cand}: says "
+                  f"{info.get('currency') or '?'}/{info.get('country') or '?'}, "
+                  f"row says {expect_currency or '?'}/{expect_country or '?'}")
+            return None
         if alias_for and alias_for != cand:
-            alias_put(alias_for, cand)
+            alias_put(_alias_key(alias_for), cand)
         info["_resolved_ticker"] = cand
         info["_resolved_via"] = via
         return info
@@ -2254,11 +2526,11 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False,
         # so a re-upload that now supplies an identifier gets a fresh
         # probe rather than the cached failure.
         if not force:
-            present, resolved = alias_get(cleaned)
+            present, resolved = alias_get(_alias_key(cleaned))
             if present:
                 if resolved is None:
                     if retry_negative:
-                        alias_delete(cleaned)
+                        alias_delete(_alias_key(cleaned))
                     else:
                         return {"_found": False}
                 else:
@@ -2296,6 +2568,22 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False,
         if hit:
             return hit
 
+    # ── 3b. the row's own country as an exchange hint ─────────────────
+    # The ISIN step above answers "which exchange" from the ISIN's
+    # country prefix, and does nothing for the very common row that has
+    # a bare local ticker and no ISIN at all — `SIE` / Duitsland, which
+    # Yahoo knows as SIE.DE. The holdings file already said where the
+    # holding lives; this asks the same question of that column. Tried
+    # before the name search because a ticker plus a country is a
+    # stronger claim than a name is.
+    if expect_country:
+        cand = country_suffix_variant(cleaned, expect_country)
+        if cand:
+            hit = _probe(cand, via="ticker", alias_for=cleaned,
+                         note=f"country suffix ({expect_country})")
+            if hit:
+                return hit
+
     # ── 4. the name, last ─────────────────────────────────────────────
     # A guess, and treated as one: what it returns never overwrites the
     # name it was derived from. Searched on the HEAD of the name, because
@@ -2322,7 +2610,9 @@ def get_symbol_info_cached(symbol: str, *, force: bool = False,
     if _probe_error:
         return {"_found": False, "_error": _probe_error}
     if cleaned:
-        alias_put(cleaned, None)
+        # Scoped like the positive one: "SAN did not resolve for a French
+        # row" must not stop a Spanish row from trying.
+        alias_put(_alias_key(cleaned), None)
     return {"_found": False}
 
 
@@ -2369,15 +2659,9 @@ def _apply_lookup_to_row(row: dict, info: dict, fields: list[str], *,
     for f in fields:
         if f not in ENRICHABLE_FIELDS:
             continue
-        # Finest answer first — see _ENRICH_SOURCE_KEYS.
-        v = None
-        for key in _ENRICH_SOURCE_KEYS.get(f, (f,)):
-            v = info.get(key)
-            if v is not None and str(v).strip():
-                break
-        if v is None:
-            continue
-        v_s = str(v).strip()
+        # Finest answer that the definitions file can place — see
+        # _ENRICH_SOURCE_KEYS and _pick_enrich_value.
+        v_s = _pick_enrich_value(f, info)
         if not v_s:
             continue
 
@@ -2397,7 +2681,16 @@ def _apply_lookup_to_row(row: dict, info: dict, fields: list[str], *,
             is_empty = cur is None or (
                 isinstance(cur, str) and not cur.strip())
             if not is_empty:
-                continue
+                # An occupied cell is not necessarily an answered one.
+                # A file that wrote "IT" stated a sector and no
+                # sub-sector, and skipping here leaves the finer level
+                # blank forever even though Yahoo knows it. A value that
+                # agrees with what the row already says and adds a level
+                # beneath it is a refinement, not an overwrite, so it is
+                # written; anything that contradicts the row is left to
+                # the user. See _is_refinement.
+                if not (facet and _is_refinement(facet, v_s, str(cur))):
+                    continue
 
         # Facet values go to <facet>_raw; everything else (name,
         # quote_type) keeps its own column. Writing the level column
@@ -2631,6 +2924,12 @@ def enrich_holdings_rows(rows: list[dict],
         # (TLS, DNS, proxy, rate limit), so nothing is known either way.
         "rows_lookup_failed":         0,
         "lookup_error":               "",
+        # Set when the run stopped itself because the lookups stopped
+        # completing — see ENRICH_TRANSPORT_FAILURE_LIMIT. The rows
+        # already enriched are kept; the caller reports the reason
+        # rather than a silent partial result.
+        "aborted":                    "",
+        "rows_not_attempted":         0,
         # Identifier columns REPLACED because what the file carried was
         # malformed. Counted apart from rows_filled, which counts blanks
         # being filled: "we filled 40 gaps" and "we overwrote 40 values
@@ -2643,6 +2942,18 @@ def enrich_holdings_rows(rows: list[dict],
     if not eff_fields or not rows:
         return rows, stats
 
+    # Does this file's currency column describe the LISTING or the fund?
+    # Decided from the whole file, once, rather than guessed per row: a
+    # column carrying several currencies is per-listing and a mismatch
+    # against it is decisive, while a column that says EUR on every row
+    # may simply be the fund's reporting currency and proves nothing
+    # about where a holding trades. Computed over ALL rows, not just the
+    # selected ones, because one selected row can never show a spread.
+    _row_currencies = {(r.get("currency_raw") or r.get("currency") or "").strip().upper()
+                       for r in rows}
+    _row_currencies.discard("")
+    currency_decides = len(_row_currencies) > 1
+
     wanted = set(row_ids) if row_ids is not None else None
     # Only the rows we will actually look up count towards the cap and
     # the progress total, so a four-row selection out of two thousand
@@ -2650,6 +2961,30 @@ def enrich_holdings_rows(rows: list[dict],
     targets = [r for r in rows
                if wanted is None or (r.get("_row_id") in wanted)]
     stats["rows_skipped_not_selected"] = len(rows) - len(targets)
+
+    # Circuit breaker state. Counts lookups that failed to COMPLETE, in a
+    # row: a rate limit or a dropped network fails every remaining row
+    # identically, and without this the loop proves that thousands of
+    # times before reporting nothing filled.
+    _consecutive_failures = 0
+    _rows_attempted = 0
+
+    def _stop_if_unreachable() -> bool:
+        """Should the run stop? True once the failures stop looking like bad luck.
+
+        Reads the counter the loop maintains rather than taking it as an
+        argument, so the three call sites stay one line each.
+        """
+        if _consecutive_failures < ENRICH_TRANSPORT_FAILURE_LIMIT:
+            return False
+        stats["aborted"] = (
+            f"stopped after {_consecutive_failures} lookups in a row could not "
+            f"be completed — Yahoo is unreachable or rate-limiting. "
+            f"{stats['rows_with_changes']} row(s) were enriched before that; "
+            f"nothing else was changed. Try again later."
+        )
+        print(f"[enrich] ABORTED: {stats['aborted']}")
+        return True
 
     total = len(targets) if row_cap is None else min(len(targets), row_cap)
     started = time.time()
@@ -2679,12 +3014,23 @@ def enrich_holdings_rows(rows: list[dict],
             continue
 
         stats["rows_processed"] += 1
+        _rows_attempted += 1
         try:
             info = get_symbol_info_cached(
                 sym,
                 isin=row_isin,
                 cusip=row_cusip,
                 name=row_name,
+                # What the file itself said about this holding, so a
+                # short ticker cannot resolve to a different company on
+                # the other side of the world. Raw columns, because they
+                # are the issuer's own wording and the check resolves
+                # them itself.
+                expect_currency=(row.get("currency_raw")
+                                 or row.get("currency") or None),
+                expect_country=(row.get("country_raw")
+                                or row.get("country") or None),
+                currency_decides=currency_decides,
                 retry_negative=retry_negative,
             )
         except Exception as exc:
@@ -2699,12 +3045,23 @@ def enrich_holdings_rows(rows: list[dict],
             if not stats["lookup_error"]:
                 stats["lookup_error"] = f"{type(exc).__name__}: {exc}"
             print(f"[enrich] {sym or row_name} error: {exc}")
+            _consecutive_failures += 1
+            if _stop_if_unreachable():
+                break
             continue
+        # The request completed — whatever it said. A run that is
+        # answering questions is not a run that is being throttled.
+        if isinstance(info, dict) and not info.get("_error"):
+            _consecutive_failures = 0
+
         if not isinstance(info, dict) or not info.get("_found"):
             if isinstance(info, dict) and info.get("_error"):
                 stats["rows_lookup_failed"] += 1
                 if not stats["lookup_error"]:
                     stats["lookup_error"] = str(info.get("_error"))
+                _consecutive_failures += 1
+                if _stop_if_unreachable():
+                    break
             else:
                 stats["rows_yahoo_not_found"] += 1
                 if len(stats["unrecognised"]) < 50:
@@ -2802,6 +3159,10 @@ def enrich_holdings_rows(rows: list[dict],
     if touched_any:
         rows[:] = [coerce_holdings_row(r, row_id=r.get("_row_id"))
                    for r in rows]
+    # An aborted run must say how much it did not do, or "12 failures"
+    # reads as a small problem when 3,000 rows were skipped behind it.
+    if stats["aborted"]:
+        stats["rows_not_attempted"] = max(0, len(targets) - _rows_attempted)
     return rows, stats
 
 
@@ -3831,8 +4192,9 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
         # source's own wording, so re-resolving them was impossible and
         # dropping them was the only honest option. Only the user can
         # close that gap, by re-importing, so only the user can be told.
-        # Cleared by the next holdings or breakdown write — see
-        # utils.legacy_purge_clear.
+        # Cleared by the next write to this fund, once the dropped
+        # category is either back or moot — see
+        # utils._legacy_purge_settle.
         "legacy_purge":    blob.get("_legacy_purge") or {},
         # Look-through facet breakdowns (sector / currency / country /
         # asset_class) rolled up from ``holdings_rows``. Empty arrays

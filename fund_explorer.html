@@ -111,7 +111,15 @@
   .btn:active{transform:scale(.97);}
   .btn-p{background:var(--accent);color:#fff;}
   .btn-p:hover{opacity:.85;}
-  .btn-p:disabled{opacity:.4;cursor:not-allowed;}
+  /* Disabled here means "there is nothing to do yet", not "you may not
+     do this" — Save changes with a clean draft, Enrich with no rows
+     ticked. `cursor:not-allowed` said the second: a 🚫 over Save right
+     after a successful save reads as a button that has broken, which is
+     exactly how it was reported. A plain cursor plus the dimming says
+     inactive, and the hint text beside the button says why. Kept at .45
+     rather than .4 so the label stays readable enough to be understood
+     as a real control (v0.102.1). */
+  .btn-p:disabled{opacity:.45;cursor:default;}
   .btn-s{background:transparent;color:var(--muted);border:1px solid var(--border2)!important;}
   .btn-s:hover{border-color:var(--accent)!important;color:var(--accent);}
   .btn-d{background:transparent;color:var(--red);border:1px solid rgba(248,113,113,.4)!important;}
@@ -162,14 +170,6 @@
   .uvmrow > input.uvmdef:focus{border-color:var(--accent);outline:none;}
   .uvmrow > input.uvmdef::placeholder{color:var(--muted);opacity:.7;}
   .uvmrow .uvmdef{flex:0 1 200px;}     /* default value input narrower than dropdown */
-  .uvmrow .uvmenrich{flex:0 0 auto;height:32px;padding:0 .65rem;
-    font-family:var(--mono);font-size:.65rem;letter-spacing:.04em;
-    background:transparent;border:1px solid var(--border2);border-radius:5px;
-    color:var(--muted);cursor:pointer;white-space:nowrap;
-    transition:border-color .1s,color .1s,background .1s;}
-  .uvmrow .uvmenrich:hover{border-color:#a78bfa;color:#c4b5fd;}
-  .uvmrow .uvmenrich.on{background:rgba(167,139,250,.14);border-color:#a78bfa;color:#c4b5fd;}
-  .uvmrow .uvmenrich:disabled{opacity:.4;cursor:not-allowed;}
 
   /* Optimizer panel. Reuses .src as the badge base so BUY/SELL pills
      match the app's existing badge look; .pos/.neg are scoped to dtable
@@ -705,7 +705,7 @@
   color:var(--text);font-family:var(--mono);font-size:.66rem;
   padding:.22rem .35rem;outline:none;width:100%;
 }
-.efrow select:disabled{opacity:.35;cursor:not-allowed}
+.efrow select:disabled{opacity:.35;cursor:default}
 .efrow.busy .efv{opacity:.45}
 .efnote{
   grid-column:2 / -1;font-family:var(--mono);font-size:.55rem;
@@ -814,7 +814,24 @@
   /* Chip row inside a holdings-table column header. Smaller than the
      card version and on its own line under the label, so a 13-column
      table doesn't lose width to it. */
-  .bkseg.hlvl{margin-left:0;margin-top:3px;border-radius:4px;}
+  .bkseg.hlvl{margin-left:0;border-radius:4px;}
+  /* The click guard around a header's level chips: the whole bottom line
+     of the cell, edge to edge.
+
+     The chips are an inline-flex group that rarely fills its column, so
+     aiming at the leftmost chip and missing by a few pixels used to land
+     on the <th> and re-sort the column instead of changing the level.
+     Measured before the fix, the guard covered 27% of the header cell.
+
+     Block-level takes the full content width. The negative margins then
+     reach into the cell's own padding — 10px each side and 8px below,
+     from `.hfullwrap thead tr.htitles th` — with equal padding added
+     back, so the guarded box grows to the cell edges while the chips
+     stay exactly where they were. The 3px above the chips is this
+     wrapper's padding rather than the group's margin, for the same
+     reason. What is left for the sort handler is the label line, which
+     is the only part that should sort. */
+  .hlvl-row{display:block;padding:3px 10px 8px;margin:0 -10px -8px;}
   .bkseg.hlvl button{padding:1px 5px;font-size:.55rem;letter-spacing:.04em;}
   /* A row whose tree stops short of the displayed level. Muted and
      italic so it reads as "not at this grain" rather than as a value. */
@@ -835,13 +852,13 @@
             padding:.15rem .4rem;cursor:pointer;margin-left:.3rem;
             transition:color .12s, border-color .12s;}
   .btn-icon:hover{color:var(--text);border-color:var(--muted);}
-  .btn-icon[disabled]{opacity:.45;cursor:not-allowed;}
+  .btn-icon[disabled]{opacity:.45;cursor:default;}
   /* An unpopulated source stays visible — knowing the option exists and
      is empty is the useful information — but must not look selectable.
      Struck through as well as dimmed: opacity alone reads as "subtle"
      next to an already-muted palette. */
   .bkseg button[disabled]{
-    opacity:.4;cursor:not-allowed;text-decoration:line-through;
+    opacity:.4;cursor:default;text-decoration:line-through;
     text-decoration-thickness:1px;
   }
   .bkseg button[disabled]:hover{color:var(--muted);}
@@ -3996,25 +4013,70 @@ function _restoreScrollSettling(snap, deadlineMs = 1500){
   tick();
 }
 
-// Wraps a render — sync or async. An async render restores once it
-// settles, including on failure: an error message that also throws the
-// user back to the top of the page is two problems, not one.
-function preserveScroll(render){
-  const snap = _snapshotScroll();
-  const out  = render();
+// The other thing a re-render destroys: where the user was typing.
+//
+// A filter header is rebuilt with innerHTML, so the <input> the user is
+// in is a NEW element afterwards and the old one — with the focus and
+// the caret — is gone. Symptoms, both reported: typing one letter into
+// the Pre-Loaded list's filter dropped focus so the next letter went
+// nowhere, and editing in the middle of a pasted value threw the caret
+// to the end on every keystroke.
+//
+// Both search boxes tried to patch this themselves, by re-focusing and
+// then calling setSelectionRange(len, len). That is what forced the
+// caret to the end — and it still lost the focus, because these panels
+// repaint a SECOND time when scores and quality land, and only the
+// first repaint went through the handler that restored anything. So the
+// restore belongs here, in the wrapper every one of those renders
+// already goes through, rather than in each caller.
+function _snapshotFocus(){
+  const el = document.activeElement;
+  if (!el || !el.id || el === document.body) return null;
+  const isText = typeof el.selectionStart === 'number';
+  return {id: el.id, node: el,
+          start: isText ? el.selectionStart : null,
+          end:   isText ? el.selectionEnd   : null};
+}
+
+function _restoreFocus(snap){
+  if (!snap) return;
+  // Only when the element was actually REPLACED. If the original node is
+  // still in the document it still holds the focus and whatever caret
+  // the user has since moved to, and re-applying a snapshot taken before
+  // the render would undo typing done during an async one.
+  if (snap.node.isConnected) return;
+  const fresh = document.getElementById(snap.id);
+  if (!fresh || typeof fresh.focus !== 'function') return;
+  fresh.focus();
+  if (snap.start === null || typeof fresh.setSelectionRange !== 'function') return;
+  // Clamp: the value can be shorter than it was if the render reset it.
+  const n = (fresh.value || '').length;
+  try { fresh.setSelectionRange(Math.min(snap.start, n), Math.min(snap.end, n)); }
+  catch(e){ /* not a type that carries a selection */ }
+}
+
+// Wraps a render — sync or async — and puts the reader back where they
+// were: the scroll position, and the field they were typing in with the
+// caret where they left it. An async render restores once it settles,
+// including on failure: an error message that also throws the user back
+// to the top of the page is two problems, not one.
+function preserveViewState(render){
+  const scroll = _snapshotScroll();
+  const focus  = _snapshotFocus();
+  const done   = () => { _restoreScroll(scroll); _restoreFocus(focus); };
+  const out    = render();
   if (out && typeof out.then === 'function'){
-    return out.then(
-      v => { _restoreScroll(snap); return v; },
-      e => { _restoreScroll(snap); throw e; });
+    return out.then(v => { done(); return v; },
+                    e => { done(); throw e; });
   }
-  _restoreScroll(snap);
+  done();
   return out;
 }
 
 async function refreshCacheList(skipFetch=false){
   if (skipFetch){
     // Re-render in place using the already-loaded cacheListData
-    preserveScroll(renderCachePanel);
+    preserveViewState(renderCachePanel);
     return;
   }
   try {
@@ -4027,18 +4089,18 @@ async function refreshCacheList(skipFetch=false){
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
     cacheListData = data.cached || [];
-    preserveScroll(renderCachePanel);
+    preserveViewState(renderCachePanel);
     // Quality lands separately and repaints when it does. It is the
     // slowest of the three passes (it builds every fund's breakdown
     // cards), and none of the rest of the list needs to wait on it —
     // the dots simply arrive, the way the score chips already do.
     fetchQuality()
-      .then(() => preserveScroll(renderCachePanel))
+      .then(() => preserveViewState(renderCachePanel))
       .catch(e => console.warn('quality:', e));
   } catch (e) {
     console.warn('cache list error:', e);
     cacheListData = [];
-    preserveScroll(renderCachePanel);
+    preserveViewState(renderCachePanel);
   }
 }
 
@@ -4261,12 +4323,27 @@ let cacheFilterState = {
   sortDir: 'asc',
 };
 
+// What a filter box's text means when it is matched.
+//
+// The box's state holds what the user TYPED — capitals, leading spaces
+// and all — because two of these fields are re-rendered from that state,
+// and storing the normalised form meant the repaint rewrote the box
+// under the cursor: typing "iShares" left "ishares" in the field, mid
+// word, with the caret thrown to the end. Normalising here costs one
+// call at the comparison and changes nothing the user sees.
+//
+// One helper for all four filter boxes — the Pre-Loaded list, the
+// portfolio funds table, and the two holdings tables — so they cannot
+// disagree about what a search string means.
+function searchNeedle(v){ return String(v || '').trim().toLowerCase(); }
+
 function applyCacheFilters(rows){
   const s = cacheFilterState;
   return rows.filter(c => {
-    if (s.search){
+    const _q = searchNeedle(s.search);
+    if (_q){
       const hay = (`${c.ticker||''} ${c.isin||''} ${c.name||''}`).toLowerCase();
-      if (!hay.includes(s.search)) return false;
+      if (!hay.includes(_q)) return false;
     }
     // Holdings filter: 4 modes, mutually exclusive
     //   ''         all
@@ -4374,7 +4451,7 @@ function updateCacheHeaderIndicators(){
 function updateCacheCounter(visible, total){
   const s = cacheFilterState;
   const cntEl = document.getElementById('cfCount');
-  const anyFilter = s.search || s.holdings || s.portfolio;
+  const anyFilter = searchNeedle(s.search) || s.holdings || s.portfolio;
   if (cntEl) cntEl.textContent = anyFilter ? `${visible} of ${total}` : `${total} cached`;
   const clearBtn = document.getElementById('cfClear');
   if (clearBtn) clearBtn.style.display = anyFilter ? '' : 'none';
@@ -4416,10 +4493,15 @@ function wireCacheFilterEvents(){
   search.addEventListener('input', () => {
     clearTimeout(t);
     t = setTimeout(() => {
-      cacheFilterState.search = search.value.trim().toLowerCase();
+      // Read the LIVE element, not this closure's `search`: the panel
+      // may have been repainted since the listener was attached, which
+      // leaves `search` pointing at a detached node holding a stale
+      // value. Focus and caret are restored by preserveViewState inside
+      // the re-render — this handler must not force them itself, which
+      // is what used to jump the caret to the end of the field.
+      const box = document.getElementById('cfSearch') || search;
+      cacheFilterState.search = box.value;
       rerenderCacheList();
-      const fresh = document.getElementById('cfSearch');
-      if (fresh){ fresh.focus(); fresh.setSelectionRange(fresh.value.length, fresh.value.length); }
     }, 80);
   });
 }
@@ -4722,7 +4804,7 @@ async function refreshFundDerived(){
     }
   }
   // The two lists, each from its own already-loaded rows.
-  if (cacheListData && cacheListData.length) preserveScroll(renderCachePanel);
+  if (cacheListData && cacheListData.length) preserveViewState(renderCachePanel);
   if (currentPortfolioView) rerenderPortfolioFunds();
 }
 
@@ -4781,7 +4863,7 @@ async function applyScorePreset(key){
   // pre-loaded list has ever been fetched — redrawing an unfetched list
   // would paint "No funds cached yet" into a panel that simply has not
   // loaded. Switching to that sub-tab refetches it either way.
-  if (cacheListData.length) preserveScroll(renderCachePanel);
+  if (cacheListData.length) preserveViewState(renderCachePanel);
   // The fund page shows the same numbers; redraw it if one is open. The
   // peer list re-sorts by construction, since peerMembers ranks on the
   // score_peer the new model just produced.
@@ -6485,9 +6567,14 @@ function updateCashActionButtons(){
   const cancelBtn = document.getElementById('pcCancelBtn');
   const hint      = document.getElementById('pcDirtyHint');
   if (!saveBtn || !cancelBtn || !hint) return;
+  // A disabled button should say why it is disabled. The dimming alone
+  // reads as "broken" on the one that matters most here — Save, right
+  // after a successful save, when there is genuinely nothing left to do.
   if (cashDirty) {
     saveBtn.disabled   = false;
     cancelBtn.disabled = false;
+    saveBtn.title      = 'Save these changes to the portfolio';
+    cancelBtn.title    = 'Discard the unsaved changes';
     // Count categories of pending change for the hint line.
     const added   = cashPositions.filter(p => String(p.id).startsWith('new-') && !p._deleted).length;
     const deleted = cashPositions.filter(p => p._deleted).length;
@@ -6504,6 +6591,8 @@ function updateCashActionButtons(){
   } else {
     saveBtn.disabled   = true;
     cancelBtn.disabled = true;
+    saveBtn.title      = 'Nothing to save — add or edit a position first.';
+    cancelBtn.title    = 'Nothing to discard.';
     hint.textContent   = 'No unsaved changes.';
     hint.style.color   = 'var(--muted)';
   }
@@ -6767,7 +6856,7 @@ async function loadPortfolioHoldings(forceRefresh){
     // Full rebuild — it recreates the .hfullwrap itself, unlike the
     // sort/filter path, which only swaps #phbody and so keeps its place
     // for free.
-    preserveScroll(renderPortfolioHoldings);
+    preserveViewState(renderPortfolioHoldings);
   } catch(e){
     if (wrap) {
       wrap.innerHTML =
@@ -6908,7 +6997,7 @@ function renderPortfolioHoldings(){
     search.addEventListener('input', () => {
       clearTimeout(t);
       t = setTimeout(() => {
-        portfolioHoldingsState.search = search.value.trim().toLowerCase();
+        portfolioHoldingsState.search = search.value;
         renderPortfolioHoldingsBody();
       }, 80);
     });
@@ -7028,13 +7117,14 @@ function renderPortfolioHoldingsBody(){
     if (s.filters.effective_date && (r.effective_date || '') !== s.filters.effective_date) return false;
     if (s.filters.quality && (r.quality || '') !== s.filters.quality) return false;
     if (s.filters.quality && (r.quality || '') !== s.filters.quality) return false;
-    if (s.search) {
+    const _q = searchNeedle(s.search);
+    if (_q) {
       // Every level of every tree, as on the fund table.
       const hay = ((r.name||'')+' '+(r.ticker||'')+' '+(r.isin||'')+' '+(r.cusip||'')+' '+
                    ['sector','sub_sector','super_sector','asset_class','sub_class',
                     'super_class','country','region','super_region']
                      .map(k => r[k] || '').join(' ')).toLowerCase();
-      if (!hay.includes(s.search)) return false;
+      if (!hay.includes(_q)) return false;
     }
     return true;
   });
@@ -7064,7 +7154,7 @@ function renderPortfolioHoldingsBody(){
     if (sel) sel.classList.toggle('active', !!s.filters[key]);
   });
 
-  const anyFilter = s.search || s.filters.sector || s.filters.asset_class ||
+  const anyFilter = searchNeedle(s.search) || s.filters.sector || s.filters.asset_class ||
     s.filters.country || s.filters.currency ||
     s.filters.maturity || s.filters.effective_date || s.filters.quality;
   const realCount = s.rows.filter(r => !r.is_residual).length;
@@ -9383,7 +9473,11 @@ function setHoldingsTableLevel(table, facet, level){
     th.setAttribute('data-key', level);
     const arr = th.querySelector('.sortarr');
     if (arr) arr.setAttribute('data-arr', level);
-    const seg = th.querySelector('.bkseg.hlvl');
+    // Replace the WRAPPER, not the group inside it: holdingsLevelChips
+    // returns the guarded wrapper, so swapping only the inner group
+    // would nest a second wrapper on the first repaint and drop the
+    // guard on every later one.
+    const seg = th.querySelector('.hlvl-row');
     if (seg) seg.outerHTML = holdingsLevelChips(table, facet);
   }
 
@@ -9436,20 +9530,28 @@ function holdingsLevelChips(table, facet){
              title="${escapeAttr(LEVEL_TIPS[lv] || '')}"
              onclick="setHoldingsTableLevel('${table}','${facet}','${lv}')"
             >${escapeHtml(LEVEL_LABELS[lv] || lv)}</button>`).join('');
-  // The CONTAINER swallows the click, not each button.
+  // The whole chip LINE swallows the click, not each button and not
+  // just the group.
   //
-  // This group sits inside a <th> whose own click sorts the column, and
-  // `.bkseg` draws a 1px border and rounds its corners with
-  // overflow:hidden. Those pixels belong to the span, not to any button:
-  // a click landing on the group's left edge or a clipped corner missed
-  // every button, reached the <th>, and re-sorted the table instead of
-  // changing the level. The leftmost chip took the worst of it, its left
-  // edge being the most exposed.
+  // This sits inside a <th> whose own click sorts the column. Guarding
+  // the buttons was not enough — `.bkseg` draws a 1px border and rounds
+  // its corners with overflow:hidden, and those pixels belong to no
+  // button — so the guard moved to the group. That was still not enough:
+  // the group is an inline-flex island about 140px wide inside a 208px
+  // header cell, leaving ~57px of bare <th> to its left on the chips'
+  // own line. Aiming at the leftmost chip and missing sorted the column
+  // instead, which is the one thing a level click must never do (see
+  // setHoldingsTableLevel). Measured on the portfolio holdings table,
+  // the guarded region was 27% of the header cell.
   //
-  // Guarding the span covers the buttons, the borders, the corners and
-  // the gaps between them in one place, which is why the per-button
-  // guards are gone rather than kept alongside it.
-  return `<span class="bkseg hlvl" onclick="event.stopPropagation()">${btns}</span>`;
+  // So the guard is now a block-level wrapper spanning the cell's full
+  // width and the gap above the chips. One element covers the buttons,
+  // the borders, the corners, the gaps between them and the dead space
+  // around them, for both tables — this builder is shared by fhTh and
+  // phTh, so the fund page and the portfolio holdings table cannot
+  // disagree about it.
+  return `<span class="hlvl-row" onclick="event.stopPropagation()">` +
+         `<span class="bkseg hlvl">${btns}</span></span>`;
 }
 
 // One row's value for a facet at the displayed level, plus the whole
@@ -11618,7 +11720,7 @@ function renderHoldingsTable(rows, data, note) {
     search.addEventListener('input', () => {
       clearTimeout(t);
       t = setTimeout(() => {
-        fullHoldingsState.search = search.value.trim().toLowerCase();
+        fullHoldingsState.search = search.value;
         renderFullHoldingsBody();
       }, 80);
     });
@@ -13048,7 +13150,8 @@ function renderFullHoldingsBody() {
     if (s.filters.maturity       && (r.maturity       || '') !== s.filters.maturity)       return false;
     if (s.filters.effective_date && (r.effective_date || '') !== s.filters.effective_date) return false;
     if (s.filters.quality && (r.quality || '') !== s.filters.quality) return false;
-    if (s.search) {
+    const _q = searchNeedle(s.search);
+    if (_q) {
       // Search spans every level of every tree, not just the displayed
       // one: typing "japan" should find a row stated at region level
       // even while the table shows countries.
@@ -13058,7 +13161,7 @@ function renderFullHoldingsBody() {
                'super_class','country','region','super_region']
               .map(k => r[k] || '').join(' ')
       ).toLowerCase();
-      if (!hay.includes(s.search)) return false;
+      if (!hay.includes(_q)) return false;
     }
     return true;
   });
@@ -13094,7 +13197,7 @@ function renderFullHoldingsBody() {
   });
 
   // Counter + clear-filter visibility
-  const anyFilter = s.search ||
+  const anyFilter = searchNeedle(s.search) ||
     s.filters.sector || s.filters.asset_class ||
     s.filters.country || s.filters.currency ||
     s.filters.maturity || s.filters.effective_date || s.filters.quality;
@@ -14619,7 +14722,15 @@ async function submitUploadPreview(){
         return d.header_row;
       })(),
       defaults:    Object.assign({}, (prefs && prefs.defaults) || {}),
-      enrich:      new Set((prefs && prefs.enrich_fields) || []),
+      // One decision, not four (v0.100.0). WHICH fields enrichment
+      // fills is Settings' business — the same list the fund page's
+      // button uses — so this dialog only says whether to run it.
+      // `enrich_fields` is what pre-0.100.0 prefs saved; a non-empty
+      // list there means the user had asked for enrichment, so it seeds
+      // the toggle rather than being thrown away.
+      enrichAll:   (prefs && typeof prefs.enrich === 'boolean')
+                     ? prefs.enrich
+                     : !!(prefs && (prefs.enrich_fields || []).length),
       // Fields the user (or a prior committed upload, via prefs) has
       // deliberately set — including deliberately set to "(none)".
       // autoPickFor() must never alias-match over a touched field, or
@@ -14900,31 +15011,12 @@ function buildMappingRows(){
                     oninput="onDefaultChange(${JSON.stringify(f.key).replace(/"/g,'&quot;')}, this.value)">`;
       }
 
-      // Yahoo enrichment. Offered for every facet and for the name;
-      // the bond columns have none, because Yahoo publishes no
-      // per-holding bond metadata.
-      const ENRICHABLE = ['name', 'country', 'currency', 'asset_class', 'sector'];
-      let btn = '';
-      if (ENRICHABLE.includes(f.key)) {
-        const isOn = uploadState.enrich.has(f.key);
-        const cls  = 'uvmenrich' + (isOn ? ' on' : '');
-        const dis  = nameMapped ? '' : ' disabled';
-        const idCols = ['ticker', 'cusip', 'isin']
-          .filter(k => uploadState.mapping[k] != null).length;
-        const tip  = !nameMapped
-          ? 'Map the Name column first — enrichment identifies each holding by its ticker, CUSIP, ISIN or name'
-          : (isOn ? 'Every holding is sent to Yahoo for this field. Click to disable.'
-                  : (isNone
-                     ? 'Fetch this field from Yahoo for every holding'
-                     : 'Fetch this field from Yahoo for every holding whose mapped cell is empty'))
-                 + (idCols ? '' : ' Holdings will be matched by name only, which is slower and less certain than a ticker, CUSIP or ISIN column.');
-        btn = `<button type="button" class="${cls}"${dis}
-                 title="${escapeAttr(tip)}"
-                 onclick="onEnrichToggle(${JSON.stringify(f.key).replace(/"/g,'&quot;')})">
-                 ${isOn ? '📥 Yahoo ✓' : '📥 Yahoo'}
-               </button>`;
-      }
-      rhs = defCtl + btn;
+      // No per-field Yahoo button any more (v0.100.0). Enrichment is
+      // one decision for the whole file, made in the control under this
+      // list: the lookup is one call per ROW that answers every field at
+      // once, so choosing fields never saved a call — it only let this
+      // dialog disagree with Settings about what enrichment does.
+      rhs = defCtl;
     }
 
     return `<div class="uvmrow">${lbl}${sel}${rhs}</div>`;
@@ -14937,17 +15029,38 @@ function buildMappingRows(){
   // looks hung — which is how it was first reported. The terminal
   // prints per-25-row progress; this is the same warning where the user
   // is actually waiting.
-  const nEnrich = uploadState.enrich.size;
   const nRows   = Math.max(0, (uploadState.preview.rows.length - uploadState.headerRow - 1));
-  const note = !nEnrich ? '' : `
-    <div style="margin-top:8px;padding:6px 8px;border:1px solid var(--border);
-                border-radius:4px;color:var(--muted);font-family:var(--mono);
-                font-size:.62rem">
-      Yahoo enrichment is on for ${nEnrich} field${nEnrich===1?'':'s'}.
-      Every one of the ${nRows} holding${nRows===1?'':'s'} is looked up
-      individually: instant when already cached, about a second when not.
-      A few hundred unrecognised rows can take several minutes — the
-      terminal shows progress, and Cancel stops it cleanly.
+  const nameMappedNow = uploadState.mapping['name'] != null;
+  const idCols = ['ticker', 'cusip', 'isin']
+    .filter(k => uploadState.mapping[k] != null).length;
+  const on = !!uploadState.enrichAll && nameMappedNow;
+  const note = `
+    <div style="margin-top:10px;padding:8px 10px;border:1px solid var(--border);
+                border-radius:4px;font-family:var(--mono);font-size:.66rem">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="uvEnrichAll" ${on ? 'checked' : ''}
+               ${nameMappedNow ? '' : 'disabled'}
+               onchange="onEnrichAllToggle(this.checked)">
+        <span>Fill blanks from Yahoo after import</span>
+      </label>
+      <div style="color:var(--muted);margin-top:5px;line-height:1.5">
+        ${nameMappedNow
+          ? `Looks up each holding and fills the facets your file leaves
+             blank — country, currency, asset class, sector, and the name
+             where an identifier resolved it. Which of those it may fill
+             is set once in <strong>Settings &rarr; enrichment</strong>,
+             so this button and the fund page's do the same thing.`
+          : `Map the <strong>Name</strong> column first — enrichment
+             identifies each holding by its ticker, CUSIP, ISIN or name.`}
+      </div>
+      ${on ? `
+      <div style="color:var(--muted);margin-top:5px;line-height:1.5">
+        All ${nRows} holding${nRows===1?'':'s'} are looked up individually:
+        instant when already cached, about a second when not. A few hundred
+        unrecognised rows can take several minutes — the progress bar shows
+        where it is, and Cancel stops it cleanly.
+        ${idCols ? '' : 'This file maps no ticker, CUSIP or ISIN column, so holdings are matched by name alone — slower, and less certain.'}
+      </div>` : ''}
     </div>`;
   document.getElementById('uvMapRows').innerHTML = rows + note;
   // The facet default pickers are trees built as markup above; they read
@@ -14970,7 +15083,6 @@ function onMappingChange(key, val){
   // consistent with what the backend will actually use.
   if (uploadState.mapping[key] != null) {
     delete uploadState.defaults[key];
-    uploadState.enrich.delete(key);
   }
   // Mapping a field changes its own enrich/default controls, and the
   // identifier columns change the enrichment tooltip (name-only matching
@@ -14988,14 +15100,10 @@ function onDefaultChange(key, val){
   // re-render needed beyond the single input the user typed in.
 }
 
-function onEnrichToggle(key){
-  if (uploadState.enrich.has(key)) {
-    uploadState.enrich.delete(key);
-  } else {
-    uploadState.enrich.add(key);
-  }
-  // Rebuild only this row would be tidier, but rebuilding everything
-  // keeps the code small and the dialog isn't large.
+function onEnrichAllToggle(on){
+  uploadState.enrichAll = !!on;
+  // Rebuilt rather than patched: the note under the list changes shape
+  // with the answer, and the dialog is small.
   buildMappingRows();
 }
 
@@ -15239,16 +15347,19 @@ async function submitUploadCommit(){
   // If the user toggled Yahoo enrichment for any field, warn them up
   // front about the wait time on a cold cache (up to ~1s/symbol on
   // first lookup). After it's been done once, repeat uploads are fast.
-  const enrichList = Array.from(uploadState.enrich);
-  if (enrichList.length && uploadState.mapping.ticker == null
-                        && uploadState.mapping.cusip  == null
-                        && uploadState.mapping.isin   == null) {
-    showUploadMapError('Yahoo enrichment requires a Ticker, CUSIP, or ISIN column to be mapped.');
-    return;
-  }
+  // Mapping the Name column is what makes a holding identifiable, so an
+  // enrichment asked for without it cannot run; the checkbox is disabled
+  // in that state and this keeps the payload honest either way.
+  const wantEnrich = !!uploadState.enrichAll && uploadState.mapping['name'] != null;
+  // No identifier-column requirement here. It used to refuse the commit
+  // outright unless a ticker, CUSIP or ISIN column was mapped, which has
+  // been wrong since v0.77.0: a row can be resolved by NAME alone, which
+  // is exactly what a factsheet's position table gives you. The note
+  // above says name-only matching is slower and less certain — a warning
+  // is the right response to that, not a refusal.
 
   const btn = document.getElementById('uvCommitBtn');
-  setBtnBusy(btn, enrichList.length ? 'Saving + enriching…' : 'Saving…');
+  setBtnBusy(btn, wantEnrich ? 'Saving + enriching…' : 'Saving…');
 
   // Mark the commit as in-flight so the Cancel button (cancelOrCloseUpload)
   // knows to fire /api/upload/cancel instead of just dropping the modal,
@@ -15290,14 +15401,14 @@ async function submitUploadCommit(){
       decimal:       uploadState.decimal,
       weight_unit:   uploadState.weightUnit,
       defaults:      uploadState.defaults,
-      enrich_fields: enrichList,
+      enrich:        wantEnrich,
     };
     // Any enrichment at all is worth watching here: unlike the tile's
     // button, the commit enriches the WHOLE file, so even one facet on a
     // few hundred rows is minutes. The commit records progress under the
     // preview token, which this request already carries — no second
     // identifier to invent or keep in step.
-    if (enrichList.length){
+    if (wantEnrich){
       const n = uploadState.preview.total_rows;
       enrichProgressStart(tokenAtFire, n
         ? `Enriching ${n} holdings through Yahoo`
@@ -15398,7 +15509,10 @@ async function submitUploadCommit(){
         bits.push(`${w.unmapped_countries.length} unmapped countries`);
       if (enr.skipped_no_identifier)
         bits.push(`${enr.skipped_no_identifier} enrichment skipped (no ticker, ISIN, CUSIP or name)`);
-      if (enr.lookup_failed)
+      if (enr.aborted)
+        bits.push(`ENRICHMENT STOPPED EARLY — ${enr.aborted}` +
+                  (enr.not_attempted ? ` ${enr.not_attempted} row(s) not attempted.` : ''));
+      else if (enr.lookup_failed)
         bits.push(`${enr.lookup_failed} Yahoo lookup(s) failed` +
                   (enr.lookup_error ? ` — ${enr.lookup_error}` : ''));
       if (enr.skipped_over_cap)
@@ -15569,6 +15683,16 @@ async function enrichHoldings(){
       .map(([f, n]) => `${n} ${f}`);
     const correctedMsg = correctedBits.length
       ? ` · corrected ${correctedBits.join(', ')}` : '';
+    // A run that stopped itself says so first. Reporting it among the
+    // counts would bury the one fact that changes what the user does
+    // next: the remaining rows were never attempted, so pressing the
+    // button again later is the fix, not re-selecting rows.
+    if (stats.aborted){
+      const left = stats.rows_not_attempted
+        ? ` ${stats.rows_not_attempted} row(s) were not attempted.` : '';
+      setStatus('err', `Enrichment stopped early. ${stats.aborted}${left}`);
+      return;
+    }
     if (filledFields.length || correctedBits.length){
       setStatus('ok', `Enriched ${stats.rows_with_changes} rows`
                     + (filledFields.length ? ` (${filledFields.join(', ')})` : '')
@@ -15973,7 +16097,7 @@ async function renderPortfolioTab(){
   // last load. Plain tab switches reuse what's already on screen — no
   // network call, no OpenFIGI, no flicker.
   if (lastLoadedPid !== activePid){
-    await reloadPortfolio(false);
+    await reloadPortfolio(false, true);
   }
 }
 
@@ -17895,7 +18019,7 @@ function ufIsCanonical(facet, text){
 // buttons, matching the by-row tab. They answer different questions —
 // the alias says the vocabulary was incomplete, the row change says
 // this source was wrong — and a user may well mean both at once.
-async function reloadPortfolio(forceRefresh){
+async function reloadPortfolio(forceRefresh, isSwitch = false){
   if (!activePid) return;
   // Distinguish "I'm switching to a different portfolio" from "the
   // current portfolio's data changed and I want fresh numbers". The
@@ -17904,7 +18028,28 @@ async function reloadPortfolio(forceRefresh){
   // current tab and any in-memory state for that portfolio. Without
   // this distinction every cash-position edit would yank the user out
   // of the Cash sub-tab back to Funds.
-  const pidChanged = (lastLoadedPid !== activePid);
+  //
+  // Which of the two this is, is the CALLER'S knowledge and is now said
+  // outright. It used to be inferred as `lastLoadedPid !== activePid`,
+  // and that inference is only sound once the first view has landed:
+  // lastLoadedPid is assigned after the /view fetch resolves, and /view
+  // is the slowest call in the app (one Yahoo load per fund). So any
+  // refresh fired while the first load was still in flight — saving a
+  // cash position is the everyday one — evaluated as a SWITCH and reset
+  // the user's in-memory state underneath them (v0.101.2). The symptom
+  // was a Cash sub-tab holding rows that no longer existed, a Save
+  // button enabled over a draft that had been discarded, and clicking
+  // it doing nothing at all.
+  const pidChanged = isSwitch;
+
+  // Which portfolio this run is for. A /view that lands after the user
+  // has moved on belongs to a screen that is no longer showing, and
+  // rendering it would paint one portfolio's numbers under another's
+  // name — the same late-response shape as the reset above.
+  const pidAtStart = activePid;
+  // Where the user was when this started, so a late-landing switch can
+  // tell "still where I left them" from "they have moved on".
+  const subTabAtStart = portfolioSubTab;
 
   // Switching portfolio SHOULD land you at the top — it's new content.
   // Refreshing the one you're already looking at should not, because it
@@ -17930,6 +18075,9 @@ async function reloadPortfolio(forceRefresh){
     const r = await fetch(`${API}/portfolios/${activePid}/view?${params}`);
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+    // The user moved to another portfolio while this was in flight;
+    // this data is about a screen nobody is looking at.
+    if (activePid !== pidAtStart) return;
     currentPortfolioView = data;
     lastLoadedPid = activePid;
     renderPortfolioHeader(data);
@@ -17945,12 +18093,37 @@ async function reloadPortfolio(forceRefresh){
     // Per-portfolio cache invalidation + sub-tab reset — only when
     // we've actually moved to a different portfolio.
     if (pidChanged) {
-      portfolioHoldings    = null;
-      portfolioHoldingsPid = '';
-      cashPositions       = [];
-      cashPositionsPid    = '';
-      cashDirty           = false;
-      switchPortfolioSubTab('funds');
+      // Drop what belongs to a DIFFERENT portfolio — not everything.
+      //
+      // This block runs when the view lands, which on a portfolio with
+      // many funds is seconds after the switch began, and the user
+      // spends those seconds using the app: opening the Cash sub-tab
+      // loads that portfolio's positions, and adding a row starts a
+      // draft. Both already belong to the portfolio now being shown, so
+      // clearing them threw away work the user had just done and left
+      // the panel describing rows it no longer held (v0.101.2).
+      //
+      // Each cache therefore says which portfolio it is for, and is
+      // dropped only when that is not the one we just loaded.
+      if (portfolioHoldingsPid !== activePid) {
+        portfolioHoldings    = null;
+        portfolioHoldingsPid = '';
+      }
+      if (cashPositionsPid !== activePid) {
+        cashPositions    = [];
+        cashPositionsPid = '';
+        cashDirty        = false;
+        // Repaint what was just emptied. Clearing the rows without this
+        // leaves a Save button enabled over a draft that no longer
+        // exists — a button that then does nothing, because cashSave()
+        // returns early on a clean draft.
+        renderCashTable();
+        updateCashActionButtons();
+      }
+      // Landing on Funds is right for a switch the user is watching,
+      // and wrong once they have navigated somewhere themselves while
+      // it loaded. Their choice is the later one, so it wins.
+      if (portfolioSubTab === subTabAtStart) switchPortfolioSubTab('funds');
     }
     // Fetch price-history separately — it's the slow one (FX history etc.)
     // and we don't want it blocking the main view.
@@ -18245,11 +18418,12 @@ function renderPortfolioFunds(view){
 function applyPortfolioFundsFilters(funds){
   const s = portfolioFundsFilterState;
   return funds.filter(f => {
-    if (s.search){
+    const _q = searchNeedle(s.search);
+    if (_q){
       const prof = f.data?.profile || {};
       const name = prof.longName || prof.shortName || '';
       const hay = (`${f.ticker||''} ${f.isin||''} ${name}`).toLowerCase();
-      if (!hay.includes(s.search)) return false;
+      if (!hay.includes(_q)) return false;
     }
     // Lock filter. Absent means unlocked — the flag is stored only when
     // set, so a plain position has no `locked` key at all.
@@ -18386,7 +18560,7 @@ function updatePortfolioFundsHeaderIndicators(){
 function updatePortfolioFundsCounter(visible, total){
   const s = portfolioFundsFilterState;
   const cntEl = document.getElementById('pfCount');
-  const anyFilter = s.search || s.holdings || s.asset_class;
+  const anyFilter = searchNeedle(s.search) || s.holdings || s.asset_class;
   if (cntEl) cntEl.textContent = anyFilter ? `${visible} of ${total}` : `${total} funds`;
   const clearBtn = document.getElementById('pfClear');
   if (clearBtn) clearBtn.style.display = anyFilter ? '' : 'none';
@@ -18417,7 +18591,12 @@ function populatePortfolioFundsFilterOptions(funds){
     hSel.classList.toggle('active', !!portfolioFundsFilterState.holdings);
   }
   const sEl = document.getElementById('pfSearch');
-  if (sEl) sEl.value = portfolioFundsFilterState.search || '';
+  // Never write into the box the user is typing in: assigning .value
+  // moves the caret to the end even when the string is identical, so a
+  // repaint mid-edit would jump the cursor out of the middle of a word.
+  if (sEl && document.activeElement !== sEl) {
+    sEl.value = portfolioFundsFilterState.search || '';
+  }
 }
 
 function onPortfolioFundsFilterChange(){
@@ -18438,10 +18617,10 @@ function wirePortfolioFundsFilterEvents(){
   search.addEventListener('input', () => {
     clearTimeout(t);
     t = setTimeout(() => {
-      portfolioFundsFilterState.search = search.value.trim().toLowerCase();
+      // Same as the Pre-Loaded list's filter — see wireCacheFilterEvents.
+      const box = document.getElementById('pfSearch') || search;
+      portfolioFundsFilterState.search = box.value;
       rerenderPortfolioFunds();
-      const fresh = document.getElementById('pfSearch');
-      if (fresh){ fresh.focus(); fresh.setSelectionRange(fresh.value.length, fresh.value.length); }
     }, 80);
   });
 }
@@ -18449,7 +18628,12 @@ function wirePortfolioFundsFilterEvents(){
 // Re-render the portfolio funds table without re-fetching the view from
 // the backend. Pulls the cached currentPortfolioView (set in renderPortfolioTab).
 function rerenderPortfolioFunds(){
-  if (currentPortfolioView) renderPortfolioFunds(currentPortfolioView);
+  // Through the shared wrapper, like every other in-place re-render:
+  // this one rebuilds the filter header too, so without it the field
+  // being typed in loses focus and the list loses its scroll position.
+  if (currentPortfolioView) {
+    preserveViewState(() => renderPortfolioFunds(currentPortfolioView));
+  }
 }
 
 // Called when a row in the portfolio funds table is clicked — jumps to
@@ -19334,19 +19518,44 @@ function _renderTgEditorBody(){
     // Add picker.
     const add = sec.querySelector('.tge-add');
     if (available.length > 0) {
-      // Level-tagged, as everywhere else a levelled value is chosen:
-      // "Sector — technology" is a different commitment from
-      // "Sub sector — semiconductors", and an untagged list would let
-      // the user pick one believing they had picked the other.
-      const multi = levels.length > 1;
-      const opts = available.map(c =>
-        `<option value="${escapeAttr(c.level + '||' + c.key)}">` +
-        `${escapeHtml(multi ? `${LEVEL_LABELS_LONG[c.level] || c.level} — ${c.label}`
-                            : c.label)}</option>`).join('');
-      add.innerHTML = `
-        <select id="tgEditAdd_${facet}">${opts}</select>
-        <button class="btn-icon" onclick="addTgEditorRow('${facet}')">+ Add</button>
-      `;
+      const pid = `tgEditAdd_${facet}`;
+      if ((RES_FACET_NODES || {})[facet]) {
+        // The shared facet tree picker, as everywhere else in the app a
+        // canonical facet node is chosen (v0.101.2). This was the last
+        // flat <select> over a facet vocabulary: it listed every node of
+        // every level in one alphabetical run, which for country meant
+        // scrolling ~250 rows to find a region sitting beside the
+        // countries inside it. The tree shows that containment instead
+        // of restating it in each label, and its filter box searches the
+        // vocabulary rather than the visible text.
+        add.innerHTML =
+          `<div class="tge-addpick" style="flex:1;min-width:0"></div>` +
+          `<button class="btn-icon" onclick="addTgEditorRow('${facet}')">+ Add</button>`;
+        ftMount(add.querySelector('.tge-addpick'), {
+          id: pid, facet, value: '',
+          placeholder: '— pick a bucket —',
+          // A bucket already targeted AT ITS OWN LEVEL is not offered
+          // again. The same name one level up still is: japan the
+          // country and japan the region are different exposures, which
+          // is the rule `isUsed` already encodes for the rows above.
+          filterFn: (t) => !isUsed(t),
+        });
+      } else {
+        // market_cap and style_box are fund-level classifications, not
+        // facet trees — no vocabulary file, no levels, nothing to
+        // expand. A flat list is the honest control for them, so this
+        // asymmetry is a decision rather than a picker somebody forgot
+        // to convert.
+        const multi = levels.length > 1;
+        const opts = available.map(c =>
+          `<option value="${escapeAttr(c.level + '||' + c.key)}">` +
+          `${escapeHtml(multi ? `${LEVEL_LABELS_LONG[c.level] || c.level} — ${c.label}`
+                              : c.label)}</option>`).join('');
+        add.innerHTML = `
+          <select id="${pid}">${opts}</select>
+          <button class="btn-icon" onclick="addTgEditorRow('${facet}')">+ Add</button>
+        `;
+      }
     } else {
       add.innerHTML = `
         <span style="font-family:var(--mono);font-size:.65rem;color:var(--muted);font-style:italic">
@@ -19384,7 +19593,23 @@ function onTgEditorRowChange(input){
 function addTgEditorRow(facet){
   const sel = document.getElementById(`tgEditAdd_${facet}`);
   if (!sel || !sel.value) return;
-  const [level, key] = sel.value.split('||');
+  // Two shapes, because two controls feed this. The flat <select> that
+  // market_cap and style_box still use carries "level||key" in one
+  // string; the facet tree picker carries the node KEY alone, which is
+  // the contract every picker in the app has (its hidden input keeps the
+  // caller's id and holds the value). For the second, the level is read
+  // back off the vocabulary — which is where a node's level lives, and
+  // the reason it never needed to be in the value.
+  let level, key;
+  if (sel.value.includes('||')) {
+    [level, key] = sel.value.split('||');
+  } else {
+    key = sel.value;
+    const nid = ftIdForValue(facet, key);
+    if (!nid) return;
+    level = nid.slice(0, nid.indexOf(FT_SEP));
+  }
+  if (!level || !key) return;
   if (!_tgEditorState[facet]) _tgEditorState[facet] = {};
   if (!_tgEditorState[facet][level]) _tgEditorState[facet][level] = {};
   if (_tgEditorState[facet][level][key] === undefined) {
@@ -19394,8 +19619,11 @@ function addTgEditorRow(facet){
   // Focus the freshly-added row's input so the user can type a percent
   // straight away.
   setTimeout(() => {
+    // Match on the bare key: the row's data-key is the key, never the
+    // "level||key" pair the old <select> carried, so this selector had
+    // been matching nothing and the focus never landed.
     const inp = document.querySelector(
-      `#targetsEditorBody input[data-facet="${facet}"][data-key="${sel.value.replace(/"/g,'\\"')}"]`);
+      `#targetsEditorBody input[data-facet="${facet}"][data-key="${key.replace(/"/g,'\\"')}"]`);
     if (inp) inp.focus();
   }, 0);
 }

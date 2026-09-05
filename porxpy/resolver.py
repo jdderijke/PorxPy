@@ -489,6 +489,10 @@ _BLOOMBERG_TRAILERS = (" EQUITY", " CORP", " INDEX", " COMDTY", " CURNCY")
 # Only the most common European and Asia-Pacific markets are listed; US/CA
 # ISINs (US / CA) map to bare tickers (no suffix). Omitted entries are
 # silently skipped — we won't guess wildly.
+# Country node -> Yahoo suffix, derived from _ISIN_PREFIX_TO_YF on
+# first use by country_suffix_variant. None until then.
+_COUNTRY_NODE_TO_YF: dict[str, str] | None = None
+
 _ISIN_PREFIX_TO_YF: dict[str, str] = {
     "US": "",       # NYSE / NASDAQ — bare ticker
     "CA": ".TO",    # Toronto (most liquid)
@@ -642,6 +646,61 @@ def candidate_variants(cleaned: str) -> list[str]:
             add(prefix + yf_sfx)
 
     return out[:_MAX_CANDIDATE_VARIANTS]
+
+
+def country_suffix_variant(cleaned: str, country: str | None) -> str | None:
+    """Derive a Yahoo ticker from the COUNTRY the holdings file gave.
+
+    The sibling of :func:`isin_country_variant`, for the very common row
+    that carries a bare local ticker and no ISIN at all. An issuer's file
+    says `SIE` / Duitsland / EUR, and Yahoo needs `SIE.DE`; the country
+    column answers exactly the question the missing ISIN would have.
+
+    The country is resolved through the geography tree first, so the
+    issuer's own wording works — "Duitsland", "Germany" and "DE" are one
+    answer. The suffix table is :data:`_ISIN_PREFIX_TO_YF`, reused rather
+    than copied: there is one opinion in this codebase about which
+    exchange a country's tickers most likely live on, and two would drift.
+
+    Args:
+        cleaned: Output of :func:`clean_holding_ticker_input`.
+        country: The row's country, in any spelling the geography
+            definitions recognise.
+
+    Returns:
+        A candidate Yahoo ticker, or ``None`` when the country does not
+        resolve, has no suffix on file, or the candidate would repeat the
+        input. Also ``None`` for countries whose suffix is the empty
+        string (the US), since that candidate is the bare ticker the
+        chain has already tried.
+    """
+    if not cleaned or not country:
+        return None
+    from porxpy.resources import resolve_country_tree
+
+    node = (resolve_country_tree(country) or {}).get("country") or ""
+    if not node or node == "unknown":
+        return None
+    # Country node -> alpha-2, by resolving each prefix in the suffix
+    # table through the same tree. Built once, on first use.
+    global _COUNTRY_NODE_TO_YF
+    if _COUNTRY_NODE_TO_YF is None:
+        built: dict[str, str] = {}
+        for cc, suffix in _ISIN_PREFIX_TO_YF.items():
+            n = (resolve_country_tree(cc) or {}).get("country") or ""
+            if n and n != "unknown" and suffix:
+                built.setdefault(n, suffix)
+        _COUNTRY_NODE_TO_YF = built
+
+    suffix = _COUNTRY_NODE_TO_YF.get(node)
+    if not suffix:
+        return None
+
+    base = cleaned.split()[0] if " " in cleaned else cleaned.split(".")[0]
+    if not base:
+        return None
+    candidate = base + suffix
+    return None if candidate == cleaned else candidate
 
 
 def isin_country_variant(cleaned: str, isin: str) -> str | None:

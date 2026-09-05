@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.96.0. This is the fullest architecture write-up;
+*Current as of v0.102.1. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -11,6 +11,29 @@ PorxPy runs locally on your own machine. Your portfolio data never
 leaves it. The only external traffic is read-only lookups against
 public market-data sources (Yahoo Finance, OpenFIGI, optionally
 justETF).
+
+---
+
+## The documentation, and which document answers what
+
+Six documents, each owning one question, so nothing is explained twice
+and there is one place to correct when something changes. In reading
+order for a new user:
+
+| Document | Answers | Read it when |
+|---|---|---|
+| **[GETTING_STARTED.md](GETTING_STARTED.md)** | How do I install PorxPy, load the fund set that ships with it, and design a first portfolio? | First. It is the only place the installation procedure lives, and it runs end to end: install, import `PreLoadedFunds/porxpy_funds.zip`, create a portfolio, give it cash, set targets, run the optimiser, apply the trades. |
+| **[IMPORT_NEW_FUNDS_GUIDE.md](IMPORT_NEW_FUNDS_GUIDE.md)** | How do I add a fund the shipped set does not have, and get it fully described? | When you want your own funds in the cache. ISIN and ticker imports, holdings uploads, factsheets and their extraction, §11b's full account of how enrichment identifies and fills a holding, the Edit fund dialog, resolving unmatched values, and what every tile means. |
+| **README.md** (this file) | What is PorxPy, what does it do, and how is it built? | For the feature tour and the architecture — module roles, the cache layout, the request flow, external services, privacy. |
+| **[FACET_TREE.md](FACET_TREE.md)** | How do facets actually work? | When a breakdown reads oddly, or before changing anything that touches one. The four trees, why every level travels together, what `unknown` means against `n/a`, what is deliberately *not* a facet, and §17's verified defects. |
+| **[OPTIMIZER.md](OPTIMIZER.md)** | How does the solver decide? | When a design surprises you. The exposure matrix, why cash is a reservation rather than a column, greedy selection and swap refinement, how tolerances weight the objective, and §13's verified defects. |
+| **[CHANGELOG.md](CHANGELOG.md)** · **[WISHLIST.md](WISHLIST.md)** | What changed, and what might change? | The changelog explains the cause behind each release, not just the symptom. The wishlist is deferred ideas — deliberately not a defect list; defects live in the owning document's *Known open issues*. |
+
+The two guides are the *user* path — how to work the app. The three
+reference documents are the *why* path — the reasoning behind the
+behaviour, kept because that is the part that does not age. Each carries
+a version stamp naming the release it describes; check it against
+`porxpy/__init__.py` before trusting a claim.
 
 ---
 
@@ -286,6 +309,10 @@ anything about them having changed.
   USD0.00001" becomes "Apple Inc." A name-search match never rewrites the
   name it searched on.
   Tick rows in the holdings table to enrich only those.
+  [IMPORT_NEW_FUNDS_GUIDE.md §11b](IMPORT_NEW_FUNDS_GUIDE.md#11b-how-enrichment-works)
+  is the full account: what is filled and what is never touched, the
+  resolution chain in order, what counts as a *refinement* of a value
+  the file already gave, and what is cached between runs.
 - Hold **three position lists per fund at once** — Yahoo's top-10, the
   table read off the factsheet, and your uploaded file — and choose
   which one the fund shows. The choice is saved with the fund, so every
@@ -686,65 +713,21 @@ Dependencies (see `requirements.txt`):
 
 ---
 
-## Installation
+## Getting started
 
-Clone the repository and install dependencies:
+Installing PorxPy, loading the pre-loaded fund set that ships with the
+repository, and designing a first portfolio end to end are all covered
+in **[GETTING_STARTED.md](GETTING_STARTED.md)** — start there.
 
-```bash
-git clone https://github.com/jdderijke/PorxPy.git
-cd PorxPy
-python -m venv .venv
-source .venv/bin/activate     # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-```
+The short version: clone the repo, `pip install -r requirements.txt`,
+`python main.py`, open <http://127.0.0.1:5000>, and import
+`PreLoadedFunds/porxpy_funds.zip` from Settings → backup & restore so
+there is a fund universe to work with from the first minute.
 
-That's it. There's nothing else to configure.
-
-The AI helper is the one optional extra. It is off by default; to use
-it, set `ANTHROPIC_API_KEY` in your environment before starting the app
-and switch it on in Settings. The key is read from the environment and
-never written to `settings.json`, which sits in the project directory in
-plaintext and gets copied around.
-
----
-
-## Running
-
-From the project root:
-
-```bash
-python main.py
-```
-
-You should see a startup banner:
-
-```
-=======================================================
-  PorxPy  v0.96.0  (built 2026-09-03)
-  Portfolio X-ray Python
-=======================================================
-```
-
-Then open [http://127.0.0.1:5000](http://127.0.0.1:5000) in your
-browser.
-
-The first time you add a fund, PorxPy will fetch its data from Yahoo
-(takes a few seconds). Subsequent loads of the same fund are instant
-from cache.
-
-### Stopping
-
-Press `Ctrl+C` in the terminal.
-
-### Resetting
-
-If you want a clean slate, delete `cache/` to wipe all fetched data
-(your portfolios and settings stay). Or use Settings → Danger zone in
-the web UI, which does the same and offers selective wipes (e.g. just
-the price cache, or everything including portfolios).
-
-Export a bundle from Settings → Backup & restore first if there is
-curation you don't want to redo.
+For everything about getting *more* funds in — ISIN and ticker imports,
+holdings uploads, factsheets, structure fields and scores — see
+[IMPORT_NEW_FUNDS_GUIDE.md](IMPORT_NEW_FUNDS_GUIDE.md), and for what the
+other documents cover, the map at the top of this file.
 
 ---
 
@@ -795,6 +778,6 @@ it does.
 
 ## Version
 
-Current release: **0.86.3** (2026-08-27)
+Current release: **0.102.1** (2026-09-05)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

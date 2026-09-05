@@ -119,6 +119,7 @@ from porxpy.utils import (
     cache_write,
     coerce_holdings_row,
     delete_portfolio,
+    enrichment_fields,
     find_portfolio,
     fx_rate,
     fx_history,
@@ -5957,7 +5958,11 @@ def create_app() -> Flask:
             defaults: ``{field: value}`` for unmapped fields — applied to
                 every row whose mapping is null. Only ``sector``,
                 ``country``, ``currency``, ``asset_class`` are honoured.
-            enrich_fields: list of unmapped fields (subset of ``["sector",
+            enrich: whether to run Yahoo enrichment over the imported
+                rows. Which fields it fills comes from Settings, via
+                :func:`porxpy.utils.enrichment_fields` — the same list
+                the fund page's button uses. Was a per-field list until
+                v0.100.0 (subset of ``["sector",
                 "country", "currency", "asset_class"]``) for which the
                 server should look up Yahoo per-symbol info on every row
                 that has a ticker. Wins over the default value for rows
@@ -5981,7 +5986,9 @@ def create_app() -> Flask:
                 sheet_name=body.get("sheet"),
                 delimiter=body.get("delimiter"),
                 defaults=body.get("defaults") or {},
-                enrich_fields=body.get("enrich_fields") or [],
+                # One decision — enrich or not. Which fields is
+                # Settings' business, not this dialog's.
+                enrich=bool(body.get("enrich")),
             )
         except UploadCancelled:
             # User clicked Cancel mid-commit. The holdings cache was
@@ -6359,12 +6366,11 @@ def create_app() -> Flask:
         if not hold.get("rows"):
             return jsonify({"error": f"no holdings cached for {ticker!r}"}), 404
 
-        # Resolve the active enrichment field list. Settings is the
-        # source of truth; an empty list means the user has unticked
-        # everything and we return without touching anything (the
-        # frontend still treats this as success — zero work done).
-        settings = load_settings()
-        fields   = list(settings.get("enrichment", {}).get("fields") or [])
+        # Which fields may be filled — from utils.enrichment_fields, the
+        # one answer every enrichment path asks (v0.100.0). An empty list
+        # means the user has switched enrichment off and we touch
+        # nothing; the frontend still treats that as success.
+        fields = enrichment_fields()
 
         # Which rows the user ticked. Absent/empty means "all of them".
         body    = request.get_json(force=True, silent=True) or {}
