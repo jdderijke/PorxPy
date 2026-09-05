@@ -1,6 +1,6 @@
 # The PorxPy Optimizer — how it works
 
-*Applies to `porxpy/optimizer.py` as of v0.103.0. The full audit — every
+*Applies to `porxpy/optimizer.py` as of v0.103.1. The full audit — every
 claim in the document re-checked against the module — was done at
 v0.91.0; since then the v0.96.0 peer-scoring change was folded into §7b
 and §13's one remaining open issue was re-confirmed by reading

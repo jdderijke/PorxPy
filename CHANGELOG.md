@@ -3,6 +3,29 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.103.1] - 2026-09-05
+
+### Changed — the shipped fund bundle re-exported against the current cache
+
+`PreLoadedFunds/porxpy_funds.zip` was last built at v0.101.1, before two
+things that belong in it: the four fund records whose v0.76.0 purge
+notice was retired in v0.102.1 still carried the marker, so a fresh
+install would have imported the amber banner along with the funds, and
+70 cached listing records had been refreshed since.
+
+Re-exported at v0.103.0's cache: same 56 funds, 66 listings, 106
+factsheets and 54 override sets; zero purge markers; the holdings
+enrichment intact (EXSA.DE still 493 of 611 rows carrying a sub-sector).
+Checked for a stray credential before committing — the bundle carries
+funds, listings, factsheets, overrides and the resource CSVs, and no
+settings.
+
+Built in-process rather than through `/api/bundles/funds/export`: the
+HTTP path truncated a 31MB download during the v0.101.1 export — 30MB
+written, no end-of-archive record, and `curl` exited 0 — so the archive
+is verified with `testzip()` and its manifest read back before it
+replaces the shipped one.
+
 ## [0.103.0] - 2026-09-05
 
 ### Added — the Anthropic API key is entered in Settings
