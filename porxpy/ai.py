@@ -368,7 +368,7 @@ def build_extraction_prompt() -> str:
 Return ONE JSON object and nothing else. No prose, no markdown fences.
 
 {{
-  "as_of": "YYYY-MM-DD or null",
+  "as_of": "YYYY-MM-DD or null — see AS OF below",
   "identity": {{
     "longName": "the fund's full name, or null",
     "isin":     "ISIN, or null",
@@ -467,6 +467,38 @@ with your best guess at "key" and the exact printed text in
 "label_in_document":
 {facets}
 
+SYNTHETIC REPLICATION changes which tables are the fund's own, and is
+the one case where the most prominent breakdown in the document is the
+wrong answer.
+
+A swap-based (synthetic) fund does not hold what it tracks. It holds a
+collateral or substitute basket, which is unrelated: a synthetic S&P 500
+fund can hold Japanese equities as collateral. The document says so
+somewhere — "synthetic replication", "swap-based", "unfunded/funded
+swap", "substitute basket", "collateral portfolio", "Trägerportfolio",
+"replicatie: synthetisch".
+
+When the document identifies the fund as synthetically replicated:
+
+- IGNORE any sector, country, currency or asset breakdown OF THE
+  COLLATERAL OR SUBSTITUTE BASKET. Do not return it under "facets" at
+  all. It describes securities the fund happens to hold as security for
+  a swap, not the exposure anyone is buying.
+- If the document ALSO prints a breakdown of the INDEX the fund tracks,
+  return THAT as the fund's facets, and make the source unmistakable in
+  each facet's "quote" (e.g. "Index composition by sector").
+- If only the collateral breakdown is printed, return NO facets of that
+  kind. An empty answer is correct; the collateral basket is not.
+- The same rule decides the position table: report it under "holdings"
+  only when it is the fund's or the index's positions. If it is the
+  collateral or substitute basket, return no holdings and say why in
+  "rejected".
+- Set "replication": "synthetic" in "fields" whenever the document says
+  so, with the phrase that says it as the quote.
+
+For a physically replicated fund (full or sampled) none of this applies:
+its holdings ARE what it tracks, and its printed breakdowns are its own.
+
 HOLDINGS is the fund's own position table, if the document prints one
 ("Top 10 holdings", "Grootste posities", "Principales positions",
 "Largest holdings", or a full schedule of investments). Report the rows
@@ -527,7 +559,19 @@ RULES
    canonical keys above.
 
 6. Return only what the document states. An empty "fields" or "facets"
-   object is a correct answer for a document that says nothing."""
+   object is a correct answer for a document that says nothing.
+
+AS OF — the date the document's DATA describes, not the day it was
+printed or downloaded. Factsheets are made monthly and state it plainly:
+"as at 31 July 2026", "per 31-07-2026", "Stand: 31.07.2026", "données au
+31/07/2026", "Alle gegevens per 31 augustus 2026". Take that date.
+
+- Prefer the date attached to the holdings and performance tables. Where
+  several appear, use the one the fund data itself is stated at.
+- A date in the filename or a copyright year is not it.
+- Return "YYYY-MM-DD". If the document truly gives no such date, return
+  null rather than guessing — the upload date is then used instead, and
+  a guess would read as fresher than the data really is."""
 
 
 def _media_type(ext: str) -> str:

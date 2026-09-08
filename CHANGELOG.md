@@ -3,6 +3,65 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.111.0] - 2026-09-08
+
+### Added — upload a factsheet and read it in one step
+
+Uploading a factsheet is almost always followed by extracting it, and
+the dialog made that two separate acts. It now carries **"Extract and
+apply information from the factsheet to the fund"**, ticked by default:
+the document is stored, read, and applied to every field pinned to
+*Factsheet* without a second button.
+
+The *Extraction* button stays exactly where it was. Its job is the other
+one — re-reading a document already on file, with an edited prompt.
+
+Through `extractFactsheet`, the same function that button calls, so an
+upload-then-extract is indistinguishable from pressing the two in turn
+and there is one implementation of "read this factsheet".
+
+When the AI helper is unavailable the box is cleared, disabled and says
+which of the two things is missing — the switch or the key. Disabled
+here means "nothing to do yet", so it carries a reason and no
+forbidding cursor.
+
+### Changed — the prompt knows what synthetic replication does to a breakdown
+
+A swap-based fund does not hold what it tracks: it holds a collateral or
+substitute basket, and a synthetic S&P 500 fund can hold Japanese
+equities as security. Its factsheet often prints a sector or country
+breakdown OF THAT BASKET, which is the most prominent table on the page
+and the wrong answer to every question PorxPy asks.
+
+The extraction prompt now states the rule outright. When the document
+identifies the fund as synthetic — "synthetic replication", "swap-based",
+"substitute basket", "Trägerportfolio", and the other phrasings it
+arrives in — the model must:
+
+- return no facets derived from the collateral basket;
+- return the breakdown of the INDEX instead, where the document prints
+  one, saying so in each facet's quote;
+- return nothing of that kind rather than fall back to the basket;
+- apply the same test to the position table, and say in "rejected" when
+  it withheld one;
+- record `replication: synthetic` with the phrase that says so.
+
+This is the reading counterpart of v0.107.0, which stopped the adapter
+downloading a synthetic fund's holdings file for exactly the same
+reason. Physically replicated funds are explicitly unaffected.
+
+### Changed — the factsheet's own date is on the View factsheet button
+
+`👁 View factsheet · 31 Jul 2026`. The date the document's data is
+stated at is the one fact that decides whether what you are holding is
+current, and it was only in a tooltip.
+
+The prompt now says how to find it — prefer the date attached to the
+holdings and performance tables, ignore filenames and copyright years,
+and return null rather than guess. A document that states no date shows
+no date on the button: the upload date is a different claim and must not
+be dressed up as this one.
+
 ## [0.110.4] - 2026-09-08
 
 ### Changed — the shipped fund bundle keeps the date in its filename

@@ -1,6 +1,6 @@
 # FACET_TREE.md — the four facet trees
 
-*Current as of v0.110.4. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.111.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Sections 1–5 describe how the facet trees behave **today**, across all
@@ -463,6 +463,31 @@ thematic focus can only ever be *asserted*, by the user or by the AI
 factsheet reader, and both write there. Nothing derives one —
 `_derive_focus_from_name` answers only "sector" or "geography", because
 a fund name cannot be matched against a vocabulary that does not exist.
+
+---
+
+## 8e. A synthetic fund's printed breakdown is not its exposure (v0.111.0)
+
+A swap-based fund does not hold what it tracks. It holds a collateral or
+substitute basket, and the two are unrelated — a synthetic S&P 500 fund
+can hold Japanese equities as security for the swap. Its factsheet
+routinely prints a sector or country breakdown of that basket, usually as
+the most prominent table on the page.
+
+Read as facets, those numbers assert an exposure the fund does not have,
+and the assertion then flows into every breakdown, every target
+deviation and the optimiser. So PorxPy refuses them from both directions:
+
+- the issuer adapter does not download a synthetic fund's holdings file
+  at all (v0.107.0 — that file *is* the basket);
+- the extraction prompt tells the model to return no facets derived from
+  the basket, to use the INDEX breakdown instead where the document
+  prints one, and to return nothing of that kind rather than fall back
+  (v0.111.0).
+
+The fund is treated this way only when `replication` is `synthetic`,
+which is always an assertion — by the user, by justETF or from a
+factsheet — because Yahoo publishes no replication method at all.
 
 ---
 

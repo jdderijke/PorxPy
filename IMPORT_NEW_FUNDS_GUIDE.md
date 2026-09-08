@@ -1,6 +1,6 @@
 # IMPORT_NEW_FUNDS_GUIDE.md — importing new funds and ETFs
 
-*Current as of v0.110.4. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.111.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between typing an ISIN into an empty box and having a fully
@@ -82,7 +82,7 @@ version you are looking at:
 
 ```
 =======================================================
-  PorxPy  v0.110.4 (built 2026-09-08)
+  PorxPy  v0.111.0 (built 2026-09-08)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -437,6 +437,19 @@ holdings, and the breakdowns themselves. PorxPy lets you attach that
 document to the fund and, optionally, have it read.
 
 ### Uploading one
+
+The dialog offers **"Extract and apply information from the factsheet to
+the fund"**, ticked by default — uploading a sheet is almost always
+followed by reading it, so the two happen together. The **Extraction**
+button afterwards is for the other job: re-reading a document already on
+file, with an edited prompt. The box is cleared and disabled when the AI
+helper is switched off or has no key, and says which.
+
+Once a factsheet has been read, the **View factsheet** button carries the
+document's own date — `👁 View factsheet · 31 Jul 2026` — because that
+is what tells you whether what you are looking at is current. A document
+that states no date shows none: the upload date is a different claim.
+
 
 1. With the fund loaded, click **📄 Upload factsheet** in the fund
    header. (It reads **📄 Replace factsheet** once one exists.)

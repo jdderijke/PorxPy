@@ -2987,6 +2987,20 @@
                placeholder="e.g. share class A, EUR">
       </div>
     </div>
+    <label id="fsExtractRow" style="display:flex;align-items:flex-start;gap:9px;
+                cursor:pointer;margin:.2rem 0 .6rem">
+      <input type="checkbox" id="fsExtractAfter" checked style="margin-top:3px">
+      <span style="font-family:var(--mono);font-size:.7rem;color:var(--muted);line-height:1.6">
+        <strong style="color:var(--text)">Extract and apply information from the
+        factsheet to the fund</strong><br>
+        Reads the document with Claude as soon as it is stored, and applies what
+        it finds to every field you have pinned to <em>Factsheet</em>. Uploading
+        a sheet is almost always followed by reading it, so this is on by
+        default; the <em>Extraction</em> button afterwards is for re-reading with
+        an edited prompt.
+        <span id="fsExtractOff" style="display:none;color:var(--amber)"></span>
+      </span>
+    </label>
     <div id="fsExisting" class="mhint" style="display:none;color:var(--muted)"></div>
     <div id="fsError" class="mhint" style="display:none;color:var(--red)"></div>
     <div class="mfoot">
@@ -8301,10 +8315,18 @@ function renderPostFundActions(d){
     const age = factsheetMeta.age_days == null ? '' :
       ` (${Math.round(factsheetMeta.age_days)} days old`
       + (factsheetMeta.age_from === 'upload' ? ', by upload date' : '') + ')';
+    // The document's OWN date on the button, not just in the tooltip.
+    // It is the one fact that decides whether what you are looking at is
+    // current, and a label reading only "View factsheet" makes you open
+    // the thing to find out. Absent when the document never stated one
+    // — the upload date is a different claim and must not be dressed up
+    // as this one.
+    const asOf = factsheetMeta.as_of
+      ? ` · ${fmtFactsheetAsOf(factsheetMeta.as_of)}` : '';
     btns.push(`<button class="btn btn-s btn-sm${factsheetMeta.stale ? ' warn' : ''}"
         onclick="viewFactsheet()"
         title="${escapeAttr((factsheetMeta.filename || 'factsheet') + age)}">
-        👁 View factsheet${factsheetMeta.stale ? ' ⚠' : ''}</button>`);
+        👁 View factsheet${escapeHtml(asOf)}${factsheetMeta.stale ? ' ⚠' : ''}</button>`);
 
     // One button, always available once a factsheet exists: it opens the
     // report, which holds the Extract action itself. Previously the only
@@ -8570,6 +8592,17 @@ function fmtFocus(fs){
 // "n/a" is spelled out because on this facet it is the majority answer
 // and a real one — the fund has a geography focus, a sector focus or
 // none — rather than the rare footnote it is on the other facets.
+// A factsheet's stated date, short enough for a button: "31 Jul 2026".
+// Falls back to the raw string rather than inventing one, since the
+// value comes from a document and may be anything.
+function fmtFactsheetAsOf(iso){
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || '').trim());
+  if (!m) return String(iso || '');
+  const MON = ['Jan','Feb','Mar','Apr','May','Jun',
+               'Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${Number(m[3])} ${MON[Number(m[2]) - 1] || m[2]} ${m[1]}`;
+}
+
 function fmtFocusTheme(v){
   if (v === 'unknown') return 'Theme not named';
   if (v === 'n/a')     return 'No thematic focus';
@@ -14582,6 +14615,25 @@ function factsheetDefaultAsOf(now){
   return `${end.getFullYear()}-${pad(end.getMonth() + 1)}-${pad(end.getDate())}`;
 }
 
+// The extract-after-upload checkbox only means something when the AI
+// helper can actually run. Off and explained rather than ticked and
+// silently ignored — and disabled here means "nothing to do yet", not
+// "you may not", so it carries a reason and no forbidding cursor.
+function syncFactsheetExtractToggle(){
+  const box = document.getElementById('fsExtractAfter');
+  const off = document.getElementById('fsExtractOff');
+  if (!box || !off) return;
+  if (aiStatus.ready){
+    box.disabled = false; off.style.display = 'none'; off.textContent = '';
+    return;
+  }
+  box.checked = false; box.disabled = true;
+  off.style.display = '';
+  off.textContent = aiStatus.enabled
+    ? ' Needs an Anthropic API key — add one in Settings → AI helper.'
+    : ' The AI helper is switched off; turn it on in Settings to use this.';
+}
+
 function openFactsheetModal(){
   if (!lastFundData || !lastFundData.ticker) return;
   wireUploadDropZones();
@@ -14612,6 +14664,14 @@ function openFactsheetModal(){
   } else {
     ex.style.display = 'none'; del.style.display = 'none';
   }
+  // The extract-after-upload box, ticked by default and honest about
+  // the helper being unavailable. aiStatus is refreshed first when
+  // nothing has asked yet, so opening this dialog before the Settings
+  // tab has ever been visited still shows the right thing.
+  document.getElementById('fsExtractAfter').checked = true;
+  if (!aiStatus.checked) refreshAiStatus().then(syncFactsheetExtractToggle);
+  syncFactsheetExtractToggle();
+
   showModal('factsheetModal');
 
   // Offer back the URL or path this fund's factsheet last came from.
@@ -14653,6 +14713,7 @@ async function saveFactsheet(){
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
     factsheetMeta = d.factsheet || null;
+    const alsoExtract = !!document.getElementById('fsExtractAfter')?.checked;
     closeFactsheetModal();
     renderPostFundActions(lastFundData);
     setStatus('ok', `Factsheet stored for ${ticker}`);
@@ -14661,6 +14722,11 @@ async function saveFactsheet(){
     // pinned to the factsheet has just lost its numbers until the new
     // sheet is extracted.
     invalidateFundDerived();
+    // Straight into the reading, through the same function the
+    // Extraction button uses — so an upload-then-extract is
+    // indistinguishable from pressing the two in turn, and there is one
+    // implementation of "read this factsheet" rather than two.
+    if (alsoExtract && aiStatus.ready) await extractFactsheet();
   } catch(e){
     err.textContent = e.message; err.style.display = '';
     clearBtnBusy(btn);
