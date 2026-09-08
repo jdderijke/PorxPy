@@ -5079,8 +5079,17 @@ def create_app() -> Flask:
                 # Storing the guess as the raw made the alias the Resolve
                 # dialog offers to write an alias for something the model
                 # invented rather than for anything the document says.
-                raw = (str(it.get("label_in_document") or "").strip()
-                       or str(it.get("key") or "").strip())
+                # A DERIVED row was never printed, so it has no
+                # printed text and its raw is the canonical key. Taking
+                # a label here would store whatever phrase the model
+                # reached for — "Equity index" for a row it was told to
+                # return as "regular stock" — and resolution would then
+                # be against a label the document never used.
+                if str(blk.get("basis") or "") == "derived":
+                    raw = str(it.get("key") or "").strip()
+                else:
+                    raw = (str(it.get("label_in_document") or "").strip()
+                           or str(it.get("key") or "").strip())
                 # The extractor reports percentages, because that is what
                 # a factsheet prints. The store holds FRACTIONS — the CSV
                 # commit divides by 100 before writing, and every consumer

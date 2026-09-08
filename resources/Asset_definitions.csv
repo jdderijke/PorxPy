@@ -1,7 +1,7 @@
 ﻿type;name;description;parent_name;matches;is_default;attrs
 super_class;equity;;;equities|equity securities;;
 asset_class;shares and options;Shares of publicly traded companies;equity;futures|futures contracts|exchange-traded purchased options|exchange-traded written options;TRUE;
-sub_class;regular stock;Regular equity;shares and options;common stocks|common stock|preferredPosition|shares|share|stock|stocks|preferred securities|aandelen|stockPosition;TRUE;
+sub_class;regular stock;Regular equity;shares and options;common stocks|common stock|preferredPosition|shares|share|stock|stocks|preferred securities|aandelen|stockPosition|equity index|equity indices|equity indexes|equity index fund|stock index|share index|aandelenindex|aktienindex|indice actions;TRUE;
 sub_class;stock future;options, call, put;shares and options;options|share future|share futures|stock futures|futures|call options|put options|call option|put option|otc written options;;
 ;;;;;;
 super_class;fixed income;;;bond|bonds|fixed_income|fixedincome|fixed-income|debt|bondPosition|fi|Invest. Grade Credit;;

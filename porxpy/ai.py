@@ -507,7 +507,10 @@ When the document identifies the fund as synthetically replicated:
 - DO return an "asset_class" facet as a SINGLE row at 100 percent
   describing what the INDEX is made of, with "basis": "derived". For an
   equity index - which nearly all of these are - that row is
-  {{"key": "regular stock", "weight": 100}}. Use the matching asset key
+  {{"key": "regular stock", "weight": 100}} with NO
+  "label_in_document": nothing was printed, so there is no printed text
+  to quote, and inventing one ("Equity index") makes the row resolve
+  against a label the document never used. Use the matching asset key
   when the index is plainly something else, such as a bond index or a
   commodity index. Reporting the swap itself as the asset class
   describes the wrapper rather than the exposure and is of no use.

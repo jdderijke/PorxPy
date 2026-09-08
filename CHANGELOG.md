@@ -3,6 +3,39 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.113.1] - 2026-09-08
+
+### Fixed — a synthetic fund's asset class read as "unknown: equity index"
+
+v0.113.0 asks the model for a single `asset_class` row at 100 percent
+describing what the index is made of, and names `regular stock` as the
+key for an equity index. It duly returned that key — and attached
+`"label_in_document": "Equity index"` beside it, which is the field that
+becomes the stored raw. `equity index` matched nothing in
+`Asset_definitions.csv`, so the card showed *unknown 100%, of which
+unrecognised: equity index 100%*.
+
+Two fixes, and the first is the one that matters:
+
+**`equity index` now resolves.** Added to `regular stock`'s matches,
+along with `equity indices`, `equity indexes`, `equity index fund`,
+`stock index`, `share index`, `aandelenindex`, `aktienindex` and
+`indice actions`. Because resolution runs at READ time, this repairs
+every extraction already stored — no re-read, no migration. Press
+Tools → **Reload resource files** and the card is right.
+
+They are exact spellings, not wildcards, deliberately: `equity index
+futures` is a derivative and belongs to `stock future`, and a
+`*equity index*` match would have swallowed it.
+
+**A derived row's raw is its key.** A row the model DERIVED was never
+printed, so it has no printed text to quote — and taking a label there
+stores whatever phrase the model reached for rather than the canonical
+key it was told to use. The prompt now says to omit `label_in_document`
+for that row, and the store ignores it when the facet's basis is
+`derived`. Belt and braces, because the first is an instruction and the
+second is a guarantee.
+
 ## [0.113.0] - 2026-09-08
 
 ### Changed — a synthetic fund's reading is now unambiguous
