@@ -1,4 +1,4 @@
-type,name,description,parent_name,matches,is_default,attrs
+﻿type,name,description,parent_name,matches,is_default,attrs
 super_region,developed,Developed Markets,,developed markets|developed world|msci world|world ex emerging|world ex-emerging|kokusai|Ontwikkelde markten|ontwikkeld|volwassen markten,FALSE,
 super_region,emerging,Emerging Markets,,emerging markets|emerging market|emerging|msci em|ftse emerging|Opkomende markten|opkomend|groeimarkten,FALSE,
 region,northAmerica,North America,developed,north america|s&p 500|sp 500|nasdaq|dow jones|russell 1000|russell 2000|canadian|Noord-Amerika,FALSE,
@@ -250,8 +250,8 @@ country,uganda,,africaMiddleEast,UG|800,FALSE,code=UGA;currency=UGX
 country,ukraine,,europeEmerging,UA|804|Oekraïne|Oekraine,FALSE,code=UKR;currency=UAH
 country,united arab emirates,,africaMiddleEast,AE|784|Verenigde Arabische Emiraten|VAE,FALSE,code=ARE;currency=AED
 country,united states minor outlying islands,,australasia,UM|581,FALSE,code=UMI;currency=USD
-country,unitedkingdom,,unitedKingdom,united kingdom|united kingdom of great britain and northern ireland|uk|u.k.|great britain|britain|england|GB|826|Verenigd Koninkrijk,FALSE,code=GBR;currency=GBP
-country,unitedstates,,northAmerica,united states|united states of america|us|u.s.|u.s.a.|usa|america|840|Verenigde Staten|VS|Verenigde Staten van Amerika|Amerika,FALSE,code=USA;currency=USD
+country,unitedkingdom,,unitedKingdom,united kingdom|united kingdom of great britain and northern ireland|uk|u.k.|great britain|britain|england|GB|826|Verenigd Koninkrijk|Verenigd Kon*,FALSE,code=GBR;currency=GBP
+country,unitedstates,,northAmerica,united states|united states of america|us|u.s.|u.s.a.|usa|america|840|Verenigde Staten|VS|Verenigde Staten van Amerika|Amerika|Verenigde Sta*,FALSE,code=USA;currency=USD
 country,uruguay,,latinAmerica,UY|858,FALSE,code=URY;currency=UYU
 country,uzbekistan,,asiaEmerging,UZ|860,FALSE,code=UZB;currency=UZS
 country,vanuatu,,australasia,VU|548,FALSE,code=VUT;currency=VUV
