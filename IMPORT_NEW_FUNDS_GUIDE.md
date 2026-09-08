@@ -1,6 +1,6 @@
 # IMPORT_NEW_FUNDS_GUIDE.md — importing new funds and ETFs
 
-*Current as of v0.113.1. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.114.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between typing an ISIN into an empty box and having a fully
@@ -82,7 +82,7 @@ version you are looking at:
 
 ```
 =======================================================
-  PorxPy  v0.113.1 (built 2026-09-08)
+  PorxPy  v0.114.0 (built 2026-09-08)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -1121,10 +1121,12 @@ it.
 
 PorxPy recognises **iShares, Vanguard, Amundi** (including Lyxor),
 **Xtrackers** (including DWS), **VanEck** and **SPDR**. It can *find*
-documents by itself at **iShares** — factsheet and holdings — and at
-**Xtrackers** for holdings. Xtrackers factsheets are served from an
-opaque download id that cannot be derived from the fund, so those are
-re-fetched from the URL you supplied once.
+documents by itself at **iShares** (factsheet and holdings), at
+**Xtrackers** (holdings) and at **Amundi** (factsheets). The gaps are
+where the issuer publishes nothing addressable: Xtrackers serves
+factsheets from an opaque download id, and Amundi publishes no holdings
+file its site exposes. Those are re-fetched from a URL you supplied
+once.
 
 That is a smaller limit than it sounds, because every adapter also has
 one strategy that needs no knowledge of the house at all: **fetch it

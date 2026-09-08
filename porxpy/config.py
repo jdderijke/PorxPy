@@ -570,7 +570,12 @@ DEFAULT_ISSUER_SITES: dict[str, tuple[str, ...]] = {
         "https://www.ishares.com/de/privatanleger/de",
     ),
     "vanguard":  (),
-    "amundi":    (),
+    # amundietf.<country>/<language>/<audience>. Dutch site first, as
+    # with the others, because that is where this project's funds are.
+    "amundi": (
+        "https://www.amundietf.nl/en/professional",
+        "https://www.amundietf.com/en/professional",
+    ),
     # etf.dws.com, one locale segment. Dutch first for the same reason
     # iShares' Dutch site is: it is where this project's funds come
     # from. The site list is the user's to reorder.

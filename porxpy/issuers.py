@@ -38,11 +38,13 @@ two questions and differs only in the strings. :func:`expand_specs` is
 the one routine that turns those strings into candidates, shared by all
 of them.
 
-iShares discovers both documents; Xtrackers discovers its holdings and
-is a pure table with not a line of code. The remaining four identify
-their own funds and fall back to the remembered URL, which is a real
-capability rather than a placeholder — a Vanguard fund whose holdings
-URL the user pasted once refreshes from that URL for ever after.
+iShares discovers both documents; Xtrackers its holdings; Amundi its
+factsheets. Xtrackers is a pure table with not a line of code, and
+Amundi is a table plus one small `facts` override for the month ends.
+The remaining three identify their own funds and fall back to the
+remembered URL, which is a real capability rather than a placeholder — a
+Vanguard fund whose holdings URL the user pasted once refreshes from
+that URL for ever after.
 
 Degrading is the normal case, not the error case
 ------------------------------------------------
@@ -882,13 +884,101 @@ class VanguardAdapter(_UndiscoveredHouse):
              "fund-docs.vanguard.com", "vanguardinvestor.co.uk")
 
 
-class AmundiAdapter(_UndiscoveredHouse):
+# Amundi's two lists, at module level because a class-body
+# comprehension cannot see its own class attributes: only the outermost
+# iterable is evaluated in the enclosing scope. The class re-exports
+# both, so a reader of the adapter still finds them where they belong.
+#
+# The languages a factsheet may be published in, best first. Walked per
+# FUND, because that is where the difference lives — of six funds
+# tested, two were NLD/NLD and three FRA/FRA, on the same site.
+_AMUNDI_LOCALES = (("NLD", "NLD"), ("FRA", "FRA"), ("DEU", "DEU"),
+                   ("ENG", "ENG"), ("ITA", "ITA"), ("ESP", "ESP"))
+# Month ends to ask for, newest first: a month's factsheet appears some
+# days into the next one, so three covers the gap.
+_AMUNDI_MONTHS = 3
+
+
+class AmundiAdapter(IssuerAdapter):
+    """Amundi ETF (and Lyxor, which it absorbed in 2022).
+
+    **Factsheets are a plain template**, keyed by the ISIN::
+
+        /pdfDocuments/monthly-factsheet/<ISIN>/<CC>/<LANG>/INSTITUTIONNEL/ETF/<YYYYMMDD>
+
+    so this house needs no index and no page read. Two facts about it
+    are not guessable and were measured:
+
+    * **The host does not matter.** ``amundietf.nl`` and
+      ``amundietf.com`` return byte-identical documents, so the site
+      list here is about learning and about which host to address, not
+      about coverage.
+    * **The locale does, and it varies per FUND** rather than per site:
+      a fund's factsheet exists in the languages Amundi publishes it in,
+      and asking for another answers 404. Of six funds tested, two were
+      NLD/NLD and three FRA/FRA — on the same site. So the locales are
+      a list to walk, not a property of where you are looking.
+
+    The date is a month end, and only months already published exist.
+    :meth:`facts` supplies the last three, newest first, which absorbs
+    the few days each month when the newest sheet is not out yet.
+
+    **Holdings are not discoverable.** The product pages are
+    server-rendered and carry no composition download, the document
+    library resolves its results in the browser, and the document index
+    lists factsheets, KIDs, notices and securities-lending reports and
+    nothing else. Every ``/pdfDocuments/<name>/`` spelling tried for a
+    composition file answered 404.
+    """
+
     key = "amundi"
     label = "Amundi"
     # Lyxor is Amundi since 2022 and its funds still carry the old name
     # on Yahoo, so both spellings reach this adapter.
     name_patterns = ("amundi", "lyxor")
-    hosts = ("amundi.com", "amundietf.com", "lyxoretf.com")
+    hosts = ("amundi.com", "amundietf.com", "amundietf.nl", "lyxoretf.com")
+    # /en/professional — language and audience.
+    SITE_PATH_SEGMENTS = 2
+
+    FACTSHEET_LOCALES = _AMUNDI_LOCALES
+    FACTSHEET_MONTHS = _AMUNDI_MONTHS
+
+    DOCUMENTS = {
+        # Locale x month, as data: the knowledge is the two lists above,
+        # and this is their product. Ordered newest month first so a
+        # current sheet always beats an older one in another language.
+        "factsheet": tuple(
+            {"url": "{host}/pdfDocuments/monthly-factsheet/{isin}"
+                    f"/{cc}/{lang}/INSTITUTIONNEL/ETF/{{me{i}}}",
+             "why": f"Amundi's {cc}/{lang} monthly factsheet for {{me{i}}}",
+             "needs": ("isin", f"me{i}")}
+            for i in range(_AMUNDI_MONTHS)
+            for cc, lang in _AMUNDI_LOCALES),
+    }
+
+    DISCOVERY_NOTES = {
+        "holdings": (
+            "Amundi publishes no holdings file PorxPy can find: its product "
+            "pages carry no composition download and its document index "
+            "lists none. Upload this fund's holdings once from its URL and "
+            "this button will re-fetch that address from then on."),
+    }
+
+    def facts(self, base: str, ref: FundRef) -> dict | None:
+        """The base facts plus the last few month ends, newest first."""
+        from datetime import date
+        f = super().facts(base, ref) or {}
+        y, m = date.today().year, date.today().month
+        for i in range(self.FACTSHEET_MONTHS):
+            # Step back to the last day of the (i+1)th previous month.
+            mm, yy = m - i, y
+            while mm <= 0:
+                mm += 12
+                yy -= 1
+            first = date(yy, mm, 1)
+            last_day_prev = first - __import__("datetime").timedelta(days=1)
+            f[f"me{i}"] = last_day_prev.strftime("%Y%m%d")
+        return f
 
 
 class XtrackersAdapter(IssuerAdapter):

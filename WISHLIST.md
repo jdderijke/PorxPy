@@ -1,6 +1,6 @@
 # WISHLIST.md — possible future enhancements
 
-*Started 2026-08-18, at v0.72.3. Last swept at v0.113.1.*
+*Started 2026-08-18, at v0.72.3. Last swept at v0.114.0.*
 
 Things worth doing that nobody has promised. This is deliberately **not**
 a defect list: a bug lives in the Known open issues section of the
@@ -132,7 +132,7 @@ outside. Capturing one request from a browser's network panel while a
 factsheet downloads would settle it, and the adapter needs only another
 line in its `DOCUMENTS` table once it is known.
 
-### Document discovery for the other four fund houses
+### Document discovery for the other three fund houses
 
 `issuers.py` registers iShares, Vanguard, Amundi, Xtrackers, VanEck and
 SPDR, and only iShares can currently find a fund's documents by itself;

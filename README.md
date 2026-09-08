@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.113.1. This is the fullest architecture write-up;
+*Current as of v0.114.0. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -195,8 +195,10 @@ was missing.
 
 PorxPy recognises six fund houses — iShares, Vanguard, Amundi,
 Xtrackers, VanEck and SPDR. It can *find* documents by itself at
-**iShares** (both) and **Xtrackers** (holdings; their factsheets sit
-behind an opaque download id).
+**iShares** (both), **Xtrackers** (holdings) and **Amundi**
+(factsheets). The gaps are where the issuer publishes nothing
+addressable: Xtrackers' factsheets sit behind an opaque download id,
+and Amundi publishes no holdings file at all.
 
 A fund house runs a separate site per market, each listing only the
 share classes sold there, so each house carries an **ordered list of
@@ -864,6 +866,6 @@ it does.
 
 ## Version
 
-Current release: **0.113.1** (2026-09-08)
+Current release: **0.114.0** (2026-09-08)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

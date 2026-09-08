@@ -3,6 +3,51 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.114.0] - 2026-09-08
+
+### Added — the Amundi adapter: factsheets, keyed by ISIN
+
+Amundi publishes a monthly factsheet at an address built from the fund
+itself::
+
+    /pdfDocuments/monthly-factsheet/<ISIN>/<CC>/<LANG>/INSTITUTIONNEL/ETF/<YYYYMMDD>
+
+so this house needs no index and reads no page. Two things about it are
+not guessable and were measured rather than assumed:
+
+**The host does not matter.** `amundietf.nl` and `amundietf.com` return
+byte-identical documents. The site list still earns its place — it is
+what `site_base_from_url` learns into and what supplies the host — but
+it is not the axis coverage varies along.
+
+**The locale does, and it varies per FUND.** A fund's factsheet exists
+in the languages Amundi chose to publish it in, and asking for another
+answers 404. Of the six funds tested on one site, two were NLD/NLD and
+three FRA/FRA. So the locales are a list to walk rather than a property
+of where you are looking — six of them, crossed with the last three
+month ends, giving 36 ordered candidates. The walk stops at the first
+that answers, and the winning URL is remembered, so the long walk
+happens once per fund and never again.
+
+Three of those funds resolve on the first or second candidate; the
+fourth had no factsheet in any locale and fell through to the URL its
+owner had supplied — the layering working as intended rather than a
+gap.
+
+The adapter is a table plus one small `facts` override that supplies
+the month ends, since "the last three month ends" is a computation and
+not a string.
+
+### Not added — Amundi holdings
+
+There is no holdings file to find. The product pages are
+server-rendered and carry no composition download, the document library
+resolves its results in the browser, the sitemap indexes factsheets,
+KIDs, notices and securities-lending reports and nothing else, and every
+`/pdfDocuments/<name>/` spelling tried for a composition answered 404.
+The adapter says so per document kind rather than reporting an empty
+result.
+
 ## [0.113.1] - 2026-09-08
 
 ### Fixed — a synthetic fund's asset class read as "unknown: equity index"
