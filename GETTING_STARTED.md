@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.110.3. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.110.4. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -134,7 +134,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.110.3 (built 2026-09-08)
+  PorxPy  v0.110.4 (built 2026-09-08)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -162,8 +162,11 @@ The **Portfolio** selector in the header chooses the active portfolio.
 
 ## 4. Import the pre-loaded fund set
 
-The repository ships a fund bundle at
-**`PreLoadedFunds/porxpy_funds.zip`**. It is a plain zip with a readable
+The repository ships a fund bundle in **`PreLoadedFunds/`**, named with
+the date it was exported — currently
+**`porxpy_funds_20260908.zip`**. The date is the version: a re-export
+arrives beside the old one under a new name, so take the newest file in
+that folder. It is a plain zip with a readable
 `manifest.json`, and it contains what a fund *is* rather than what
 anyone holds: cached fund and listing data, holdings lists, issuer
 factsheets, corrected fields and the reference CSVs those funds were
@@ -175,8 +178,8 @@ their holdings.
 To load it:
 
 1. Go to **Settings → backup & restore**.
-2. Under **Import a bundle**, click **Choose file…** and pick
-   `PreLoadedFunds/porxpy_funds.zip`.
+2. Under **Import a bundle**, click **Choose file…** and pick the
+   newest `PreLoadedFunds/porxpy_funds_<date>.zip`.
 3. PorxPy reads the bundle and opens the import dialog. **Nothing has
    been written yet.** The summary line tells you how many funds the
    bundle holds and how many of them you already have; on a fresh
@@ -460,7 +463,9 @@ treated very differently:
 
 | Export | Contains | Use it for |
 |---|---|---|
-| **Export funds** | The curated asset — holdings, factsheets, corrected fields, per-card source pins and the resource files. | Moving your fund research to another install, or handing it to someone else. This is how `PreLoadedFunds/porxpy_funds.zip` was made. |
+| **Export funds** | The curated asset — holdings, factsheets, corrected fields, per-card source pins and the resource files. | Moving your fund research to another install, or handing it to someone else. This is how the `PreLoadedFunds/porxpy_funds_<date>.zip` bundles were
+made — the export names the file after the day it ran, which is what
+makes one bundle distinguishable from another. |
 | **Export portfolios** | Portfolios, targets, cash positions and settings. | Your own backup. Restores on top of whatever fund set is present. |
 
 Price history is off by default in the funds export, because it

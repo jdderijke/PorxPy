@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.110.3. This is the fullest architecture write-up;
+*Current as of v0.110.4. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -22,7 +22,7 @@ order for a new user:
 
 | Document | Answers | Read it when |
 |---|---|---|
-| **[GETTING_STARTED.md](GETTING_STARTED.md)** | How do I install PorxPy, load the fund set that ships with it, and design a first portfolio? | First. It is the only place the installation procedure lives, and it runs end to end: install, import `PreLoadedFunds/porxpy_funds.zip`, create a portfolio, give it cash, set targets, run the optimiser, apply the trades. |
+| **[GETTING_STARTED.md](GETTING_STARTED.md)** | How do I install PorxPy, load the fund set that ships with it, and design a first portfolio? | First. It is the only place the installation procedure lives, and it runs end to end: install, import the newest `PreLoadedFunds/porxpy_funds_<date>.zip`, create a portfolio, give it cash, set targets, run the optimiser, apply the trades. |
 | **[IMPORT_NEW_FUNDS_GUIDE.md](IMPORT_NEW_FUNDS_GUIDE.md)** | How do I add a fund the shipped set does not have, and get it fully described? | When you want your own funds in the cache. ISIN and ticker imports, holdings uploads, factsheets and their extraction, §11b's full account of how enrichment identifies and fills a holding, the Edit fund dialog, resolving unmatched values, and what every tile means. |
 | **README.md** (this file) | What is PorxPy, what does it do, and how is it built? | For the feature tour and the architecture — module roles, the cache layout, the request flow, external services, privacy. |
 | **[FACET_TREE.md](FACET_TREE.md)** | How do facets actually work? | When a breakdown reads oddly, or before changing anything that touches one. The four trees, why every level travels together, what `unknown` means against `n/a`, what is deliberately *not* a facet, and §17's verified defects. |
@@ -803,7 +803,8 @@ in **[GETTING_STARTED.md](GETTING_STARTED.md)** — start there.
 
 The short version: clone the repo, `pip install -r requirements.txt`,
 `python main.py`, open <http://127.0.0.1:5000>, and import
-`PreLoadedFunds/porxpy_funds.zip` from Settings → backup & restore so
+the newest `PreLoadedFunds/porxpy_funds_<date>.zip` from Settings →
+backup & restore so
 there is a fund universe to work with from the first minute.
 
 For everything about getting *more* funds in — ISIN and ticker imports,
@@ -863,6 +864,6 @@ it does.
 
 ## Version
 
-Current release: **0.110.3** (2026-09-08)
+Current release: **0.110.4** (2026-09-08)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

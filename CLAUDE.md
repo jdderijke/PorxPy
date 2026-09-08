@@ -240,7 +240,8 @@ stated, and a reader who cannot find `FACET_TREE.md` will not know to
 look for it.
 
 The two user-facing guides are `GETTING_STARTED.md` (install, import the
-shipped `PreLoadedFunds/porxpy_funds.zip` set, and design a first
+shipped `PreLoadedFunds/porxpy_funds_<date>.zip` set (the export stamps
+the file with its date; the newest is the current one), and design a first
 portfolio: cash, targets, optimiser) and `IMPORT_NEW_FUNDS_GUIDE.md`
 (everything about getting one more fund in and fully described). They
 carry the same version stamp as the design docs, and the installation

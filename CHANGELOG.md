@@ -3,6 +3,27 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.110.4] - 2026-09-08
+
+### Changed — the shipped fund bundle keeps the date in its filename
+
+`PreLoadedFunds/porxpy_funds.zip` is now
+`PreLoadedFunds/porxpy_funds_20260908.zip`, and future re-exports keep
+their own dates. The date is the version: with a fixed name there is no
+way to tell which export you are looking at without opening it, and a
+bundle's contents are exactly the sort of thing you want to check the
+age of.
+
+This is also what the export already produced — the endpoint has always
+sent `porxpy_funds_<stamp>.zip` in its `Content-Disposition`, and the
+browser honours it — so the shipped file now matches what pressing
+*Export funds* gives you rather than being the one copy that had been
+renamed.
+
+Every reference in the documentation now names the pattern rather than
+one filename, and says to take the newest, so the next re-export does
+not silently make five documents wrong.
+
 ## [0.110.3] - 2026-09-08
 
 ### Fixed — accepting the value shown for "my own value" did not pin the field

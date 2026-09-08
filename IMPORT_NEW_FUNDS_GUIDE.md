@@ -1,6 +1,6 @@
 # IMPORT_NEW_FUNDS_GUIDE.md — importing new funds and ETFs
 
-*Current as of v0.110.3. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.110.4. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between typing an ISIN into an empty box and having a fully
@@ -82,7 +82,7 @@ version you are looking at:
 
 ```
 =======================================================
-  PorxPy  v0.110.3 (built 2026-09-08)
+  PorxPy  v0.110.4 (built 2026-09-08)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -193,7 +193,7 @@ arrive after the first day.
 |---|---|---|
 | **A** | live fetch | **ISIN + exchange.** Resolved through OpenFIGI, then confirmed on Yahoo. The exchange is required — you pick the MIC. May ask you to choose a currency. |
 | **B** | live fetch | **Yahoo ticker.** Exchange is derived from the suffix. A bare ticker is refused. Will ask you for an ISIN to key the fund cache. |
-| **C** | bulk | **Import a fund bundle** from Settings → backup & restore. Many funds at once, with holdings, factsheets, field pins and resource files. Two-phase: you see a conflict table before anything is written. The set shipped at `PreLoadedFunds/porxpy_funds.zip` arrives this way — see [GETTING_STARTED.md](GETTING_STARTED.md) §4. |
+| **C** | bulk | **Import a fund bundle** from Settings → backup & restore. Many funds at once, with holdings, factsheets, field pins and resource files. Two-phase: you see a conflict table before anything is written. The set shipped at `PreLoadedFunds/porxpy_funds_<date>.zip` arrives this way — see [GETTING_STARTED.md](GETTING_STARTED.md) §4. |
 | **D** | re-open | **From an existing row** — a Pre-Loaded list row, a peer in a Peers popover, or a fund row on Portfolio → Funds. Not a new import. |
 
 Routes A and B are the same button. PorxPy decides which one you are on

@@ -1,6 +1,6 @@
 # FACET_TREE.md — the four facet trees
 
-*Current as of v0.110.3. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.110.4. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Sections 1–5 describe how the facet trees behave **today**, across all
