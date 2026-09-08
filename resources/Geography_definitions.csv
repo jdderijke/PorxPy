@@ -118,7 +118,7 @@ country,honduras,,latinAmerica,HN|340,FALSE,code=HND;currency=HNL
 country,hongkong,,asiaDeveloped,hong kong|hong kong sar|HK|344,FALSE,code=HKG;currency=HKD
 country,hungary,,europeEmerging,HU|348|Hongarije,FALSE,code=HUN;currency=HUF
 country,iceland,,europeDeveloped,IS|352|IJsland,FALSE,code=ISL;currency=ISK
-country,india,,asiaEmerging,IN|356|Indië,FALSE,code=IND;currency=INR
+country,india,,asiaEmerging,IN|356|Indië|Inde,FALSE,code=IND;currency=INR
 country,indonesia,,asiaEmerging,ID|360|Indonesië|Indonesie,FALSE,code=IDN;currency=IDR
 country,"iran, islamic republic of",,africaMiddleEast,IR|364|Iran,FALSE,code=IRN;currency=IRR
 country,iraq,,africaMiddleEast,IQ|368|Irak,FALSE,code=IRQ;currency=IQD
