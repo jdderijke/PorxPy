@@ -32,6 +32,7 @@ import io
 import json
 import re
 import time
+import codecs
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -416,6 +417,126 @@ def _parse_xlsx(data: bytes, sheet_name: str | None = None
     }
 
 
+
+# ---------------------------------------------------------------------------
+# SpreadsheetML (v0.106.1)
+# ---------------------------------------------------------------------------
+# The 2003 XML spreadsheet format, served with an `.xls` extension. It is
+# what iShares' "Fund Download" button produces, which makes it the file
+# a user is most likely to have mapped by hand for an iShares fund — and
+# until now PorxPy could not read it at all. openpyxl rejects it (not a
+# zip), and the CSV fallback turns 5,000 rows of XML into one column of
+# nonsense, so an `.xls` upload failed in a way that pointed at the file
+# rather than at the missing parser.
+#
+# That gap had a second, quieter cost. The issuer adapter skipped every
+# `.xls` download for the same reason and fell back to the CSV report
+# beside it — a DIFFERENT report, with its header on another row and its
+# column names in another language — and then reported the mismatch as
+# "the file's layout has changed". The layout had not changed; PorxPy
+# had fetched a different file.
+_SSML_NS = "{urn:schemas-microsoft-com:office:spreadsheet}"
+
+
+def _strip_bom(data: bytes) -> bytes:
+    """The bytes without a leading byte-order mark.
+
+    iShares serves its XML export BOM-first, and a BOM is a parse error
+    to ElementTree rather than something it skips — the failure reads as
+    "not well-formed (invalid token): line 1, column 1", which points at
+    the document instead of at the three bytes in front of it.
+    """
+    b = data or b""
+    # A loop, not one test: iShares' export arrives with the UTF-8 BOM
+    # written TWICE, which is what a generator that prepends one to
+    # already-encoded text produces. Stripping a single mark leaves the
+    # document just as unparseable as stripping none.
+    changed = True
+    while changed:
+        changed = False
+        for bom in (codecs.BOM_UTF8, codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE):
+            if b.startswith(bom):
+                b = b[len(bom):]
+                changed = True
+    return b
+
+
+def _looks_like_spreadsheetml(data: bytes) -> bool:
+    """Whether these bytes are a SpreadsheetML workbook.
+
+    Sniffed from the CONTENT rather than the extension, and checked
+    before the extension is consulted at all: the format arrives as
+    `.xls`, which is also the extension of the unrelated binary BIFF
+    format, so the name cannot settle it.
+    """
+    head = _strip_bom(data).lstrip()
+    return (head.startswith(b"<?xml")
+            and b"urn:schemas-microsoft-com:office:spreadsheet" in head[:16384])
+
+
+def _parse_spreadsheetml(data: bytes, sheet_name: str | None = None
+                         ) -> tuple[list[list[str]], dict]:
+    """Parse a SpreadsheetML workbook into a rectangular grid of strings.
+
+    Args:
+        data: Raw file bytes.
+        sheet_name: Optional worksheet to read; the first is used when
+            absent or unmatched.
+
+    Returns:
+        ``(rows, info)`` in the same shape :func:`_parse_xlsx` returns,
+        so :func:`upload_preview` needs no third branch downstream.
+
+    Raises:
+        ValueError: When the XML will not parse or holds no worksheet.
+    """
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.fromstring(_strip_bom(data))
+    except ET.ParseError as exc:
+        raise ValueError(f"could not read the XML spreadsheet: {exc}") from exc
+
+    sheets = root.findall(f"{_SSML_NS}Worksheet")
+    if not sheets:
+        raise ValueError("the XML spreadsheet holds no worksheet")
+    names = [s.get(f"{_SSML_NS}Name") or "" for s in sheets]
+    picked = sheets[0]
+    if sheet_name:
+        for s, n in zip(sheets, names):
+            if n == sheet_name:
+                picked = s
+                break
+
+    rows: list[list[str]] = []
+    table = picked.find(f"{_SSML_NS}Table")
+    for row_el in (table.findall(f"{_SSML_NS}Row") if table is not None else []):
+        cells: list[str] = []
+        for cell in row_el.findall(f"{_SSML_NS}Cell"):
+            # ss:Index is 1-based and means "this cell sits in that
+            # column, the ones before it are empty". Skipping it would
+            # shift every later value left — silently, and only in the
+            # rows that happen to have a gap, which is the worst shape
+            # of parsing bug to find later.
+            idx = cell.get(f"{_SSML_NS}Index")
+            if idx:
+                try:
+                    while len(cells) < int(idx) - 1:
+                        cells.append("")
+                except (TypeError, ValueError):
+                    pass
+            node = cell.find(f"{_SSML_NS}Data")
+            cells.append("" if node is None else "".join(node.itertext()).strip())
+        rows.append(cells)
+
+    width = max((len(r) for r in rows), default=0)
+    for r in rows:
+        if len(r) < width:
+            r.extend([""] * (width - len(r)))
+    return rows, {"encoding": None, "delimiter": None,
+                  "sheets": names, "picked_sheet": names[sheets.index(picked)]}
+
+
 # ---------------------------------------------------------------------------
 # Header-row autodetection
 # ---------------------------------------------------------------------------
@@ -778,7 +899,14 @@ def upload_preview(filename: str, data: bytes, *,
     _reap_expired()
 
     ext = (filename.rsplit(".", 1)[-1] or "").lower()
-    if ext in ("xlsx", "xlsm"):
+    # Content first, extension second. A SpreadsheetML workbook arrives
+    # as ".xls" — the same extension as the unrelated binary format — so
+    # the name cannot decide it, and getting this wrong sends 5,000 rows
+    # of XML through the CSV parser.
+    if _looks_like_spreadsheetml(data):
+        fmt = "spreadsheetml"
+        rows, info = _parse_spreadsheetml(data, sheet_name=sheet_name)
+    elif ext in ("xlsx", "xlsm"):
         fmt = "xlsx"
         rows, info = _parse_xlsx(data, sheet_name=sheet_name)
     elif ext in ("csv", "tsv", "txt"):
@@ -969,7 +1097,8 @@ def _upload_commit_impl(token: str, *,
     # Re-parse only when the user changed sheet / delimiter mid-flow.
     rows = payload["rows"]
     fmt  = payload["format"]
-    if fmt == "xlsx" and sheet_name and sheet_name != payload.get("picked_sheet"):
+    if fmt in ("xlsx", "spreadsheetml") and sheet_name \
+            and sheet_name != payload.get("picked_sheet"):
         # We don't have the original bytes any more; for now we treat
         # this as an error rather than re-uploading. Could be relaxed
         # by storing bytes alongside the token if it ever becomes a
@@ -1431,11 +1560,30 @@ def _upload_commit_impl(token: str, *,
     # and all three dialogs prefill from one implementation. What stays
     # is what genuinely is per-listing: the column layout of the
     # spreadsheet this listing's export produces.
+    # v0.105.0 — the header row's own text, and the two parsing knobs
+    # that used to live only on the preview token.
+    #
+    # A mapping is a list of column INDICES, which is meaningless without
+    # the file it was made against. That was fine while the only thing
+    # that re-used a mapping was a dialog showing the user the file, and
+    # it stopped being fine when the issuer adapters began re-fetching a
+    # file nobody looks at: an issuer who inserts a column, or a link
+    # that quietly serves a different report, produces a file that parses
+    # perfectly into the wrong columns. Storing the header text gives
+    # `mapping_mismatch` something to check the next file against.
+    #
+    # sheet_name and delimiter are here for the plainer reason that a
+    # re-fetch has to re-derive them, and auto-detection can land
+    # somewhere other than where the user did.
+    hdr = rows[header_row] if 0 <= header_row < len(rows) else []
     prefs_blob = {
         "mapping":       norm_mapping,
         "header_row":    int(header_row) if isinstance(header_row, int) else 0,
+        "columns":       [str(c or "").strip() for c in hdr],
         "decimal":       decimal,
         "weight_unit":   weight_unit,
+        "sheet_name":    payload.get("picked_sheet") or "",
+        "delimiter":     payload.get("delimiter") or "",
         "defaults":      dict(defaults or {}),
         "enrich":        bool(enrich),
         "saved_at":      now_iso(),
@@ -1610,6 +1758,164 @@ def get_upload_prefs(ticker: str) -> dict | None:
     if not isinstance(val, dict):
         return None
     return val
+
+
+def mapping_mismatch(prefs: dict, preview: dict,
+                     require_columns: bool = False) -> str:
+    """Why ``prefs``' column mapping does not fit ``preview``, or ``""``.
+
+    Why this exists (v0.105.0)
+    --------------------------
+    A stored mapping is a set of column INDICES, and an index means
+    nothing without the file it was taken from. While a human was
+    always in the loop — looking at the mapping dialog, with the file's
+    own columns on screen — that was safe. The issuer adapters removed
+    the human: they re-fetch a file nobody sees and apply last month's
+    mapping to it. A file with a column inserted, or a download link
+    that has quietly started serving a different report, then parses
+    without complaint straight into the wrong columns, and the fund's
+    entire holdings list is replaced by plausible-looking nonsense.
+
+    Nothing downstream can catch that. Weights still sum to 100 because
+    the weight column is still a number; names are still strings. So the
+    check has to happen here, against the one piece of evidence that
+    survives: the text of the header row the mapping was made on.
+
+    Deliberately strict about the columns the mapping USES and silent
+    about the rest — an issuer adding a column at the end changes
+    nothing about columns 0..11, and refusing that file would be a false
+    alarm that trains the user to ignore the real one.
+
+    Args:
+        prefs: A stored prefs blob from :func:`get_upload_prefs`.
+        preview: A preview dict from :func:`upload_preview`.
+        require_columns: Treat prefs with no recorded ``columns`` as a
+            mismatch. False for a human-driven re-upload, where the user
+            is looking at the mapping dialog and can see the file; True
+            for an UNATTENDED import, where nobody is.
+
+            The distinction is the whole reason this is a parameter
+            rather than a constant. Prefs saved before v0.105.0 record
+            indices and no column names, so there is nothing to check
+            them against — and the failure that leaves open is not
+            theoretical. An iShares mapping made against the
+            ``..._fund.csv`` export has its header on row 8; the
+            ``..._holdings.csv`` the adapter can fetch has its header on
+            row 3. Same column count, same column order, entirely
+            different header row: every check below passes, five real
+            holdings are silently swallowed as though they were preamble,
+            and the fund's holdings are replaced with a list that is
+            quietly short. Refusing the unattended import costs the user
+            one manual upload, once, and that upload records the columns
+            for every refresh after it.
+
+    Returns:
+        A sentence naming the disagreement, suitable for showing the
+        user, or ``""`` when the mapping still fits.
+
+    This is :func:`resolve_header_row` asked for only half its answer.
+    Callers that go on to import the file want the other half — WHICH
+    row the header turned out to be on — and should call that directly.
+    """
+    row, reason = resolve_header_row(prefs, preview, require_columns)
+    return reason
+
+
+def resolve_header_row(prefs: dict, preview: dict,
+                       require_columns: bool = False) -> tuple:
+    """Find the row this file's header is actually on.
+
+    **Why this is a search and not a stored number** (v0.106.1). The
+    saved ``header_row`` is where the header sat in the file the mapping
+    was made on, and an issuer's preamble is not fixed: it carries the
+    fund's name, its inception date, a holdings date and a securities
+    count, and those come and go per fund and per report. Trusting the
+    stored index means reading a DATA row and concluding that every
+    column has been renamed — which is exactly the false alarm this
+    function was reported for, on a file whose layout had not changed at
+    all.
+
+    So the header is found by its own content: the row on which every
+    mapped column carries the name it carried when the mapping was made.
+    That is precisely the condition under which the mapping's indices
+    are still valid, which makes finding it and validating it the same
+    question — asked once, here.
+
+    Args:
+        prefs: A stored prefs blob, or a fund house's standard mapping.
+        preview: A preview dict from :func:`upload_preview`.
+        require_columns: Treat prefs with no recorded ``columns`` as a
+            mismatch. False for a human-driven re-upload, where the user
+            is looking at the mapping dialog and can see the file; True
+            for an UNATTENDED import, where nobody is. Prefs saved
+            before v0.105.0 record indices and no column names, so there
+            is nothing to search for and nothing to check.
+
+    Returns:
+        ``(row_index, "")`` when the header was found — possibly at a
+        different row than the one stored, which is a success and not a
+        warning. ``(None, reason)`` when it was not, with ``reason``
+        naming what the file actually looks like, since "your mapping
+        does not fit this file" is only actionable if the user can see
+        what the file is.
+    """
+    mapping = {k: v for k, v in ((prefs or {}).get("mapping") or {}).items()
+               if isinstance(v, int)}
+    rows = (preview or {}).get("rows") or []
+    stored = int((prefs or {}).get("header_row") or 0)
+    saved = [str(c or "").strip() for c in ((prefs or {}).get("columns") or [])]
+
+    if not rows:
+        return None, "the downloaded file has no rows"
+    if not saved:
+        if require_columns:
+            return None, ("this fund's saved column mapping was recorded "
+                          "before PorxPy kept the file's column names, so "
+                          "there is no way to check that a newly downloaded "
+                          "file still matches it")
+        return (stored if stored < len(rows) else 0), ""
+
+    def fits(r: int) -> bool:
+        if r < 0 or r >= len(rows):
+            return False
+        row = [str(c or "").strip() for c in (rows[r] or [])]
+        if not any(row):
+            return False
+        for idx in mapping.values():
+            was = saved[idx] if idx < len(saved) else ""
+            now = row[idx] if idx < len(row) else ""
+            # Case and surrounding space are not a change of meaning;
+            # the word is. Compared case-insensitively so a site that
+            # restyles its headers does not read as a restructured file.
+            if was.lower() != now.lower():
+                return False
+        return True
+
+    # The stored row first — the common case, and free.
+    if fits(stored):
+        return stored, ""
+    for r in range(len(rows)):
+        if r != stored and fits(r):
+            return r, ""
+
+    # Not found anywhere. Say what the file IS, so the user can tell a
+    # renamed column apart from an entirely different report — the two
+    # need different responses and looked identical in the message this
+    # replaces.
+    n_cols = max((len(r) for r in rows), default=0)
+    over = [f"{f!r} from column {i + 1}" for f, i in sorted(mapping.items())
+            if i >= n_cols]
+    if over:
+        return None, (f"the saved mapping reads {over[0]}, and this file has "
+                      f"only {n_cols} column(s)")
+    guess = _detect_header_row(rows[:200])
+    actual = [str(c or "").strip() for c in (rows[guess] or [])][:8]
+    return None, (
+        f"this file's columns are not the ones the mapping was made on. "
+        f"The mapping expects {', '.join(repr(c) for c in saved[:6])}"
+        f"{'…' if len(saved) > 6 else ''} (header on row {stored + 1}); "
+        f"this file has {', '.join(repr(c) for c in actual)}"
+        f"{'…' if n_cols > 8 else ''} on row {guess + 1}")
 
 
 def remembered_upload_source(kind: str, isin: str,

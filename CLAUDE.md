@@ -21,6 +21,17 @@ Concretely, before finishing a change, sweep the parallel set it belongs to:
 
 - Change one **facet** → check the other entries in `BREAKDOWN_FACETS`, and
   every level in `FACET_LEVELS` for that facet.
+- Change a **metadata facet** → check all of `META_FACETS` (`market_cap`,
+  `style_box`, `focus_theme`). These are one-hot per fund rather than
+  distributions, so they have no breakdown card and no source selector,
+  but they do have an X-ray card, a Targets section and an optimiser
+  column each. Read a fund's value through `config.meta_facet_value()`
+  rather than off the structure block: `focus_theme` is derived from
+  `focus_type` + `focus_detail` and a direct read simply finds nothing.
+  `META_FACET_TARGETABLE` answers two different questions — membership
+  says "is this a metadata facet", `meta_target_allowed()` says "may
+  this key be targeted" — because a `None` value now means an OPEN
+  vocabulary, not an absent facet.
 - Change one **level** of a tree → check the finer and coarser levels, and the
   `FACET_DEFAULT_LEVEL` entry.
 - Change a **row/storage schema** → check every writer and every reader of that
@@ -55,6 +66,25 @@ Concretely, before finishing a change, sweep the parallel set it belongs to:
 - Change a **by-row facet edit** → check both surfaces that write rows: the
   fund-page holdings table and the Resolve dialog's by-row tab. They share
   `ufBuildRowEditContext`, so add to that rather than to one caller.
+- Change **fund-house settings** → the site list and the standard holdings
+  mapping live in `settings.json` under `issuers.<house>`, are normalised in
+  `utils.normalise_settings`, and are read through `issuer_sites` /
+  `issuer_mapping_get`. The site list is ORDER-SENSITIVE — first to last is
+  the priority the adapters walk — so never sort it, and an empty list falls
+  back to `DEFAULT_ISSUER_SITES` rather than meaning "look nowhere".
+- Add or change an **issuer adapter** → it should be DATA, not code. A house
+  is a `DOCUMENTS` table of URL templates and page-scrape specs plus a few
+  class attributes (`hosts`, `name_patterns`, `SITE_PATH_SEGMENTS`);
+  `expand_specs` and `discover_at` are shared by every house and are not
+  overridden. Only override `facts()`, and only when a site has to be ASKED
+  what it calls a fund — iShares does, because its product pages are keyed by
+  an internal id. Before writing a method on an adapter, check whether the
+  difference can be a string in the table instead: a house with its own copy
+  of the candidate-building logic is the drift this rule exists to prevent.
+- Change anything that uses the **AI helper** → it must still do its non-AI
+  work when there is no API key or the Settings toggle is off. Both are
+  ordinary states, not errors: gate on `ai_unavailable()` and report a SKIP
+  with the fix, never a failure that aborts the operation around it.
 
 Naming, so a sweep looks in the right place: **X-ray** is the Portfolio
 sub-tab holding the four breakdown cards (`pSubXray`) and has no table of its
@@ -137,12 +167,13 @@ Flask backend (`porxpy/`) + one 19k-line vanilla-JS file (`fund_explorer.html`) 
 
 | Module | Owns |
 |---|---|
-| `config.py` | Paths, TTLs, and the **registries** other modules read: `FACET_LEVELS`, `FACET_DEFAULT_LEVEL`, `BREAKDOWN_FACETS`, `BREAKDOWN_SOURCES`, `DERIVED_BREAKDOWN_SOURCES` (+ `sources_for_facet`), `HOLDINGS_SOURCES` (plus the variant maps `HOLDINGS_VARIANT_SOURCE` / `HOLDINGS_VARIANT_ROLLUP` and their lookups), `ENRICHABLE_FIELDS`, `CACHE_CATEGORIES`, `OVERRIDABLE_FIELDS`, `FIELD_SOURCES`. Does no I/O. |
+| `config.py` | Paths, TTLs, and the **registries** other modules read: `FACET_LEVELS`, `FACET_DEFAULT_LEVEL`, `BREAKDOWN_FACETS`, `META_FACETS` (+ `meta_facet_value`, `meta_target_allowed`, `focus_theme_key`), `BREAKDOWN_SOURCES`, `DERIVED_BREAKDOWN_SOURCES` (+ `sources_for_facet`), `HOLDINGS_SOURCES` (plus the variant maps `HOLDINGS_VARIANT_SOURCE` / `HOLDINGS_VARIANT_ROLLUP` and their lookups), `ENRICHABLE_FIELDS`, `CACHE_CATEGORIES`, `OVERRIDABLE_FIELDS`, `FIELD_SOURCES`. Does no I/O. |
 | `resources.py` | Loads the reference CSVs and resolves any raw string to a canonical facet node at every level (`resolve_sector_tree`, `resolve_country_tree`, `resolve_asset_tree`, `resolve_currency`). Also alias writing and `reload_resources()`. |
 | `extractors.py` | Yahoo fetching and per-holding enrichment. `load_fund_data()` is the composition point for `/api/fund` and the portfolio enrichment loop. `enrich_holdings_rows()` is THE holdings-enrichment loop — the fund-page button and the upload commit both call it, and neither may grow a copy. They also ask it the same question: which fields may be filled comes from `utils.enrichment_fields()` alone (v0.100.0), so a caller never carries its own field list. The only thing a caller decides is WHICH ROWS. |
 | `resolver.py` | Ticker variant generation and the search helpers behind the resolution chain. The chain itself is ordered in `extractors.get_symbol_info_cached`, by strength of identifier: ISIN → the file's ticker (variants, then the ISIN's country suffix) → CUSIP → the row's country as an exchange hint → name. Documented for users in IMPORT_NEW_FUNDS_GUIDE.md §11b. |
 | `breakdowns.py` | Holdings → per-facet levelled breakdown (`rollup_holdings`, `build_fund_breakdowns`), and the portfolio aggregation pass (`aggregate_portfolio_holdings`, `rollup_portfolio_fundlevel`). |
 | `utils.py` | Cache I/O (`cache_get`/`cache_put`/`cache_read`/`cache_write`/`cache_purge`), portfolios, settings, overrides, ISIN map. |
+| `issuers.py` | Fund-house adapters: where one issuer publishes a fund's factsheet and holdings file, and the impersonating transport that can fetch them. Locates and downloads only — it parses nothing and stores no fund data, so the documents it returns go through the same `factsheet_put` / `upload_commit` paths a manual upload does. |
 | `upload.py` / `bundles.py` / `scoring.py` / `targets.py` / `optimizer.py` / `trades.py` / `ai.py` | Holdings-file parsing; fund/portfolio bundle export-import; percentile scoring and peer groups; target-vs-actual deviation; greedy design solver (`optimise_portfolio`); atomic cash↔position trades; factsheet extraction via the Anthropic API. |
 
 ### The four invariants worth knowing before editing
@@ -169,7 +200,7 @@ Two easily-confused things: the **asset tree** (`Asset_definitions.csv`) is the 
 
 `/` serves `fund_explorer.html` statically; the page then calls `/api/*` (the frontend hardcodes `const API = 'http://localhost:5000/api'`). `/api/fund` → cache lookup → on miss `extractors.load_fund_data` fetches, applies overrides, writes back → response carries profile, price history, the four breakdown cards (each from its configured source, each with all its levels) and merged holdings. `/api/portfolios/<pid>/view` is the same plus a `breakdowns.py` aggregation pass that weights each fund's facet breakdown by allocation, once per level.
 
-External services: Yahoo Finance (always), OpenFIGI (ISIN→ticker), justETF (opt-in, ETFs only), Anthropic API (opt-in, factsheets only).
+External services: Yahoo Finance (always), OpenFIGI (ISIN→ticker), justETF (opt-in, ETFs only), Anthropic API (opt-in, factsheets only), the fund houses' own sites (only on "Get latest Factsheet and Holdings").
 
 ## Conventions
 

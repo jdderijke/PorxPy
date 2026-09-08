@@ -1,6 +1,6 @@
 # The PorxPy Optimizer — how it works
 
-*Applies to `porxpy/optimizer.py` as of v0.103.2. The full audit — every
+*Applies to `porxpy/optimizer.py` as of v0.110.3. The full audit — every
 claim in the document re-checked against the module — was done at
 v0.91.0; since then the v0.96.0 peer-scoring change was folded into §7b
 and §13's one remaining open issue was re-confirmed by reading
@@ -117,6 +117,18 @@ All three tree facets take part on equal terms: `sector`
 super-region) and, since v0.70.0, `asset_class` (sub-class / asset class
 / super class). `currency` declares a single level of the same shape, so
 nothing in this module branches on whether a facet has levels.
+
+The three metadata facets — `market_cap`, `style_box` and, since
+v0.104.0, `focus_theme` — are flat in the same way, and reach the matrix
+as a one-hot per fund at weight 1.0 rather than as a distribution.
+That weight is the whole content of a thematic target: an AI fund
+supplies AI exposure with every euro in it, since the theme describes
+the fund's mandate rather than any one holding. A fund that carries no
+theme answers `n/a`, which is not a targetable bucket, so its money
+lands in `__other__` and can serve only the untargeted remainder — the
+correct reading, and the reason a thematic target above the share of
+your universe that actually carries themes is unreachable by
+construction.
 
 ### The `__other__` row
 
@@ -745,6 +757,12 @@ It was found while building the `custody` facet that v0.90.0 then removed
 (§4b); the fix outlived the feature that prompted it, because
 `market_cap` and `style_box` were blind for the same reason and both are
 still targetable.
+
+It has since paid for itself again: `focus_theme`, added in v0.104.0,
+joined `META_FACETS` and reached the optimiser with no change to this
+path at all. That is the test of whether the fix was made in the right
+place — a fix written per facet would have left the third one blind in
+exactly the way the first two were.
 
 ### Targeting one facet at several levels silently multiplies its weight
 

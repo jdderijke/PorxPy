@@ -2956,6 +2956,67 @@ def override_source(isin: str, field: str) -> str | None:
     return (env or {}).get("source")
 
 
+def focus_themes_in_use() -> list[dict]:
+    """Every thematic focus some fund in the cache actually carries.
+
+    Why this exists (v0.104.0)
+    --------------------------
+    ``focus_theme`` is the one targetable facet with no vocabulary file
+    behind it: a theme is free text, so the Targets editor cannot offer
+    a canonical list the way it does for sectors or regions. The honest
+    list is what the user's own funds say, which is what this reads.
+
+    Offering only themes in use is deliberate rather than a shortcut. A
+    target on a theme no fund carries can never be met by any selection
+    — there is nothing to buy — so the editor would be inviting the user
+    to set a target the optimiser is then obliged to report as
+    unreachable. (The STORE stays permissive on purpose; see
+    ``_coerce_level_targets``. Dropping a saved target because its last
+    fund was sold would be data loss, which is a worse failure than
+    offering one fewer choice.)
+
+    Where it looks: ``overrides.json`` alone, and that is complete
+    rather than convenient. A thematic focus can only ever be asserted —
+    by the user in Edit fund, or by the AI factsheet reader — and both
+    write here. Nothing derives one: ``_seed_fund_structure`` seeds
+    focus from the fund's NAME, and ``_derive_focus_from_name`` returns
+    only "sector" or "geography", never "thematic", because a name
+    cannot be matched against a vocabulary that does not exist.
+
+    Returns:
+        ``[{"key", "label", "funds"}, ...]`` sorted by label. ``key`` is
+        the normalised bucket key the rollup and the optimiser use;
+        ``funds`` is how many ISINs carry it, which is what makes the
+        difference between a theme worth targeting and a stray typo
+        visible in the dropdown.
+    """
+    from porxpy.config import focus_theme_key
+
+    counts: dict[str, int] = {}
+    for _isin, fields in (load_overrides() or {}).items():
+        if not isinstance(fields, dict):
+            continue
+        ftype = ((fields.get("focus_type") or {}).get("value") or "")
+        if str(ftype).strip().lower() != "thematic":
+            continue
+        key = focus_theme_key((fields.get("focus_detail") or {}).get("value"))
+        if not key:
+            # Thematic focus asserted, theme not named. That is the
+            # `unknown` bucket on the X-ray card — a real gap someone
+            # can close — but there is nothing here to offer as a
+            # target, so it is counted nowhere rather than listed.
+            continue
+        counts[key] = counts.get(key, 0) + 1
+
+    return [{"key": k,
+             # Derived from the key, not from one fund's spelling: the
+             # bucket belongs to every fund in it, so no single fund's
+             # capitalisation gets to name it.
+             "label": k[:1].upper() + k[1:],
+             "funds": n}
+            for k, n in sorted(counts.items())]
+
+
 def override_put(isin: str, field: str, value, source: str = "user",
                  note: str = "", context: dict | None = None) -> dict:
     """Assert a value for one field. Returns the stored envelope.
@@ -3427,6 +3488,22 @@ def upload_source_put(isin: str, kind: str, source_value: str,
     blob = cache_read(key, "upload_sources")
     blob["upload_sources"] = {"fetched_at": now_iso(), "value": current}
     cache_write(key, "upload_sources", blob)
+
+    # Learn the fund house's site from a URL the user chose (v0.106.0).
+    #
+    # Here rather than in the three dialogs that write sources, because
+    # this is the one place all of them come through: holdings uploads,
+    # factsheet uploads and breakdown-CSV uploads each end up calling
+    # this, so learning is true by construction for the next dialog too
+    # instead of being three things to remember. A failure to learn is
+    # never allowed to fail the upload that prompted it — the source is
+    # already stored by this point, and a settings write is the less
+    # important half.
+    try:
+        from porxpy.issuers import learn_site
+        learn_site(value)
+    except Exception as exc:                          # noqa: BLE001
+        print(f"[Issuers] could not learn a site from {value[:80]}: {exc}")
     return record
 
 
@@ -3740,7 +3817,7 @@ def _coerce_targets(raw) -> dict:
         A new dict with the four facet keys present (some possibly
         empty) and only valid {key: percent} entries.
     """
-    from porxpy.config import META_FACET_TARGETABLE, TARGET_FACETS
+    from porxpy.config import TARGET_FACETS
 
     from porxpy.config import FACET_DEFAULT_LEVEL, FACET_LEVELS
 
@@ -3849,19 +3926,33 @@ def _coerce_level_targets(facet: str, level: str, block: dict,
     negatives to 0. Percents over 100 are KEPT — a 110% target is a
     user error worth surfacing rather than silently truncating.
     """
-    from porxpy.config import META_FACET_TARGETABLE
+    from porxpy.config import meta_target_allowed
 
-    # The meta facets have a closed, short vocabulary and not all of it
-    # is targetable. "unknown" is a data gap and "n/a" duplicates the
-    # cash target on asset_class — neither is something a user can
-    # meaningfully aim for, so a target on one is dropped rather than
-    # stored and then never satisfiable.
-    allowed = META_FACET_TARGETABLE.get(facet)
+    # The meta facets restrict what may be targeted. "unknown" is a data
+    # gap and "n/a" says the question does not apply — neither is
+    # something a user can meaningfully aim for, so a target on one is
+    # dropped rather than stored and then never satisfiable. market_cap
+    # and style_box additionally have a closed vocabulary.
+    #
+    # focus_theme's vocabulary is OPEN here on purpose, even though the
+    # editor offers only the themes some fund actually carries: a saved
+    # target must not evaporate because the last fund holding that theme
+    # was sold or relabelled. Restricting the offer is a kindness to the
+    # user; restricting the store would be data loss.
     for k, v in block.items():
         if not isinstance(k, str) or not k.strip():
             continue
         key = k.strip()
-        if allowed is not None and key not in allowed:
+        if facet == "focus_theme":
+            # Free-text facet, so the key arrives spelled however it was
+            # typed. Normalised through the same function the exposure
+            # side uses, because a target key that differs from the
+            # bucket key only in case reads as a target no fund can meet
+            # — indistinguishable, from the optimiser's side, from a
+            # theme nobody holds.
+            from porxpy.config import focus_theme_key
+            key = focus_theme_key(key) or key
+        if not meta_target_allowed(facet, key):
             continue
         try:
             pct = float(v)
@@ -4501,6 +4592,77 @@ def normalise_settings(raw: dict | None) -> dict:
     if size_floor < 0:
         size_floor = 0.0
 
+    # ── field_source_defaults (v0.107.0) ──────────────────────────────
+    # Which source each field should be pinned to on a fund nobody has
+    # decided about yet. Application-wide, and applied to funds as they
+    # are newly loaded rather than retrospectively: a pin already on a
+    # fund is a decision somebody made about THAT fund, and a default is
+    # a weaker statement than a decision.
+    #
+    # "user" is not storable here and is dropped rather than rejected. A
+    # pin to "user" means "the value I typed is the answer", and there
+    # is no value to carry across funds — a default of "user" would name
+    # a source with nothing in it.
+    from porxpy.config import field_sources as _field_sources
+    from porxpy.config import field_spec as _field_spec
+    fsd_src = (raw.get("field_source_defaults")
+               if isinstance(raw.get("field_source_defaults"), dict) else {})
+    field_defaults: dict[str, str] = {}
+    for fieldname, src in fsd_src.items():
+        if not isinstance(fieldname, str) or not isinstance(src, str):
+            continue
+        # The field must EXIST. field_sources() answers with a permissive
+        # default tuple for anything it does not recognise — which is the
+        # right answer to "what may supply this field" and the wrong one
+        # to "is this a field", so the registry is asked separately.
+        # Without this a typo is stored happily and then pins nothing,
+        # for ever, in silence.
+        if not _field_spec(fieldname):
+            continue
+        src = src.strip().lower()
+        allowed = _field_sources(fieldname) or ()
+        if src and src != "user" and src in allowed:
+            field_defaults[fieldname] = src
+
+    # ── issuers (v0.106.0) ────────────────────────────────────────────
+    # Per fund house: the ordered list of site roots to try, and the
+    # house's standard holdings column mapping.
+    #
+    # ORDER IS THE SETTING. The list is stored exactly as the user
+    # arranged it, deduplicated but never sorted, because first-to-last
+    # is the priority the adapters walk. Sorting it — even
+    # "helpfully" — would silently rewrite the user's stated preference
+    # about where their funds are listed.
+    #
+    # An empty list falls back to the config default for that house
+    # rather than meaning "look nowhere": a house whose list the user
+    # has emptied has no sites to learn from either, and a permanently
+    # dead adapter is a worse reading of an empty box than "use the
+    # defaults". Removing a default site therefore means reordering it
+    # to the end, not deleting the lot.
+    from porxpy.config import DEFAULT_ISSUER_SITES
+    iss_src = raw.get("issuers") if isinstance(raw.get("issuers"), dict) else {}
+    issuers_out: dict[str, dict] = {}
+    for house, default_sites in DEFAULT_ISSUER_SITES.items():
+        blk = iss_src.get(house) if isinstance(iss_src.get(house), dict) else {}
+        sites, seen = [], set()
+        for s in (blk.get("sites") or []):
+            u = str(s or "").strip().rstrip("/")
+            # http(s) only. A settings file is hand-editable and a
+            # file:// or javascript: entry here would be fetched by the
+            # adapter without further question.
+            if not u.lower().startswith(("http://", "https://")):
+                continue
+            if u.lower() in seen:
+                continue
+            seen.add(u.lower())
+            sites.append(u)
+        out_blk: dict = {"sites": sites or [s.rstrip("/") for s in default_sites]}
+        hm = blk.get("holdings_mapping")
+        if isinstance(hm, dict) and isinstance(hm.get("mapping"), dict):
+            out_blk["holdings_mapping"] = _coerce_house_mapping(hm)
+        issuers_out[house] = out_blk
+
     return {
         "enrichment": {
             "fields": fields,
@@ -4521,7 +4683,207 @@ def normalise_settings(raw: dict | None) -> dict:
             "api_key":     ai_api_key,
         },
         "group_ttl_days": group_ttl,
+        "issuers": issuers_out,
+        "field_source_defaults": field_defaults,
     }
+
+
+def field_source_defaults() -> dict:
+    """``{field: source}`` for fields with an application-wide default.
+
+    The answer to "where should this field come from, on a fund nobody
+    has said anything about". Set from the Edit fund dialog, because
+    that is where the per-field sources are chosen and therefore the
+    only place a user is in a position to say "and use these from now
+    on".
+    """
+    return dict(load_settings().get("field_source_defaults") or {})
+
+
+def field_source_defaults_set(mapping: dict) -> dict:
+    """Replace the default per-field sources. Returns what was stored."""
+    s = load_settings()
+    saved = save_settings({**s,
+                           "field_source_defaults": dict(mapping or {})})
+    return dict(saved.get("field_source_defaults") or {})
+
+
+def apply_field_source_defaults(isin: str) -> list[str]:
+    """Pin a newly loaded fund's fields to the configured default sources.
+
+    Only fields the fund has NO pin for. A pin is a decision somebody
+    made about this fund, and a default must never overwrite one — which
+    also makes this safe to call more than once, and safe on a fund that
+    was loaded before any defaults existed.
+
+    The pin is written without a value. The source is the durable
+    instruction; the value beside it is a cache of the last answer, and
+    filling it here would mean a burst of network calls at load time for
+    a fund the user may only be glancing at. The existing TTL refresh
+    (``/api/funds/<t>/fields/refresh``) asks each pinned source in its
+    own time, which is exactly what it is for.
+
+    Args:
+        isin: Fund ISIN. Without one there is nothing to pin to.
+
+    Returns:
+        The fields that were pinned, for the caller to report.
+    """
+    defaults = field_source_defaults()
+    if not isin or not defaults:
+        return []
+    existing = field_pins(isin)
+    applied = []
+    for fieldname, src in defaults.items():
+        if fieldname in existing:
+            continue
+        try:
+            field_source_set(isin, fieldname, src, None)
+            applied.append(fieldname)
+        except ValueError:
+            # A field whose registry no longer allows that source. Not
+            # worth failing a fund load over.
+            continue
+    return applied
+
+
+def _coerce_house_mapping(raw: dict) -> dict:
+    """Coerce a fund house's standard holdings mapping into shape.
+
+    The same fields ``upload_commit`` writes into a fund's own
+    ``upload_prefs``, and deliberately the same shape: the house
+    standard is created BY copying one fund's prefs and is consumed by
+    handing it back to ``upload_commit``, so a second shape would be a
+    translation layer with nothing to translate.
+
+    ``columns`` matters as much as ``mapping``. A house standard is
+    applied to funds nobody has looked at, which is exactly the case
+    ``upload.mapping_mismatch`` guards, and it can only guard it if the
+    header text the mapping was made against travelled with it.
+    """
+    out: dict = {}
+    mapping = {}
+    for k, v in (raw.get("mapping") or {}).items():
+        if not isinstance(k, str):
+            continue
+        if v is None or v == "":
+            mapping[k] = None
+            continue
+        try:
+            mapping[k] = int(v)
+        except (TypeError, ValueError):
+            mapping[k] = None
+    out["mapping"] = mapping
+    try:
+        out["header_row"] = max(0, int(raw.get("header_row") or 0))
+    except (TypeError, ValueError):
+        out["header_row"] = 0
+    out["columns"] = [str(c or "").strip() for c in (raw.get("columns") or [])]
+    out["decimal"] = str(raw.get("decimal") or "auto")
+    out["weight_unit"] = str(raw.get("weight_unit") or "auto")
+    out["defaults"] = {str(k): v for k, v in (raw.get("defaults") or {}).items()}
+    # Carried with the rest of the choices (v0.110.2). A house standard
+    # is made by copying one fund's prefs and is consumed by handing it
+    # back to upload_commit, so a field left out here is a choice
+    # silently dropped on every fund the standard is later applied to.
+    out["enrich"] = bool(raw.get("enrich"))
+    # Provenance, shown in Settings. "Standard mapping" is a claim, and
+    # a user deciding whether to trust it wants to know which fund and
+    # which day it came from.
+    out["from_ticker"] = str(raw.get("from_ticker") or "")
+    out["from_file"] = str(raw.get("from_file") or "")
+    out["saved_at"] = str(raw.get("saved_at") or "")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Fund-house settings (v0.106.0)
+# ---------------------------------------------------------------------------
+def issuer_sites(house: str) -> list[str]:
+    """The site roots to try for ``house``, in the user's own order.
+
+    Args:
+        house: An adapter key (``"ishares"``, ``"vanguard"``, …).
+
+    Returns:
+        Ordered site roots, first to last. Empty for a house nobody has
+        configured and that ships no defaults — which is an answer, not
+        a failure: that house's adapter then has only the remembered-URL
+        strategy, and says so.
+    """
+    blk = (load_settings().get("issuers") or {}).get(house) or {}
+    return [str(s) for s in (blk.get("sites") or [])]
+
+
+def issuer_sites_set(house: str, sites: list) -> list[str]:
+    """Replace one house's site list. Returns what was stored."""
+    from porxpy.config import DEFAULT_ISSUER_SITES
+    if house not in DEFAULT_ISSUER_SITES:
+        raise ValueError(f"unknown fund house: {house!r}")
+    s = load_settings()
+    issuers = {k: dict(v) for k, v in (s.get("issuers") or {}).items()}
+    blk = dict(issuers.get(house) or {})
+    blk["sites"] = [str(x) for x in (sites or [])]
+    issuers[house] = blk
+    saved = save_settings({**s, "issuers": issuers})
+    return list(((saved.get("issuers") or {}).get(house) or {}).get("sites") or [])
+
+
+def issuer_site_learn(house: str, base: str) -> bool:
+    """Remember a site root the user has just used for ``house``.
+
+    Called when a user supplies a document by URL — the one moment the
+    app is told, by someone who knows, that a fund house serves this
+    kind of document from this address. Appended rather than promoted:
+    it is new evidence, not a statement that it outranks what the user
+    already ordered, and the Settings page is where the ranking is
+    decided.
+
+    Args:
+        house: Adapter key.
+        base: A site root, already reduced from the full document URL by
+            the adapter (see :meth:`IssuerAdapter.site_base_from_url`).
+
+    Returns:
+        True when something was added.
+    """
+    from porxpy.config import DEFAULT_ISSUER_SITES
+    if house not in DEFAULT_ISSUER_SITES:
+        return False
+    b = str(base or "").strip().rstrip("/")
+    if not b.lower().startswith(("http://", "https://")):
+        return False
+    current = issuer_sites(house)
+    if any(b.lower() == s.lower().rstrip("/") for s in current):
+        return False
+    issuer_sites_set(house, current + [b])
+    print(f"[Issuers] learned {b} for {house}")
+    return True
+
+
+def issuer_mapping_get(house: str) -> dict | None:
+    """One house's standard holdings mapping, or None."""
+    blk = (load_settings().get("issuers") or {}).get(house) or {}
+    hm = blk.get("holdings_mapping")
+    return dict(hm) if isinstance(hm, dict) and hm.get("mapping") else None
+
+
+def issuer_mapping_set(house: str, blob: dict | None) -> dict | None:
+    """Store (or clear, with ``None``) one house's standard mapping."""
+    from porxpy.config import DEFAULT_ISSUER_SITES
+    if house not in DEFAULT_ISSUER_SITES:
+        raise ValueError(f"unknown fund house: {house!r}")
+    s = load_settings()
+    issuers = {k: dict(v) for k, v in (s.get("issuers") or {}).items()}
+    blk = dict(issuers.get(house) or {})
+    if blob is None:
+        blk.pop("holdings_mapping", None)
+    else:
+        blk["holdings_mapping"] = {**_coerce_house_mapping(blob),
+                                   "saved_at": now_iso()}
+    issuers[house] = blk
+    save_settings({**s, "issuers": issuers})
+    return issuer_mapping_get(house)
 
 
 def enrichment_fields() -> list[str]:

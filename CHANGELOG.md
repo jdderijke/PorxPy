@@ -3,6 +3,747 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.110.3] - 2026-09-08
+
+### Fixed — accepting the value shown for "my own value" did not pin the field
+
+Reported against Market cap and correctly suspected of being general: it
+affected every field with a closed vocabulary, and every numeric field
+too.
+
+Switching a field to *my own value* seeded the control with the fund's
+**displayed** value rather than its stored one — "Large cap" where the
+vocabulary holds `large`, "0.20%" where the number is `0.2`. A `<select>`
+offering `large` cannot select "Large cap", so nothing was selected; a
+`<select>` with nothing selected displays its first option, which reads
+as a sensible default and is not one. Accepting it fired no `onchange`,
+so the mismatched string was submitted on Save and the server rejected
+it — the field simply did not get pinned, which is exactly how it was
+described.
+
+Two changes, because there were two ways for this to happen:
+
+- `fundFieldRaw` is the value as it is STORED, and is what now seeds the
+  control. It is a different question from `fundFieldValue`, which
+  formats for a human and is right for a tile — no formatting at all,
+  just a lookup across the three blocks a field can live in. Fixes enum,
+  numeric and text fields in one place rather than per field.
+- A vocabulary `<select>` whose current value is not in its list now
+  shows **"— choose a value —"**, selected, instead of silently
+  displaying its first option. A control must never present something it
+  cannot submit.
+
+## [0.110.2] - 2026-09-08
+
+### Changed — the refresh honours the enrichment choice you made in the dialog
+
+*Get latest Factsheet and Holdings* re-ran the import with every saved
+choice the mapping dialog had recorded — the mapping, the header row,
+the decimal mark, the weight unit, the per-field defaults — and then
+overrode exactly one of them, forcing Yahoo enrichment on regardless.
+
+The reasoning was that a freshly downloaded file is when the issuer's
+blanks are most worth filling, which is true and beside the point: the
+mapping dialog offers a checkbox, and the automatic path was ignoring
+it. A control that does not control anything is worse than no control,
+and a user who unticks it has said something.
+
+It now follows the saved choice like everything else, and the result
+line says which way it went — "enriched through Yahoo" or "not enriched
+(your saved choice)" — because it is no longer always the same answer.
+Settings → enrichment still decides WHICH fields, so switching it off
+there still switches it off everywhere.
+
+A fund house's standard mapping now carries the choice too. It is made
+by copying one fund's prefs and consumed by handing it back to
+`upload_commit`, so a field missing from the copy is a choice silently
+dropped on every fund that standard is later applied to — which is what
+would have happened here.
+
+## [0.110.1] - 2026-09-08
+
+### Fixed — reading a factsheet by hand did not apply it to the pinned fields
+
+Uploading a factsheet and pressing **Extract** stored the reading — the
+fields, the four facet tables, the position list — and then left the
+fund's data exactly as it was. Pressing *Get latest Factsheet and
+Holdings* on the same fund did apply it. Same document, same reading,
+two different outcomes depending on which button was used, and nothing
+on screen to say so.
+
+The cause was a copy in the wrong place: v0.105.0 built "apply the
+reading to every field pinned to `factsheet`" into the issuer-refresh
+handler instead of into `run_factsheet_extraction`, the function both
+paths already share. So the manual path never had it.
+
+It now lives in the shared function and both callers read the result.
+There is exactly one place in the app that applies a factsheet reading
+to pinned fields, which is what makes the two paths agree by
+construction rather than by anyone remembering.
+
+**What it does and does not touch.** Fields pinned to `factsheet` are
+set from the new reading. Fields pinned to anything else, or to your own
+value, are untouched — an unpinned field's value comes from somewhere
+else and a factsheet reading is no licence to overwrite it.
+
+**One consequence worth knowing.** A pinned field the new document does
+not state is now recorded as "the factsheet does not say" rather than
+keeping the previous document's answer. That is deliberate and matches
+what Reload Fund Data has always done for a pinned source with nothing
+to offer: the pin says the value comes from the factsheet, so the
+current factsheet's silence is the honest answer.
+
+The status line after Extract now names the fields that were applied,
+so the difference is visible rather than inferred.
+
+## [0.110.0] - 2026-09-08
+
+### Added — the Xtrackers adapter, as a table with no code in it
+
+The first house written against v0.109.0's declarative design, and the
+test of whether that design was worth doing: the whole adapter is a
+`DOCUMENTS` table, a `SITE_FACTS` table and four class attributes. Not
+one method.
+
+DWS exports a fund's constituents at an address keyed by the ISIN —
+`/etfdata/export/{country}/{language}/excel/product/constituent/{isin}/`
+— so no page has to be read and no index consulted, which is why this
+house needs no `facts()` override at all. It returns a real `.xlsx`
+named `Constituent_<ISIN>.xlsx`; the CSV beside it is offered second.
+
+The country and language codes are `SITE_FACTS`, and they are measured
+rather than derived: the German site wants **DEU/DEU**, not the DEU/GER
+its language name suggests, which answers 404.
+
+Verified against two of the user's own Xtrackers funds — 404 rows and
+100 rows downloaded and parsed, header on row 4, columns Name / ISIN /
+Country / Currency / Exchange.
+
+### Not added — Xtrackers factsheets, and why
+
+They are served from `/download/asset/<guid>` behind an opaque
+identifier with nothing in it derived from the fund. The mapping from
+ISIN to guid lives in an API the site's own JavaScript loads and that
+could not be found from outside: the product pages are 2.3KB shells that
+do not contain even the ISIN, and roughly two dozen plausible paths
+against `etf.dws.com/api/` and `etf.dws.com/product_literature/api`
+answer 404, as do fourteen guesses at the shape of `/etfdata/*` and
+`/export/*` (both named as disallowed in `robots.txt`, which is how we
+know they exist).
+
+So a factsheet is fetched from the URL the user supplied for that fund —
+the base class's strategy, which is precisely what it is for — and the
+adapter says so per document kind rather than reporting an empty result.
+`DISCOVERY_NOTES` is per kind for exactly this case: a house can
+discover one document and not the other.
+
+One thing worth recording alongside: `robots.txt` on `etf.dws.com`
+disallows automated access to the export paths. Fetching one document
+for a fund you hold, on demand, is not crawling — but it is the site
+owner's stated preference, and the person pressing the button should
+know it exists.
+
+## [0.109.0] - 2026-09-08
+
+### Changed — a fund house is now a table, not a subclass
+
+Adding the second house made the first one's shape wrong. iShares had
+`discover_at`, `_holdings_candidates` and `_factsheet_candidates` of its
+own, and a second house written that way would have been a second copy
+of the same three shapes with different strings in them — which is
+exactly how two adapters drift apart.
+
+Every house answers the same two questions — *what URL is the document
+at*, and *what page lists the download links* — so those are now the
+only two things an adapter says, and it says them as data:
+
+```python
+DOCUMENTS = {
+    "factsheet": ({"url": "{base}/literature/fact-sheet/{stem}.pdf",
+                   "why": "the {site} literature page",
+                   "needs": ("stem",)}, ...),
+    "holdings":  ({"page": "{host}{product_url}",
+                   "link": r'href="([^"]*fileName=[^"]*)"',
+                   "exclude": r"collateralSnapshot",
+                   "rank": "family"}, ...),
+}
+```
+
+`expand_specs` is the single routine that turns those into candidates,
+shared by every house: placeholder substitution, skipping a spec whose
+facts are missing, fetching and ranking the links a page offers.
+`discover_at` moved to the base class and is not overridden by anybody.
+
+The one thing left as code is `facts()` — "what does THIS site call this
+fund" — and only iShares needs it, because its product pages are keyed
+by an internal numeric id and its documents are named after the local
+listing's ticker. A house whose URLs derive from the ISIN inherits and
+writes no code at all.
+
+`SITE_PATH_SEGMENTS` went the same way: how much of a URL's path
+identifies a national site was an overridden method on iShares and is
+now a number (3 for `/uk/individual/en`, 1 for `/nl-nl`, 0 for a house
+with a single document domain).
+
+iShares' behaviour is unchanged — same candidates, same order, verified
+against all three configured sites.
+
+### Added — Xtrackers' sites, and an honest account of what is missing
+
+`etf.dws.com` in Dutch, UK and German, so the remembered-URL strategy
+and the site-learning both work for Xtrackers funds now.
+
+Document DISCOVERY is not there, and not for want of trying. Its product
+pages are ISIN-addressable — `etf.dws.com/nl-nl/<ISIN>/` redirects to
+the full slug — but they are 2.3KB JavaScript shells that do not contain
+so much as the ISIN, let alone a download link. The data comes from APIs
+the page loads at runtime (`etf.dws.com/api/` and
+`etf.dws.com/product_literature/api`, both named in the app's own
+config), and roughly two dozen plausible paths against them all answer
+404. `robots.txt` names `/etfdata/*` and `/export/*` as disallowed,
+which says those paths exist; fourteen guesses at their shape also 404.
+
+Worth recording rather than retrying: the way in is one real download
+URL copied from the site, from which the template follows — which is
+precisely how the iShares literature path was worked out.
+
+## [0.108.0] - 2026-09-08
+
+### Added — Apply default sources, in the Edit fund dialog
+
+The counterpart to *Save choices as default*. That button records which
+source each field should come from; this one forces those sources onto
+the fund in front of you.
+
+It exists because the automatic application is deliberately narrow —
+defaults reach a fund only as it is first saved, and never over a pin
+made by hand — which is right as a rule and leaves no way to say "use
+them here too". A fund that predates the defaults, or one whose pins
+have drifted from what you now want, had no route back.
+
+**Staged, not saved.** Each field goes through `efChangeSource`, the
+same path a source button click takes, so the source is set, the value
+is fetched from it and shown, and nothing is durable until Save. Cancel
+undoes the lot, which is what makes the button safe to press just to see
+what it would do.
+
+Three details that fall out of doing it that way:
+
+- A field already on its default is skipped — no request, and not
+  marked dirty, because nothing about it changed.
+- A field set to **your own value** is the one case that gets a warning
+  first, naming the fields: switching its source drops what you typed.
+  Recoverable by Cancel, but not obviously so.
+- Fields with no default configured are left exactly as they are.
+
+The defaults are re-read on each press rather than cached when the
+dialog opens, so a change made in the meantime — including by the
+button next to it — is the one that gets applied.
+
+## [0.107.1] - 2026-09-08
+
+### Fixed — default field sources could have reached funds you already had
+
+The v0.107.0 defaults were applied whenever a fund was fetched with
+`commit=1`, on the assumption that a commit means a new fund. It usually
+does: all four frontend paths that send it guard themselves against
+re-committing a fund already in the pre-loaded list.
+
+But a guard that lives in the callers is a guard the fifth caller will
+not have, and this rule is not one to leave to good behaviour — the
+whole point of a default is that it applies to funds arriving from now
+on, never to a fund the user already has, and never over a source
+somebody pinned by hand.
+
+So the condition moved to the backend, where it is two tests and both
+must pass:
+
+- **the listing was not already saved** — the cache file's existence is
+  the "saved" marker, and it is now read *before* `load_fund_data`,
+  which is what creates it;
+- **the fund carries no pins at all** — which also covers a second
+  LISTING of a fund already adopted under another ticker, a case the
+  first test alone reads as new while its ISIN already holds the user's
+  decisions.
+
+`apply_field_source_defaults` already refused to overwrite an existing
+pin, so no individual field was ever at risk. What could have happened
+is a fund you already had quietly acquiring pins for fields you had
+deliberately left unpinned.
+
+Confirmed against two real pre-loaded funds with defaults configured
+that would otherwise have pinned four fields each: pins unchanged, and
+the response reports nothing applied.
+
+## [0.107.0] - 2026-09-08
+
+### Fixed — a synthetic fund's "holdings" are not its holdings
+
+A synthetically replicated ETF gets its index return from a swap, and
+the file it publishes under *holdings* is the **substitute basket** the
+counterparty posts as collateral: real securities, correctly listed, and
+nothing whatever to do with what the fund tracks. A synthetic S&P 500
+ETF routinely posts Japanese equities.
+
+Importing that as look-through does not merely add noise — it asserts an
+exposure the fund does not have, and that assertion then flows into
+every breakdown, every target deviation and the optimiser. So the
+adapter no longer downloads holdings for these funds and says why. The
+factsheet half still runs, and for a synthetic fund it is the *right*
+source: the issuer's published index breakdown is what its exposure
+actually is.
+
+Read from the override store rather than the effective structure block,
+because Yahoo publishes no replication method at all — "synthetic" can
+only ever be an assertion, by the user, by justETF or from a factsheet.
+A fund nobody has classified reads "unknown" and is handled normally:
+not knowing is not a reason to skip the download.
+
+### Added — Save choices as default, in the Edit fund dialog
+
+The Edit fund dialog is where each field's source is chosen, and until
+now that choice had to be made again for every fund. The new button
+remembers the sources currently selected and pins them onto funds as
+they are saved from then on — application-wide, so a user who always
+wants replication and style from justETF and market cap from a factsheet
+says so once.
+
+Three deliberate limits:
+
+- **Sources only, never values.** A default is an instruction about
+  where to look; the answer is per fund. A field pinned to *your own
+  value* therefore cannot take part — its pin means "the value I typed
+  is the answer", and a value typed for one fund is not a default for
+  the rest. Those fields are dropped, and the dialog reports how many,
+  rather than implying it saved more than it did.
+- **Newly saved funds only.** Existing funds are untouched: a pin
+  already on a fund is a decision somebody made about that fund, and a
+  default is a weaker statement than a decision. `apply_field_source_defaults`
+  never overwrites an existing pin, which also makes it safe to run more
+  than once.
+- **The pin is written without a value.** The source is the durable
+  instruction and the value beside it is a cache of the last answer;
+  filling it at save time would mean a burst of network calls for a fund
+  the user may only be glancing at. The existing TTL refresh asks each
+  pinned source in its own time, which is what it is for.
+
+Applied on **commit** rather than on every view, because a pin is
+durable state and merely looking at a fund should not create any.
+
+## [0.106.2] - 2026-09-08
+
+### Fixed — the factsheet was read twice in one run, and paid for twice
+
+Visible in the progress bar, which is where it was reported: read the
+factsheet, get asked about the standard column mapping, read the
+factsheet again.
+
+Answering "yes" to that question re-posted the WHOLE refresh, so the
+factsheet was fetched, stored and sent to the AI helper a second time —
+for a question that was only ever about holdings. Worse than wasteful:
+storing the document again clears the extraction that belongs to it (an
+extraction must never outlive its document), so the second reading was
+not merely redundant, it was necessary to replace what the second store
+had just thrown away.
+
+The retry now asks for the holdings half alone, and carries the first
+call's factsheet outcome into the report so skipping the re-fetch does
+not also lose the news about it.
+
+### Changed — an unchanged factsheet is not re-read at all
+
+The button is pressed on a schedule and an issuer's factsheet is revised
+monthly at best, so most runs download bytes that are already stored.
+Replacing them cleared a perfectly good extraction and paid for the same
+reading again.
+
+The downloaded document is now compared with the stored one, byte for
+byte, before anything is written. Identical, with a reading already on
+file, means both are kept and the run says so: *"unchanged since the
+copy already stored"*. The comparison costs nothing and is exact, and
+this is now the common case for anyone pressing the button more than
+once a month.
+
+## [0.106.1] - 2026-09-08
+
+### Fixed — a saved mapping was refused with a reason that was not true
+
+Reported as: *"you are looking at the wrong row for the column names"*.
+That was right, and the cause was one layer further back.
+
+iShares publishes two holdings reports per fund. The **Fund Download**
+button — the one a person actually clicks — produces a SpreadsheetML
+workbook with the columns in the site's own language and its header on
+row 8. Beside it sits a holdings CSV with English headers on row 3.
+PorxPy could not read SpreadsheetML at all (openpyxl rejects it, and the
+CSV fallback turns 5,000 lines of XML into one column), so the adapter
+skipped that download, quietly fetched the CSV instead, read row 8 of
+it — a data row — and reported that every column had been renamed and
+the file's layout had changed. Nothing had changed. A different file had
+been fetched, and then read in the wrong place.
+
+Four fixes, because there were four faults:
+
+- **SpreadsheetML is now a format PorxPy reads.** `upload.py` sniffs it
+  from the content rather than the extension — it arrives as `.xls`,
+  which is also the unrelated binary format's extension — and parses it
+  into the same grid every other reader produces, `ss:Index` column gaps
+  included. It also strips the byte-order mark, which iShares writes
+  **twice**, and which ElementTree reports as "not well-formed … line 1,
+  column 1" rather than skipping.
+- **The header row is found by its content, not by its stored index.**
+  `resolve_header_row` looks for the row on which every mapped column
+  carries the name it carried when the mapping was made — which is
+  exactly the condition under which the mapping's indices are still
+  valid, so finding the header and validating it became one question.
+  An issuer's preamble carries the fund name, an inception date, a
+  holdings date and a securities count, and those come and go per fund
+  and per report; trusting the stored number meant reading a data row
+  and concluding the file had been restructured.
+- **The downloaded file is judged before it is accepted.** `locate()`
+  takes an `accept` callback, and the holdings caller previews each
+  candidate and checks it against the mapping it is about to apply.
+  Ranking downloads by filename was a guess; opening them is a fact. The
+  first file that FITS is the one imported.
+- **The message says what it found.** A mapping that no longer fits now
+  reports what the file's columns actually are and which row they are
+  on, beside what the mapping expects — because "a column was renamed"
+  and "this is a different report" need different responses and read
+  identically otherwise.
+
+### Added — when no mapping fits, the file goes straight to the mapping dialog
+
+The old answer was a sentence asking the user to go and download the
+file themselves. PorxPy already had it downloaded and parsed, so it now
+opens the holdings mapping dialog with that file in it. One mapping
+later the fund refreshes by itself for ever after. The same dialog, via
+the same `enterUploadMapping` — a second implementation would be a
+second way for the mapping stage to behave.
+
+The house-standard prompt is now only offered when the standard actually
+FITS the downloaded file, checked before the question is asked rather
+than after it is answered.
+
+### Added — the file opens in Excel beside the mapping dialog
+
+Deciding which column is which is much easier with the real file in
+front of you, and PorxPy runs on the user's own machine. Entering the
+mapping stage now opens the previewed file with whatever the machine
+opens it with. Only the file the preview token was made from, and only
+when there is a local copy — the token is the permission, so no caller
+can name an arbitrary path to launch — and it is best-effort throughout:
+a machine with nothing registered for `.csv` simply does nothing.
+
+## [0.106.0] - 2026-09-08
+
+### Added — a fallback list of sites per fund house, in the order you choose
+
+A fund house does not run one website. It runs one per market, each
+listing only the share classes registered for sale there, and a single
+ETF's listings are spread across them. iShares Core MSCI World is IWDA
+in Amsterdam and SWDA in London; the STOXX Europe 600 ETF is EXSA on
+the Dutch and German sites and is not on the UK one at all. v0.105.0
+looked at one site, so for half the funds in a typical portfolio it
+looked in the wrong place.
+
+Each house now carries an **ordered list of sites**, tried first to
+last, and the first that answers wins. A fund missing from the first
+site is an ordinary outcome rather than a failure — the walk simply
+continues, and a site that is down or has changed its markup costs that
+site rather than the run. iShares ships with the Dutch, UK and German
+retail sites; the order is the user's, because it is a statement about
+where their own funds are listed.
+
+Measured on the shipped fund set, the difference is not marginal:
+`swda-…-en-gb.pdf` exists and `iwda-…-nl-nl.pdf` does not, so the
+world-equity tracker's factsheet is findable only from the UK site,
+while the STOXX 600 ETF's is findable only from the Dutch and German
+ones.
+
+**Settings → Fund houses** is where the list lives: reorder with ↑ ↓,
+remove, or paste a site to add. Every control saves as it is pressed —
+a list that reorders on screen but not on disk until a separate button
+is found is a list nobody can edit with confidence.
+
+**And it learns.** Whenever a document is supplied by URL — holdings,
+factsheet or breakdown CSV — the site root is added to that house's
+list. The hook sits in `utils.upload_source_put`, the one place all
+three dialogs record a source, so learning is true by construction for
+the next dialog rather than being three things to remember. A host
+match is required, never a name match: "Vanguard S&P 500" in a URL from
+an unrelated data provider must not file that provider under Vanguard.
+
+### Added — a standard holdings mapping per fund house
+
+One issuer's holdings exports share a layout across its whole range, so
+the mapping a user works out for one iShares fund is the mapping for
+all of them. It was being re-entered per fund anyway, because a mapping
+was only ever remembered against the fund it was made on.
+
+Two prompts, at the two moments the answer is actually known:
+
+- **After mapping a holdings file**, PorxPy offers to make that mapping
+  the house standard. After the commit rather than inside the dialog:
+  the mapping has just been proved against a real file, which is the
+  only evidence that makes it worth offering to funds nobody has looked
+  at. The server copies it from the stored prefs rather than taking the
+  browser's word for it, so the standard is provably the mapping that
+  just worked.
+- **When the refresh finds no mapping for a fund** and the house has a
+  standard, it asks before using it, showing which column each field
+  would be read from. Offered rather than assumed, because applying a
+  house-wide default to a file nobody has seen is exactly the
+  unattended-import risk v0.105.0's column check exists for — and that
+  check still runs on every file the standard is applied to, so a house
+  that turns out to be less uniform than expected produces a refusal
+  rather than bad data.
+
+Settings shows each house's standard, where it came from, and a control
+to forget it.
+
+### Changed — iShares discovery reads each site's own screener configuration
+
+Two screener backends are in service across iShares' national sites and
+which one a site runs is not derivable from its URL: the Dutch and
+German sites answer on a `.jsn` endpoint keyed by a `dcrPath`, the UK
+site on a newer `product-data` API keyed by country/language/siteName.
+Both publish their own configuration inside the fund-list page, as the
+JSON their screener app is bootstrapped with, so the adapter now reads
+that instead of carrying a table of sites that would go stale in
+silence. The site's language and country come from the same place,
+which matters because the UK site calls itself `gb` where its URL path
+spells `uk`, and the factsheet slug wants the former.
+
+Factsheets also gained a second way to be found: built from the site's
+own screener row as
+`<local ticker>-<fund name>-fund-fact-sheet-<lang>-<country>`. That is
+what makes the site list earn its keep — the ticker is the *local*
+listing's — and it means a fund whose factsheet has never been uploaded
+by hand can now be found at all.
+
+## [0.105.0] - 2026-09-08
+
+### Added — fund-house adapters, and one button that fetches both documents
+
+Everything PorxPy knows about a fund beyond Yahoo's thin profile comes
+from two documents the issuer revises on a schedule: the monthly
+factsheet and the holdings file. Both arrived by hand — find it on the
+issuer's site, download it, drop it into a dialog, map its columns — and
+next month the whole errand again. The mapping was remembered; the
+errand was not.
+
+**Get latest Factsheet and Holdings**, on the fund page beside Reload
+Fund Data, is the errand. The pairing is the point: Reload Fund Data
+re-asks Yahoo and says in its own tooltip that uploaded holdings are not
+affected, so between them the two buttons now cover the whole of "make
+this fund current".
+
+It runs two independent halves and reports them separately:
+
+- **Factsheet** — located at the issuer, stored against the fund
+  (replacing the previous one, its extraction included), and then, if
+  the AI helper is available, read and applied to every field the user
+  has pinned to `factsheet`. Pinned fields and no others: a pin is a
+  standing instruction about where a field's value comes from, and
+  writing to an unpinned field would overwrite a decision made
+  elsewhere.
+- **Holdings** — located, parsed with the column mapping the user
+  entered last time, enriched through Yahoo, and written over the
+  `upload` holdings source. Every parsing choice is the one the user
+  committed — mapping, header row, decimal, weight unit, defaults —
+  because re-making those decisions automatically is exactly how an
+  unattended import produces a confident wrong answer. Enrichment is
+  the single exception and is always on: a freshly downloaded file is
+  when the issuer's blanks are most worth filling. Which fields it
+  fills is still `utils.enrichment_fields()`, so switching enrichment
+  off in Settings still switches it off here.
+
+**Six houses, one of which can browse.** `porxpy/issuers.py` registers
+iShares, Vanguard, Amundi (and Lyxor), Xtrackers (and DWS), VanEck and
+SPDR. Locating a document is the only part that differs per house and
+also the fragile part, so it is small, isolated, and always optional:
+the base adapter already implements the one strategy that works
+everywhere — *fetch it again from where you got it last time* — and a
+house adapter only has to do better than that. The five that cannot yet
+browse are therefore real adapters rather than placeholders; a Vanguard
+fund whose factsheet URL was pasted once refreshes from that URL for
+ever after, and each says in its own words that discovery is what it is
+missing.
+
+**How iShares is done**, as the worked example for the next house.
+Three facts, each established by trying it: every page and document
+needs `siteEntryPassthrough=true`, or the site serves an investor-type
+interstitial as HTTP 200 text/html; the product screener publishes
+ISIN → product-page URL for the whole range as one JSON document, which
+is the discovery step and is cached for a day; and the product page
+carries its own download links. The factsheet is the one thing not on
+that page — its link is rendered client-side — so it is read off a
+document we already have: a stored factsheet's *filename is* the slug in
+iShares' stable literature path, whether the user saved that PDF or
+dragged it in.
+
+**Transport.** Issuer sites reject a plain Python client outright —
+iShares answers 403 to `requests` and to curl, and 200 to a browser —
+so the adapters use curl_cffi's browser impersonation through
+`yf_session`'s existing choices. Reusing that module rather than picking
+a profile here is deliberate: its choice encodes which impersonation
+profile survives the local middlebox and which roots the operating
+system trusts, and a second independent choice would be right on one
+machine and wrong on another. Certificate verification stays on.
+
+### Added — a downloaded holdings file is checked against the mapping before it replaces anything
+
+The mapping a user commits is a set of column INDICES, which means
+nothing without the file it was taken from. That was safe while a human
+was always in the loop looking at the mapping dialog. The adapters
+removed the human, and an unattended import is where indices become
+dangerous: a file with a column inserted, or a download link that has
+quietly started serving a different report, parses without complaint
+straight into the wrong columns, and nothing downstream can catch it —
+weights still sum to 100 because the weight column is still a number.
+
+So `upload_commit` now records the header row's own text alongside the
+mapping (and the sheet name and delimiter, which previously lived only
+on the preview token), and `upload.mapping_mismatch` checks a newly
+downloaded file against it. A file whose mapped columns have been
+renamed is refused with the disagreement named.
+
+Prefs saved before this release carry no column names, and for an
+unattended import that is itself a refusal. The failure it prevents is
+concrete rather than theoretical: an iShares mapping made against the
+`..._fund.csv` export has its header on row 8, while the
+`..._holdings.csv` the adapter can fetch has its header on row 3 — same
+column count, same column order, entirely different header row. Every
+structural check passes, five real holdings are silently swallowed as
+preamble, and the fund's holdings are replaced by a list that is quietly
+short. One manual upload records the columns and every refresh after it
+runs unattended.
+
+### Changed — the factsheet extraction pipeline is one function, called twice
+
+`api_fund_factsheet_extract` held ~120 lines that read a document and
+stored what it yielded: fields, four facet tables and a position list.
+The issuer refresh needs exactly that, and a second copy would have been
+two places for it to drift, with the drift invisible because each copy
+would look complete. It is now `run_factsheet_extraction`, and the route
+parses the request and calls it.
+
+`ai_unavailable()` is the same move for the two conditions that gate the
+helper, and it carries the rule the split exists to serve: the AI helper
+being off, or there being no API key, are **ordinary states, not
+errors**. A caller that can do useful work without the helper must treat
+them as a step to skip and report. The issuer refresh does: it fetches
+and stores the factsheet either way, and says which part did not run and
+how to enable it. Two conditions rather than one, because the switch is
+the user's consent and the key is a configuration fact the switch cannot
+conjure away, so each needs its own sentence and its own fix.
+
+`_stash_bytes` is a third: the drag-and-drop endpoint and the issuer
+refresh both arrive with bytes and a name and no path, so the extension
+whitelist and the naming rule are written once and a fetched file is
+sanitised by exactly the same rules as a dropped one.
+
+## [0.104.0] - 2026-09-08
+
+### Added — a thematic focus can now carry a target
+
+A fund built around a theme — artificial intelligence, water, battery
+and EV — already said so: `focus_type: thematic` with the theme in
+`focus_detail`, set in Edit fund or read off a factsheet. That
+assertion did one job, naming the fund's peer group, and could not be
+aimed at. "I want 8% of this portfolio in AI" was a question the app
+had every piece of the answer to and no way to ask.
+
+It is now a targetable facet, `focus_theme`, and the semantics are the
+ones a theme actually has: **a fund with a thematic focus counts toward
+that theme with all of its money.** Every holding in an AI fund was
+bought for AI, and there is no look-through that could refine that —
+the theme is a property of the fund's mandate rather than of any one
+position. That is exactly the one-hot-at-weight-1.0 shape `market_cap`
+and `style_box` already use, so `focus_theme` joined them in
+`META_FACETS` rather than becoming a fifth breakdown facet, and reached
+the portfolio rollup, the deviation report, the X-ray and the optimiser
+through machinery that was already there. The optimiser in particular
+needed no change at all: `candidate_exposures` has answered any facet
+in `META_FACETS` from `meta_facet_items` since v0.89.0, which is the
+test of whether that fix was made in the right place.
+
+**The vocabulary is open, and that is the interesting part.** Every
+other targetable facet resolves against a tree in `resources/`. Nothing
+can enumerate "Artificial Intelligence" in advance — which is why
+`focus_detail_vocabulary` already returned "free text is valid here" for
+a thematic focus — so the Targets editor's dropdown is built from what
+your own funds declare, read out of `overrides.json` by
+`utils.focus_themes_in_use`, with the number of funds behind each theme
+beside it. Two decisions worth recording:
+
+- **The editor offers only themes in use; the store accepts any theme.**
+  A target on a theme no fund carries can never be met by any selection
+  — there is nothing to buy — so offering it would be inviting a target
+  the optimiser must then report as unreachable. But dropping a *saved*
+  target because its last fund was sold or relabelled would be data
+  loss, which is the worse failure. So the offer is narrow and the
+  store is permissive, deliberately.
+- **The key is normalised, the fund's own spelling is not.** Two funds
+  can write one theme with different case or spacing;
+  `config.focus_theme_key` case-folds and collapses whitespace so they
+  land in one bucket rather than two, while `focus_detail` keeps
+  whatever was typed. A target key is normalised through the same
+  function on save, because a target differing from its bucket only in
+  case reads exactly like a theme nobody holds.
+
+`unknown` and `n/a` mean what they always mean, and the split matters
+more here than elsewhere: a fund with a geographic, sectoral or absent
+focus answers `n/a` — it is not a theme fund whose theme is missing —
+while a fund marked thematic with no theme named answers `unknown`, a
+gap someone can close. Since `n/a` is normally the *majority* answer on
+this facet, the X-ray card and the Targets tab spell it "No thematic
+focus" rather than leaving it as the two-letter footnote it is
+elsewhere.
+
+### Fixed — cash positions were uncovered on the new facet
+
+Found by measuring rather than by reading: with a thematic target set,
+the X-ray reported the theme card as covering 38% of a portfolio while
+market cap covered 100% of the same money. The synthetic structure
+block a cash position carries stated `market_cap: n/a` and
+`style_box: value` but no `focus_type`, and `focus_theme` is derived
+from `focus_type` — so a bank balance answered "n/a" on one meta facet
+and "nothing at all" on another. Cash now carries `focus_type: none`,
+which reads through as `n/a`: a deposit is not built around anything.
+
+### Fixed — two facet label maps that disagreed on the same screen
+
+The frontend kept `facetLabel` and `_TG_FACET_LABELS`, and they
+disagreed in both directions. The optimiser panel wrote "Country" in its
+result table and "Region" in the target inputs directly above it, while
+`facetLabel` had no entry for the metadata facets at all and printed
+them raw as `market_cap`. Adding a third metadata facet would have meant
+remembering both, so they are now one function. The country facet is
+"Country" everywhere: the "Region" label dated from before targets were
+levelled, when the Targets tab offered regions alone, and a country
+target can be set at any of the three levels now with the level named on
+each row.
+
+### Fixed — the optimiser prescribed a cure that does not exist for metadata facets
+
+A targeted facet no candidate answers produced "Set each fund's X card
+to Holdings or Factsheet" — advice with no referent for a metadata
+facet, which has no breakdown card and no look-through to switch to.
+Wrong for `market_cap` and `style_box` since v0.89.0, and noticed only
+when a third facet made the sweep obvious. Both the backend warning and
+the frontend's per-level note now point at Edit fund instead. The
+Targets editor's empty state got the same treatment: "All available
+buckets are added" assumes there was something to add, which is false
+for a theme facet on a fund set where nobody has set a focus, and it now
+says so and names the fix.
+
+### Changed — the Targets group is "Fund classification", not "Style"
+
+Market cap, equity style and thematic focus are all classifications of
+the fund as a whole, and naming the group after one of its three members
+stopped describing it.
+
 ## [0.103.2] - 2026-09-05
 
 ### Fixed — a bundle export could arrive truncated and be saved anyway

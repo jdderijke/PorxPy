@@ -1112,11 +1112,17 @@ def build_fund_breakdowns(holdings_breakdowns: dict,
 def meta_facet_items(fund_structure: dict | None) -> dict[str, list[dict]]:
     """One-hot item lists for the metadata facets (v0.28.0).
 
-    ``market_cap`` and ``style_box`` are scalars on a fund's structure
-    block, not distributions — a fund is "large cap", never 70/30. To
-    feed them through the same portfolio rollup as the four real
-    breakdown facets, each is reshaped into a one-item distribution at
-    weight 1.0.
+    ``market_cap``, ``style_box`` and ``focus_theme`` are scalars read
+    off a fund's structure block, not distributions — a fund is "large
+    cap", never 70/30, and an AI fund is an AI fund throughout. To feed
+    them through the same portfolio rollup as the four real breakdown
+    facets, each is reshaped into a one-item distribution at weight 1.0.
+
+    That weight of 1.0 is the whole meaning of a thematic-focus target
+    (v0.104.0): a fund built around a theme counts for the theme with
+    all of its money, because every holding in it was bought for that
+    theme. There is no look-through that could say otherwise — the
+    theme is a property of the fund's mandate, not of its holdings.
 
     Every value is emitted, including ``"unknown"`` and ``"n/a"``. They
     are real buckets: a portfolio where a fifth of the money sits in
@@ -1139,10 +1145,15 @@ def meta_facet_items(fund_structure: dict | None) -> dict[str, list[dict]]:
         which in practice only happens for a structure block that never
         went through ``normalise_fund_structure``.
     """
-    fs = fund_structure if isinstance(fund_structure, dict) else {}
+    from porxpy.config import meta_facet_value
+
     out: dict[str, list[dict]] = {}
     for facet in META_FACETS:
-        val = str(fs.get(facet) or "").strip().lower()
+        # Read through config.meta_facet_value rather than off the block
+        # directly: focus_theme is derived from focus_type + focus_detail
+        # and has no key of its own, so a direct read would find nothing
+        # and the facet would silently go uncovered everywhere.
+        val = meta_facet_value(facet, fund_structure)
         out[facet] = [{"key": val, "weight": 1.0}] if val else []
     return out
 
@@ -1923,8 +1934,21 @@ def synth_enriched_for_cash_position(pos: dict,
             # from not having discovered one. Style box is "value" for
             # the same reason a bond fund is — the return is interest,
             # not capital appreciation.
-            "fund_structure":      {"market_cap": "n/a",
-                                    "style_box":  "value"},
+            #
+            # v0.104.0 — focus_type says the same thing for the third
+            # meta facet, and it has to be said in the facet's own terms:
+            # focus_theme is derived from focus_type, so leaving the
+            # field out makes cash UNCOVERED there rather than n/a. On a
+            # portfolio with a large cash sleeve that read as a thematic
+            # card covering a third of the money while market cap
+            # covered all of it — the same position answered two ways,
+            # which is exactly the asymmetry the facet rules exist to
+            # prevent. "none" is the honest value: a bank balance is not
+            # built around anything.
+            "fund_structure":      {"market_cap":  "n/a",
+                                    "style_box":   "value",
+                                    "focus_type":  "none",
+                                    "focus_detail": ""},
         },
         # Pass through the original position so the caller has a
         # handle for the price-history path (which needs the
@@ -2291,10 +2315,11 @@ def candidate_exposures(fund_breakdowns: dict,
     the optimiser told the user their fund universe lacked an exposure
     that every one of their funds actually carried. ``fund_breakdowns``
     covers the four breakdown facets only; the metadata one-hots come
-    from :func:`meta_facet_items`, which this function now calls for any
-    targeted facet in ``META_FACETS`` — both of them, because fixing one
-    member of the set and not the other is precisely the drift this
-    codebase is most exposed to.
+    from :func:`meta_facet_items`, which this function now calls for
+    every targeted facet in ``META_FACETS`` — all of them, because
+    fixing one member of the set and not its siblings is precisely the
+    drift this codebase is most exposed to. (v0.104.0 added a third,
+    ``focus_theme``, and needed no change here for exactly that reason.)
 
     Args:
         fund_breakdowns: The fund's ``{facet: block}`` map.

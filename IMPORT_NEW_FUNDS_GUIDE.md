@@ -1,6 +1,6 @@
 # IMPORT_NEW_FUNDS_GUIDE.md — importing new funds and ETFs
 
-*Current as of v0.103.2. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.110.3. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between typing an ISIN into an empty box and having a fully
@@ -42,6 +42,7 @@ whole thing as an ordered checklist.
 10. [The factsheet](#10-the-factsheet)
 11. [Uploading holdings](#11-uploading-holdings)
     - [11b. How enrichment works](#11b-how-enrichment-works)
+    - [11c. Get latest Factsheet and Holdings](#11c-get-latest-factsheet-and-holdings)
 12. [Uploading a facet CSV](#12-uploading-a-facet-csv)
 13. [The Edit fund dialog](#13-the-edit-fund-dialog)
 14. [The Edit holding dialog](#14-the-edit-holding-dialog)
@@ -81,7 +82,7 @@ version you are looking at:
 
 ```
 =======================================================
-  PorxPy  v0.103.2 (built 2026-09-05)
+  PorxPy  v0.110.3 (built 2026-09-08)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -459,6 +460,16 @@ one older than 183 days (adjustable in Settings) is flagged stale, and
 the **👁 View factsheet** button grows a ⚠.
 
 ### Reading it with Claude
+
+What a reading does to your fund data: every field you have **pinned to
+Factsheet** in the Edit fund dialog is set from it, and no other field is
+touched. That is true whether you press **Extract** here or *Get latest
+Factsheet and Holdings* on the fund page — one path, so the two cannot
+disagree. A pinned field the document does not mention is recorded as
+"the factsheet does not say" rather than keeping the previous
+document's answer, which is the same thing Reload Fund Data does for any
+pinned source with nothing to offer.
+
 
 Once a factsheet exists, an **✨ Extraction** button appears. It opens the
 report, which holds the extraction action itself — so reviewing a
@@ -964,6 +975,177 @@ problems — and without this they are one blank status line.
 
 ---
 
+## 11c. Get latest Factsheet and Holdings
+
+Sections 10 and 11 are the manual versions of the same errand: find the
+issuer's factsheet, upload it, read it; find the issuer's holdings file,
+upload it, map its columns, enrich it. Both documents are revised on a
+schedule, so both errands come round again every month, and only the
+column mapping was ever remembered.
+
+**⤓ Get latest Factsheet and Holdings**, on the fund page next to
+**↻ Reload Fund Data**, does the errand. The two sit together because
+they are halves of one question: Reload Fund Data re-asks Yahoo and says
+in its own tooltip that uploaded holdings are not affected, and this is
+the half that was missing.
+
+### What it does
+
+Two independent halves, reported separately when it finishes. Neither
+can fail the other.
+
+**The factsheet.** Located at the issuer and downloaded — and if those
+bytes are identical to the copy already stored, that is where it stops:
+the document and its reading are both kept, and the run says so. A
+factsheet is revised monthly at best, so on most presses of this button
+there is nothing to replace and nothing to re-read.
+
+When the document HAS changed it is stored against the fund exactly as
+an upload would be — which replaces the previous
+document *and its extraction*, because an extraction must never outlive
+the document it was read from. Then, if the AI helper is switched on and
+has a key, the new document is read and the result applied to every
+field you have **pinned to Factsheet** in the Edit fund dialog (section
+13). Pinned fields and no others: a pin is your standing instruction
+about where that field's value comes from, so honouring it is the whole
+point, and writing to an unpinned field would overwrite a decision you
+made somewhere else.
+
+**Synthetic funds are skipped, on purpose.** A synthetically replicated
+ETF gets its return from a swap, and the file it publishes as
+"holdings" is the collateral basket the counterparty posts — real
+securities that have nothing to do with what the fund tracks. PorxPy
+does not import it; the factsheet is the right source for such a fund,
+and that half still runs. A fund is treated this way only when its
+**Replication** is set to `synthetic` (section 13) — Yahoo never says,
+so it is always something you or a factsheet asserted.
+
+**The holdings file.** Located, downloaded, parsed with the column
+mapping you entered last time, enriched through Yahoo, and written over
+the uploaded holdings. Every parsing choice is the one you committed —
+the mapping, the header row, the decimal mark, the weight unit, the
+per-field defaults — because re-deciding any of them automatically is
+exactly how an unattended import produces a confident wrong answer.
+
+Enrichment follows the same rule as everything else: the box you ticked
+in the mapping dialog is the one that is honoured. Tick it and every
+refresh of that fund enriches; leave it clear and none of them do. The
+result line says which way it went. *Which* fields get filled is
+unchanged (section 11b), so switching enrichment off in Settings still
+switches it off everywhere.
+
+### Which sites it looks at
+
+A fund house runs one site per market and each lists only the share
+classes registered for sale there. The same iShares ETF is **IWDA** on
+the Dutch site and **SWDA** on the UK one, and its factsheet exists
+under only one of those two names; the STOXX Europe 600 ETF is on the
+Dutch and German sites and not on the UK one at all. So each house
+carries a **list of sites**, tried first to last, and the first that
+answers wins. A fund missing from the first site is ordinary — the
+search simply moves on.
+
+**Settings → Fund houses** is where the list lives. The order is the
+priority, so put the market your own funds are listed in first; use
+↑ ↓ to reorder, ✕ to remove, and the box to paste another site. Changes
+save as you make them.
+
+You will rarely need to add one by hand. Whenever you supply a document
+by **URL** — a holdings file, a factsheet, a breakdown CSV — the site it
+came from is added to that house's list automatically. Supplying a
+document by dragging a file in teaches nothing, because a file on your
+disk is a copy rather than a place documents are published.
+
+### The standard mapping for a fund house
+
+One issuer's holdings exports share a layout across its whole range: the
+column mapping you work out for one iShares fund is the mapping for all
+of them. So a mapping can be promoted to a **house standard**, and
+PorxPy asks about it at the two moments the answer is known.
+
+**After you map a holdings file**, it offers to make that mapping the
+standard for the fund's house. It asks then, rather than in the mapping
+dialog, because the mapping has just been proved against a real file —
+which is what makes it worth offering to funds nobody has mapped yet.
+
+**When this button finds no mapping for a fund** and the house has a
+standard, it asks whether to use it, showing which column each field
+would be read from and which fund the standard came from. It is offered
+and never assumed: applying one default to a file nobody has looked at
+is exactly the risk described below, and the column check still runs on
+every file the standard is applied to — so a house that turns out to be
+less uniform than expected gives you a refusal, not bad data.
+
+Settings → Fund houses shows each house's standard and lets you forget
+it.
+
+### Which fund houses it knows
+
+PorxPy recognises **iShares, Vanguard, Amundi** (including Lyxor),
+**Xtrackers** (including DWS), **VanEck** and **SPDR**. It can *find*
+documents by itself at **iShares** — factsheet and holdings — and at
+**Xtrackers** for holdings. Xtrackers factsheets are served from an
+opaque download id that cannot be derived from the fund, so those are
+re-fetched from the URL you supplied once.
+
+That is a smaller limit than it sounds, because every adapter also has
+one strategy that needs no knowledge of the house at all: **fetch it
+again from where you got it last time.** If you once supplied a document
+by pasting its URL — rather than dragging a file in — that URL is
+remembered against the fund, and this button re-fetches it. So the
+button already works for any fund of any house whose document you have
+ever supplied by link.
+
+When it cannot locate something it says so plainly, lists what it tried,
+and tells you that one manual upload *from the URL* is what teaches it
+the address.
+
+### Two things it refuses to guess
+
+**No API key.** The factsheet is still fetched and stored — that is most
+of the value, and it leaves you one click from reading it later. Only
+the reading is skipped, and it is reported as a skip with the fix
+("enable it in Settings", "enter a key"), never as a failure. Note the
+consequence, though: replacing the document clears the previous
+extraction, so on an install with no key you gain a newer factsheet and
+lose the old reading of the old one.
+
+**A holdings file whose layout has changed.** A column mapping is a set
+of column *numbers*, and a number means nothing without the file it was
+taken from.
+
+Since v0.106.1 the header row is **found**, not assumed: PorxPy looks
+for the row on which every mapped column still carries the name it had
+when you mapped it. An issuer that adds or removes a line of preamble
+therefore changes nothing, and every candidate file the adapter can
+download is opened and checked against your mapping before one is
+chosen — so the report you mapped is the report that gets imported,
+even when the issuer publishes several.
+
+When nothing fits, PorxPy does not send you away: it opens the
+**Upload holdings** dialog with the file it has just downloaded, so you
+can map its columns there and then. It also opens that file in whatever
+your machine opens spreadsheets with, which makes deciding what each
+column is considerably easier than reading five sample rows. While you are looking at the mapping dialog that is safe;
+for an unattended import it is not, because a file with a column
+inserted — or a download link that has quietly started serving a
+different report — parses without complaint straight into the wrong
+columns, and nothing downstream can catch it. Weights still sum to 100,
+because the weight column is still a number.
+
+So the mapping now records the header row's own text, and a downloaded
+file is checked against it before anything is replaced. A file whose
+mapped columns have been renamed is refused, with the disagreement
+named.
+
+Mappings saved before v0.105.0 carry no column names, and for this
+button that is itself a refusal — there is nothing to check them
+against. Upload the fund's holdings file once through **⬆ Upload
+holdings**; that records the columns, and every refresh after it runs
+unattended.
+
+---
+
 ## 12. Uploading a facet CSV
 
 Sometimes you have the fund's published breakdown but not its holdings —
@@ -1157,6 +1339,69 @@ detail dropdown offers:
   Intelligence" in advance.
 - **none** → not applicable.
 
+A thematic focus does more than name the peer group (v0.104.0): it is
+also the only way a fund can carry a **thematic-focus target**. The
+Targets editor builds its theme dropdown from what is set here across
+your whole fund set, so a theme nobody has typed cannot be targeted, and
+a fund that carries one counts toward that target with all of its money.
+Two consequences worth knowing while typing:
+
+- **Spelling makes the bucket.** "AI" and "Artificial Intelligence" are
+  two themes, and two funds you meant to group will be two lines on the
+  X-ray. Case and spacing do not matter — those are normalised — but
+  wording does, so check the Targets dropdown for an existing theme
+  before inventing a phrasing.
+- **A one-fund theme is a fair warning.** The dropdown shows how many
+  funds carry each theme; a lone entry beside several three-fund ones is
+  usually a typo rather than a genuinely unique mandate.
+
+### Save choices as default
+
+The sources you pick here are usually the sources you want for every
+fund: replication and style from justETF, market cap from a factsheet,
+the rest from Yahoo. **Save choices as default** remembers the sources
+currently selected in this dialog and pins them onto funds as they are
+saved from then on.
+
+Three things it deliberately does not do:
+
+- It saves **sources, not values**. A default says where to look; the
+  answer is per fund. A field set to *your own value* is therefore
+  skipped — the value you typed for this fund is not a default for every
+  other one — and the status line says how many were skipped.
+- It does not touch **funds you already have**. A pin on an existing
+  fund is a decision you made about that fund, and a default is a weaker
+  statement than a decision. Two conditions have to hold before a
+  default is applied at all: the listing was not already in the
+  pre-loaded set, and the fund carries no pins of any kind. A fund that
+  fails either test is left exactly as it is.
+- It does not **fetch** anything. The pin is the instruction; the value
+  arrives when that field's group TTL next comes round, or immediately
+  if you press Reload Fund Data.
+
+### Apply default sources
+
+The other half of the pair. *Save choices as default* records the
+sources; **Apply default sources** forces them onto the fund you are
+looking at.
+
+You need it because the automatic application is narrow on purpose:
+defaults reach a fund only as it is first saved, and never over a source
+you pinned by hand. That is the right rule, and it leaves funds you
+already had — and funds whose pins have drifted — with no way back to
+your defaults. This is that way.
+
+Nothing is saved by pressing it. Each field is set to its default source
+and the value is fetched from that source and shown, exactly as if you
+had clicked the source yourself, and **Cancel still undoes all of it**.
+So it is safe to press simply to see what your defaults would make of
+this fund.
+
+- A field already on its default is left alone.
+- A field set to *your own value* is the one thing it warns about first,
+  by name: switching its source drops what you typed.
+- A field with no default configured is not touched.
+
 ### Why Identification is read-only
 
 ISIN, ticker, name, exchange and trading currency cannot be re-sourced
@@ -1262,7 +1507,7 @@ grouping read.
 | **Market cap** | Size bucket for the equity sleeve. `mixed` is an intention (a total-market tracker); `unknown` is a gap; `n/a` is cash. | `large` · `mid` · `small` · `mixed` · `unknown` · `n/a` |
 | **Equity style** | The growth/value axis. Named `style_box` internally to avoid colliding with management style. | `growth` · `blend` · `value` · `unknown` |
 | **Focus** | What the fund is built to concentrate on. Half of the peer key. | `none` · `geography` · `sector` · `thematic` |
-| **Focus detail** | The specific target, validated against the vocabulary the focus type implies. | depends on Focus |
+| **Focus detail** | The specific target, validated against the vocabulary the focus type implies. For `thematic` it is free text, and becomes a targetable bucket in the portfolio Targets editor. | depends on Focus |
 
 ### Operational — 90 days
 

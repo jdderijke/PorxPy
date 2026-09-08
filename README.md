@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.103.2. This is the fullest architecture write-up;
+*Current as of v0.110.3. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -159,11 +159,76 @@ counting a sub-sector twice.
 
 Targets come in two groups. **Exposure** — asset class, sector, country,
 currency — is measured by looking through your funds to what they
-actually hold. **Style** — market cap and equity style — is a
-classification of each fund as a whole, so a fund nobody has classified
-shows up as "unknown" rather than being quietly dropped from the
-denominator. Both groups are targetable; "unknown" is not, because it is
-a gap in the data rather than something you can aim for.
+actually hold. **Fund classification** — market cap, equity style and
+thematic focus — describes each fund as a whole, so a fund nobody has
+classified shows up as "unknown" rather than being quietly dropped from
+the denominator. Both groups are targetable; "unknown" is not, because
+it is a gap in the data rather than something you can aim for.
+
+**Thematic focus** (v0.104.0) is the newest of those, and it works the
+way a theme actually works: a fund built around artificial intelligence
+counts toward an AI target with *all* of its money, because every
+holding in it was bought for that theme. There is no look-through that
+could say otherwise — the theme is a property of the fund's mandate, not
+of its holdings. Set it per fund in **Edit fund** (Focus → Thematic, and
+name the theme); the Targets editor then offers a dropdown of the themes
+your own funds actually carry, with the number of funds behind each, and
+nothing else — a target on a theme you hold no fund for could never be
+met by any selection. Everything that is not a thematic fund answers "no
+thematic focus" rather than "unknown": a European tracker is not a
+theme fund whose theme is missing.
+
+### Keep a fund current without going to find its documents
+
+Two documents describe a fund properly, and both are revised on a
+schedule: the issuer's monthly factsheet and its holdings file. **Get
+latest Factsheet and Holdings**, on the fund page beside Reload Fund
+Data, goes and gets them. The factsheet is stored against the fund and —
+if the AI helper is switched on and has a key — read, with the result
+applied to every field you have pinned to `factsheet`. The holdings file
+is imported with the column mapping you entered last time, enriched
+through Yahoo, and replaces the uploaded holdings.
+
+The two buttons are a pair: Reload Fund Data re-asks Yahoo and
+deliberately leaves uploaded holdings alone, so this is the half that
+was missing.
+
+PorxPy recognises six fund houses — iShares, Vanguard, Amundi,
+Xtrackers, VanEck and SPDR. It can *find* documents by itself at
+**iShares** (both) and **Xtrackers** (holdings; their factsheets sit
+behind an opaque download id).
+
+A fund house runs a separate site per market, each listing only the
+share classes sold there, so each house carries an **ordered list of
+sites** and they are tried in turn. That is not a detail: the same
+iShares ETF is IWDA in Amsterdam and SWDA in London, and its factsheet
+exists under only one of those names. Set the order in **Settings →
+Fund houses** — put the market your funds are listed in first — and any
+site you paste a document URL from is added to the list on its own.
+
+One issuer's holdings exports share a layout across its whole range, so
+a mapping can be promoted to a **house standard**: PorxPy offers this
+after you map a holdings file, and offers the standard back when it
+refreshes a fund that has no mapping of its own. Both are questions,
+never assumptions, and the standard is checked against every file it is
+applied to. That is less of a limit than it sounds: for any
+fund of any house, if you once supplied a document by URL rather than by
+dragging a file in, that URL is remembered and re-fetched, so the button
+works from then on. When PorxPy cannot locate something it says so, and
+says that one manual upload is what teaches it the address.
+
+When no saved mapping fits the file it downloads, PorxPy opens the
+holdings mapping dialog with that file already in it — and opens the
+file itself in your spreadsheet application beside it — rather than
+telling you to go and fetch it yourself.
+
+Two things are refused rather than guessed. If no API key is set the
+factsheet is still fetched and stored, and only the reading is skipped —
+reported as a skip, with the fix, not as a failure. And a downloaded
+holdings file is checked against the columns your saved mapping was made
+on before it is allowed to replace anything: a file whose layout has
+changed is refused, because a mapping applied to the wrong file produces
+rows that parse cleanly and mean nothing.
 
 ### Rank the funds, not just the portfolio
 
@@ -456,6 +521,8 @@ porxpy/
   optimizer.py        Greedy portfolio design against exposure targets
   trades.py           Atomic trade execution (cash ↔ fund positions)
   upload.py           Holdings file parsing, column mapping, enrichment
+  issuers.py          Fund-house adapters: locate and fetch the issuer's
+                      own latest factsheet and holdings file
   bundles.py          Export/import of fund sets and portfolio backups
   utils.py            Cache I/O, portfolio data, coercion helpers
   resources.py        Reference-data loading and facet-value resolution
@@ -540,6 +607,15 @@ would silently change the grain its targets are measured at. Non-tree
 facets declare a single level of the same shape, so nothing downstream
 has to branch on whether a facet has levels.
 
+The table above lists the four facets that have **breakdown cards** and
+are measured from holdings. Three more — `market_cap`, `style_box` and
+`focus_theme` — are targetable without being breakdowns: they are read
+as a single value off the fund's own classification, one bucket per
+fund at weight 1.0, so there is no source to choose and no level to
+select. `focus_theme` is the only targetable facet with no vocabulary
+behind it at all: a theme is free text, so the values it offers are
+whatever your own funds declare.
+
 Editing a resource file needs no version bump — the files are hashed, and
 Tools → **Reload resource files** picks up changes without a restart.
 
@@ -617,6 +693,7 @@ independently.
 | OpenFIGI       | ISIN → ticker resolution                             | When adding a fund by ISIN           |
 | justETF        | ETF structure (replication, style) — best effort     | Optional, ETFs only, user-confirmed  |
 | Anthropic API  | Reading an uploaded issuer factsheet                 | Off by default; only when you ask    |
+| Fund-house sites | The issuer's own current factsheet and holdings file | Only when you press "Get latest Factsheet and Holdings" |
 
 All responses are cached locally with TTLs that reflect how often the
 underlying data actually changes (price: 1 day, sectors and issuer asset
@@ -786,6 +863,6 @@ it does.
 
 ## Version
 
-Current release: **0.103.2** (2026-09-05)
+Current release: **0.110.3** (2026-09-08)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

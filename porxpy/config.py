@@ -536,6 +536,55 @@ HOLDINGS_MATCH_KEYS: tuple[str, ...] = ("name", "ticker", "isin")
 
 
 # ---------------------------------------------------------------------------
+# Fund-house sites (v0.106.0)
+# ---------------------------------------------------------------------------
+# Where each fund house publishes, as an ORDERED list of site roots tried
+# first to last. The keys are the adapter keys in `issuers.ADAPTERS`;
+# the two lists are kept in step by hand because config may not import
+# issuers (issuers imports config), and a mismatch is visible the moment
+# the Settings page lists a house with no adapter or an adapter with no
+# sites.
+#
+# Why a LIST rather than one site. A fund house runs a separate national
+# site per market, each listing only the share classes registered for
+# sale there, and one ETF's listings are spread across them: iShares
+# Core MSCI World is IWDA on the Dutch site and SWDA on the UK one, and
+# an ETF listed only on XETRA appears on the German site and on neither
+# of the others. A single site therefore cannot find every fund a user
+# holds, and which site holds a given fund is not knowable in advance —
+# so the answer is to try them in turn.
+#
+# The order is the user's to set (Settings -> Fund houses), because it
+# is a statement about where THEIR funds are listed, and the first site
+# that answers wins. The defaults below lead with the Dutch site simply
+# because this project's own fund set was imported from it.
+#
+# The five houses with no discovery still carry a list, and it is not
+# decoration: a site learned from a URL the user pasted is what lets
+# `IssuerAdapter`'s remembered-URL strategy find the NEXT document for
+# that house. See `utils.issuer_site_learn`.
+DEFAULT_ISSUER_SITES: dict[str, tuple[str, ...]] = {
+    "ishares": (
+        "https://www.ishares.com/nl/particuliere-belegger/nl",
+        "https://www.ishares.com/uk/individual/en",
+        "https://www.ishares.com/de/privatanleger/de",
+    ),
+    "vanguard":  (),
+    "amundi":    (),
+    # etf.dws.com, one locale segment. Dutch first for the same reason
+    # iShares' Dutch site is: it is where this project's funds come
+    # from. The site list is the user's to reorder.
+    "xtrackers": (
+        "https://etf.dws.com/nl-nl",
+        "https://etf.dws.com/en-gb",
+        "https://etf.dws.com/de-de",
+    ),
+    "vaneck":    (),
+    "spdr":      (),
+}
+
+
+# ---------------------------------------------------------------------------
 # Breakdown cards
 # ---------------------------------------------------------------------------
 # The four facets shown as breakdown cards on the fund page and the
@@ -1044,9 +1093,24 @@ FACET_NOT_APPLICABLE: dict[str, frozenset[str]] = {
 # target you would already set on asset_class — neither belongs in the
 # Targets dropdown. Both still appear as buckets in the X-ray card and
 # in the deviation report's untargeted summary.
-META_FACET_TARGETABLE: dict[str, tuple[str, ...]] = {
-    "market_cap": ("large", "mid", "small", "mixed"),
-    "style_box":  ("growth", "blend", "value"),
+#
+# v0.104.0: the value may be None, meaning the vocabulary is OPEN — any
+# key that is not a residual may carry a target. `focus_theme` is the
+# case: a theme is free text ("artificial intelligence"), so nothing can
+# enumerate it ahead of time, exactly as focus_detail itself cannot be
+# enumerated (see focus_detail_vocabulary, which uses None for the same
+# reason and the same facet).
+#
+# Two questions therefore have two different tests, and confusing them
+# is how a caller silently stops validating:
+#   "is this a meta facet?"      -> `facet in META_FACET_TARGETABLE`
+#   "may this key be targeted?"  -> meta_target_allowed(facet, key)
+# `.get(facet)` returning None answers NEITHER on its own, because
+# absent and open now both read as None.
+META_FACET_TARGETABLE: dict[str, tuple[str, ...] | None] = {
+    "market_cap":  ("large", "mid", "small", "mixed"),
+    "style_box":   ("growth", "blend", "value"),
+    "focus_theme": None,
 }
 
 # What a fund is built to concentrate on. ``focus_detail`` is validated
@@ -1196,9 +1260,113 @@ DEFAULT_INCLUDE_IN_OPTIMIZER: bool = True
 # via the existing holdings-enrichment path), market_cap can graduate to
 # a real distribution — exactly as asset_allocation supersedes the
 # asset_class scalar today — without changing this taxonomy.
-META_FACETS: tuple[str, ...] = ("market_cap", "style_box")
+# v0.104.0 adds a third: `focus_theme`, the theme a fund is built around
+# ("artificial intelligence", "water"). It is the same kind of thing as
+# the other two — a scalar off the structure block, one-hot per fund —
+# but it is not a structure KEY: it reads focus_detail, and only when
+# focus_type says the focus is thematic. That indirection is why
+# meta_facet_value() exists below rather than every consumer doing
+# `fund_structure[facet]`.
+META_FACETS: tuple[str, ...] = ("market_cap", "style_box", "focus_theme")
 
 TARGET_FACETS: tuple[str, ...] = BREAKDOWN_FACETS + META_FACETS
+
+
+def focus_theme_key(detail: str | None) -> str:
+    """Canonical bucket key for a thematic focus.
+
+    ``focus_detail`` is free text for a thematic focus — nothing can
+    enumerate "Artificial Intelligence" ahead of time — so two funds
+    with the same theme can spell it differently in case and spacing.
+    Left alone that would be two buckets on the X-ray card and a target
+    that matches only one of them, which looks exactly like a fund the
+    optimiser refuses to buy.
+
+    So the KEY is normalised (case-folded, whitespace collapsed) while
+    the stored ``focus_detail`` keeps whatever the user typed. The
+    display label is derived from the key rather than from one fund's
+    spelling, because picking one fund's capitalisation to speak for a
+    bucket several funds share would be arbitrary.
+
+    Args:
+        detail: A fund's ``focus_detail``, or ``None``.
+
+    Returns:
+        The normalised key, or ``""`` when there is no detail.
+    """
+    return " ".join(str(detail or "").split()).lower()
+
+
+def meta_facet_value(facet: str, fund_structure: dict | None) -> str:
+    """The one-hot bucket a fund occupies for a metadata facet.
+
+    One reader for all of :data:`META_FACETS`, so the portfolio rollup,
+    the optimiser's candidate exposures and the themes endpoint cannot
+    disagree about what a fund's value is. Two of the facets are plain
+    keys on the structure block; the third is derived from two fields,
+    and a consumer that read the block directly would simply find
+    nothing under "focus_theme".
+
+    Args:
+        facet: A member of :data:`META_FACETS`.
+        fund_structure: The fund's effective structure block, or
+            ``None``.
+
+    Returns:
+        The bucket key, or ``""`` when the fund says nothing at all
+        about this facet — which makes it UNCOVERED rather than
+        unknown, and only happens for a structure block that never went
+        through ``normalise_fund_structure``.
+
+        For ``focus_theme`` specifically: the normalised theme when the
+        fund's focus is thematic, ``UNKNOWN_KEY`` when it is thematic
+        but nobody said which theme (a gap someone can close), and
+        ``NA_KEY`` for every other focus type — a geography fund, a
+        sector fund or a fund with no focus at all is not a thematic
+        fund whose theme is missing; the question does not apply to it.
+    """
+    fs = fund_structure if isinstance(fund_structure, dict) else {}
+    if facet != "focus_theme":
+        return str(fs.get(facet) or "").strip().lower()
+
+    ftype = str(fs.get("focus_type") or "").strip().lower()
+    ftype = LEGACY_FOCUS_TYPES.get(ftype, ftype)
+    if not ftype:
+        return ""
+    if ftype != "thematic":
+        return NA_KEY
+    return focus_theme_key(fs.get("focus_detail")) or UNKNOWN_KEY
+
+
+def meta_target_allowed(facet: str, key: str) -> bool:
+    """Whether ``key`` may carry a target on metadata facet ``facet``.
+
+    The one authority behind both the Targets editor's dropdown and the
+    coercion that accepts a saved target, so the editor can never offer
+    a value the store would drop, and the store can never keep one the
+    editor would not show.
+
+    Closed vocabularies (market_cap, style_box) answer by membership.
+    An open one (focus_theme) accepts anything that is not a residual:
+    "unknown" is a data gap and "n/a" says the question does not apply,
+    and a target on either is unsatisfiable by construction.
+
+    Args:
+        facet: The facet the key belongs to.
+        key: The candidate bucket key.
+
+    Returns:
+        True when the key may be targeted. Always True for a facet that
+        is not a metadata facet — those have their own vocabularies and
+        this function has no opinion about them.
+    """
+    if facet not in META_FACET_TARGETABLE:
+        return True
+    k = (key or "").strip()
+    if not k or k in (UNKNOWN_KEY, NA_KEY):
+        return False
+    allowed = META_FACET_TARGETABLE.get(facet)
+    return True if allowed is None else k in allowed
 
 
 

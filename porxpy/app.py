@@ -21,6 +21,8 @@ import json
 from datetime import datetime
 import math
 import re
+import sys
+import os
 import time
 import uuid
 from pathlib import Path
@@ -140,6 +142,7 @@ from porxpy.utils import (
     factsheet_set_extraction,
     apply_overrides,
     override_delete,
+    apply_field_source_defaults,
     override_get,
     override_put,
     overrides_for,
@@ -792,6 +795,13 @@ def create_app() -> Flask:
         print(f"  Resolution: {resolved_note}")
         print(f"{'='*55}")
 
+        # Was this listing already in the pre-loaded set? Read now,
+        # because load_fund_data creates the file that answers it. Used
+        # only by the field-source defaults below, which must not reach
+        # a fund the user already has.
+        listing_was_saved = bool(
+            resolved_tkr and (LISTINGS_DIR / f"{resolved_tkr}.json").exists())
+
         # Load with the fully-resolved ticker (known_ticker bypasses the
         # resolver's own OpenFIGI path — we have already resolved).
         progress_phase(_f_tok, f"loading {resolved_tkr or resolved_isin} "
@@ -817,6 +827,35 @@ def create_app() -> Flask:
         # cache list) can rely on it regardless of what Yahoo returned.
         if isinstance(data.get("profile"), dict) and resolved_isin:
             data["profile"]["isin"] = resolved_isin
+        # Pin the configured default sources onto a fund being saved for
+        # the FIRST time (v0.107.0, gated properly in v0.107.1).
+        #
+        # Two conditions, both required, both checked here rather than
+        # trusted from the caller:
+        #
+        #   * the listing was not already saved before this request —
+        #     its cache file's existence IS the "saved" marker, and it
+        #     is read BEFORE load_fund_data, which creates it;
+        #   * the fund carries no pins at all.
+        #
+        # Either one alone would be enough most of the time, and neither
+        # is enough always. `commit=1` is sent by four different frontend
+        # paths, each of which guards itself against re-committing a
+        # saved fund — but a guard that lives in the callers is a guard
+        # the fifth caller will not have. And a second LISTING of a fund
+        # already adopted under another ticker looks new by the first
+        # test while its ISIN already carries the user's decisions.
+        #
+        # The rule this enforces is the user's: a default is for funds
+        # arriving from now on. It must never reach a fund already in
+        # the pre-loaded list, and never a field somebody has pinned by
+        # hand — a pin is a decision about THAT fund, and a default is a
+        # weaker statement than a decision.
+        if commit and resolved_isin and not listing_was_saved                 and not field_pins(resolved_isin):
+            seeded = apply_field_source_defaults(resolved_isin)
+            if seeded:
+                data["field_defaults_applied"] = seeded
+
         # Persist the resolution so the fund is identity-complete on the
         # next fetch without another OpenFIGI round-trip.
         if resolved_isin and resolved_tkr:
@@ -1140,7 +1179,7 @@ def create_app() -> Flask:
             # v0.66.3: as an inline block it could not be tested against
             # a real fund block without a live fetch.
             # fund_structure carries the metadata facets (market_cap,
-            # style_box), which fund_breakdowns does not.
+            # style_box, focus_theme), which fund_breakdowns does not.
             exposures, fund_src = candidate_exposures(
                 data.get("fund_breakdowns") or {}, targets,
                 data.get("fund_structure") or {})
@@ -1271,21 +1310,43 @@ def create_app() -> Flask:
                     for k, w in (blk or {}).items()
                     if k not in (UNKNOWN_KEY, NA_KEY))
                 for c in candidates)
+            # The remedy differs by KIND of facet, and naming the wrong
+            # one is worse than saying nothing: a metadata facet has no
+            # breakdown card and no look-through, so telling the user to
+            # switch its card to Holdings sends them looking for a
+            # control that does not exist. (Wrong for market_cap and
+            # style_box since v0.89.0; fixed here in v0.104.0 when
+            # focus_theme joined them and made the sweep obvious.)
+            from porxpy.config import META_FACETS as _META
             if total <= 1e-9:
-                facet_warnings.append(
-                    f"No {facet} exposure data on any candidate fund — every "
-                    f"{facet} target will read 0% achieved. The funds answer "
-                    f"this facet only as 'unknown'. Set each fund's {facet} "
-                    f"card to Holdings or Factsheet on its page, or upload "
-                    f"holdings so a look-through is available.")
+                if facet in _META:
+                    facet_warnings.append(
+                        f"No candidate fund is classified for {facet} — every "
+                        f"{facet} target will read 0% achieved. This is a "
+                        f"fund-level classification rather than a "
+                        f"look-through, so set it per fund in Edit fund on "
+                        f"the fund's page.")
+                else:
+                    facet_warnings.append(
+                        f"No {facet} exposure data on any candidate fund — every "
+                        f"{facet} target will read 0% achieved. The funds answer "
+                        f"this facet only as 'unknown'. Set each fund's {facet} "
+                        f"card to Holdings or Factsheet on its page, or upload "
+                        f"holdings so a look-through is available.")
             elif mix.get("none"):
                 # These funds aren't excluded — they're treated as 100%
                 # "other" for this facet, so they can still serve the
                 # untargeted remainder. But they can never help hit a
                 # targeted bucket, which is worth saying out loud.
-                facet_warnings.append(
-                    f"{mix['none']} fund(s) have no {facet} data — they can "
-                    f"only be used for the untargeted part of {facet}.")
+                if facet in _META:
+                    facet_warnings.append(
+                        f"{mix['none']} fund(s) carry no {facet} "
+                        f"classification — they can only be used for the "
+                        f"untargeted part of {facet}.")
+                else:
+                    facet_warnings.append(
+                        f"{mix['none']} fund(s) have no {facet} data — they can "
+                        f"only be used for the untargeted part of {facet}.")
 
         # The reserve, stated in money, said in the response's own terms.
         # It is not a target the solver tries to hit — it is removed from
@@ -1676,22 +1737,36 @@ def create_app() -> Flask:
     def api_targets_meta(facet: str) -> Response:
         """Return the targetable values for a metadata facet.
 
-        The meta facets (``market_cap``, ``style_box``) have a closed,
-        short vocabulary defined in config rather than in a resource
-        CSV, and not all of it can carry a target: ``unknown`` is a data
-        gap and ``n/a`` restates the cash target already set on
-        asset_class. Both still appear as buckets on the X-ray card and
-        in the deviation report's untargeted summary — they are just not
-        things a user can aim at, so the editor must not offer them.
+        ``market_cap`` and ``style_box`` have a closed, short vocabulary
+        defined in config rather than in a resource CSV, and not all of
+        it can carry a target: ``unknown`` is a data gap and ``n/a``
+        restates the cash target already set on asset_class. Both still
+        appear as buckets on the X-ray card and in the deviation
+        report's untargeted summary — they are just not things a user
+        can aim at, so the editor must not offer them.
+
+        ``focus_theme`` (v0.104.0) has an OPEN vocabulary — a theme is
+        free text — so its list is the themes the user's own funds
+        actually carry, read from the override store by
+        :func:`porxpy.utils.focus_themes_in_use`. Same response shape,
+        so the editor fetches every metadata facet from one URL and
+        never branches on which kind of vocabulary it got.
 
         Returns:
             ``{values: [{"key": v, "label": display}, ...]}``, or a 404
-            for a facet that is not a metadata facet.
+            for a facet that is not a metadata facet. ``focus_theme``
+            entries carry an extra ``funds`` count.
         """
         from porxpy.config import META_FACET_TARGETABLE
-        allowed = META_FACET_TARGETABLE.get(facet)
-        if allowed is None:
+        # Membership, not `.get(...) is None`: an open vocabulary is
+        # stored as None, so a value test would 404 the one facet whose
+        # values have to be looked up rather than listed.
+        if facet not in META_FACET_TARGETABLE:
             return jsonify({"error": f"not a metadata facet: {facet}"}), 404
+        if facet == "focus_theme":
+            from porxpy.utils import focus_themes_in_use
+            return jsonify({"values": focus_themes_in_use()})
+        allowed = META_FACET_TARGETABLE.get(facet) or ()
         labels = {
             "large": "Large cap", "mid": "Mid cap", "small": "Small cap",
             "mixed": "Mixed",
@@ -4753,6 +4828,29 @@ def create_app() -> Flask:
 
         return jsonify({"ticker": ticker, "isin": isin, "factsheet": meta})
 
+    def ai_unavailable() -> str:
+        """Why the AI helper cannot run, or ``""`` when it can.
+
+        Both conditions are ORDINARY STATES, not errors: the helper is
+        off by default and most installs have no API key. Callers that
+        can do useful work without it — the issuer refresh fetches and
+        stores a factsheet whether or not anything can read it — must
+        treat a non-empty answer here as a step to SKIP and report, and
+        never as a failure of the operation around it.
+
+        Two conditions rather than one, deliberately: the switch is the
+        user's consent and the key is a configuration fact the switch
+        cannot conjure away, so each needs its own sentence and its own
+        fix.
+        """
+        from porxpy import ai as _ai
+        if not (load_settings().get("ai") or {}).get("enabled"):
+            return "the AI helper is switched off — enable it in Settings"
+        if not _ai.api_key_present():
+            return (f"no API key — enter one in Settings > AI helper, or set "
+                    f"{_ai.API_KEY_ENV} in the environment")
+        return ""
+
     @app.route("/api/funds/<ticker>/factsheet/extract", methods=["POST"])
     def api_fund_factsheet_extract(ticker: str) -> Response:
         """Read the stored factsheet with the AI helper.
@@ -4768,23 +4866,14 @@ def create_app() -> Flask:
         consent, and the key's absence is a configuration fact the switch
         cannot conjure away.
         """
-        from porxpy import ai as _ai
-
         settings = load_settings()
-        if not (settings.get("ai") or {}).get("enabled"):
-            return jsonify({"error": "the AI helper is switched off — "
-                                     "enable it in Settings"}), 409
-        if not _ai.api_key_present():
-            return jsonify({"error": f"no API key: set {_ai.API_KEY_ENV} in "
-                                     f"the environment and restart PorxPy"}), 409
+        blocked = ai_unavailable()
+        if blocked:
+            return jsonify({"error": blocked}), 409
 
         isin = listing_identity_lookup_isin(ticker)
         if not isin:
             return jsonify({"error": f"no identity recorded for {ticker!r}"}), 404
-        meta = factsheet_get(isin)
-        fp = factsheet_file(isin)
-        if not meta or not fp:
-            return jsonify({"error": "no factsheet stored for this fund"}), 404
 
         # An edited prompt, when the user has that option switched on.
         # Sent per call rather than stored: a prompt that persisted would
@@ -4795,11 +4884,65 @@ def create_app() -> Flask:
         if custom and not (settings.get("ai") or {}).get("edit_prompt"):
             return jsonify({"error": "prompt editing is switched off"}), 409
 
+        payload, err, status = run_factsheet_extraction(isin, custom,
+                                                        _job_token(), ticker)
+        if err is not None:
+            return jsonify(err), status
+        return jsonify({"ticker": ticker, **payload})
+
+    def run_factsheet_extraction(isin: str, custom: str = "",
+                                 ptok: str = "", ticker: str = "") -> tuple:
+        """Read a stored factsheet and store everything it yields.
+
+        Lifted out of the route in v0.105.0 so the issuer refresh can do
+        exactly the same thing. It is not a small function, and a second
+        copy of it would be two places for "a factsheet supplies fields,
+        four facet tables and a position list" to drift apart — with the
+        drift invisible, because each copy would look complete.
+
+        Args:
+            isin: Fund ISIN. A factsheet must already be stored for it.
+            custom: An edited prompt, already permission-checked by the
+                caller, or ``""`` for the standard one.
+            ptok: Progress token, so the bar reports the phases of a
+                call that routinely takes half a minute.
+            ticker: The listing the request came from, passed through to
+                the per-field fetch.
+
+        Applying the reading to the fields PINNED to the factsheet is
+        part of reading it, not a separate favour (v0.111.0). A pin is
+        the user's standing instruction about where a field's value
+        comes from, and a fresh reading of the document is exactly when
+        that instruction has something to say.
+
+        It lives here rather than in a caller because BOTH callers need
+        it, and a copy in one of them is how the two paths came to
+        disagree: the issuer refresh applied pinned fields and the
+        manual Extract button did not, so reading a factsheet by hand
+        stored the reading and left the fund's data untouched.
+
+        Fields NOT pinned to the factsheet are left alone, which was the
+        original design and is still right: an unpinned field's value
+        comes from somewhere else, and a factsheet reading is no licence
+        to overwrite it.
+
+        Returns:
+            ``(payload, error, status)``. Exactly one of the first two
+            is None. ``payload`` is ``{isin, extraction, factsheet,
+            fields_applied, fields_failed}``; ``error`` is a
+            jsonify-ready dict.
+        """
+        from porxpy import ai as _ai
+
+        meta = factsheet_get(isin)
+        fp = factsheet_file(isin)
+        if not meta or not fp:
+            return None, {"error": "no factsheet stored for this fund"}, 404
+
         # Reading a factsheet is a single opaque call to the Anthropic
         # API and routinely takes half a minute. It cannot count itself,
         # so it reports PHASES instead and the bar sweeps — which still
         # answers "what is it doing", which is the whole point.
-        ptok = _job_token()
         progress_start(ptok, 0, "reading the document", "steps")
         try:
             progress_phase(ptok, "asking the model to read it")
@@ -4807,7 +4950,7 @@ def create_app() -> Flask:
                                             prompt=custom or None)
         except (RuntimeError, ValueError) as exc:
             progress_finish(ptok)
-            return jsonify({"error": str(exc)}), 502
+            return None, {"error": str(exc)}, 502
         progress_phase(ptok, "checking what came back")
 
         # The API call has already succeeded and been paid for by this
@@ -4823,12 +4966,12 @@ def create_app() -> Flask:
             import traceback
             traceback.print_exc()
             progress_finish(ptok)
-            return jsonify({
+            return None, {
                 "error": f"the factsheet was read, but processing the reply "
                          f"failed: {type(exc).__name__}: {exc}",
                 "raw": {k: v for k, v in (raw or {}).items()
                         if not str(k).startswith("_")},
-            }), 500
+            }, 500
 
         # Facet items are stored as the DOCUMENT said them, canonicalised
         # only where the vocabulary recognises the value. A key the model
@@ -4950,13 +5093,606 @@ def create_app() -> Flask:
             import traceback
             traceback.print_exc()
             progress_finish(ptok)
-            return jsonify({"error": f"extraction succeeded but could not be "
-                                     f"stored: {exc}",
-                            "extraction": result}), 500
+            return None, {"error": f"extraction succeeded but could not be "
+                                   f"stored: {exc}",
+                          "extraction": result}, 500
+        # Into every field pinned to "factsheet", and into no others.
+        # After the store, because the per-field fetch reads the
+        # extraction back out of it.
+        applied, failed = {}, {}
+        for fieldname, env in field_pins(isin).items():
+            if env.get("source") != "factsheet":
+                continue
+            try:
+                value, note = fetch_field_from_source(ticker, isin,
+                                                      fieldname, "factsheet")
+            except (RuntimeError, ValueError) as exc:
+                failed[fieldname] = str(exc)
+                continue
+            field_source_set(isin, fieldname, "factsheet", value)
+            applied[fieldname] = {"value": value, "note": note}
+
         progress_finish(ptok)
+        return {"isin": isin, "extraction": result, "factsheet": stored,
+                "fields_applied": applied, "fields_failed": failed}, None, 200
+
+    # -----------------------------------------------------------------------
+    # Issuer document refresh (v0.105.0)
+    # -----------------------------------------------------------------------
+    @app.route("/api/funds/<ticker>/issuer_refresh", methods=["POST"])
+    def api_fund_issuer_refresh(ticker: str) -> Response:
+        """Fetch this fund's latest factsheet and holdings from its issuer.
+
+        The button behind "Get latest Factsheet and Holdings". Two
+        independent halves, run in order and reported separately:
+
+        1. **Factsheet** - locate it at the issuer, store it against the
+           fund (replacing the previous one, extraction included), and
+           then, IF the AI helper is available, read it and apply the
+           result to every field the user has pinned to ``factsheet``.
+        2. **Holdings** - locate the file, parse it with the column
+           mapping the user entered last time, enrich the rows through
+           Yahoo, and replace the ``upload`` holdings source.
+
+        Neither half is allowed to fail the other, and three ordinary
+        absences are reported as SKIPS rather than errors: no API key or
+        the AI helper switched off (the factsheet is still fetched and
+        stored - see ``ai_unavailable``), no remembered column mapping,
+        and an issuer PorxPy cannot yet locate documents for.
+
+        Body (JSON, all optional): ``{"factsheet": bool, "holdings": bool}``
+        to run only one half.
+
+        Returns:
+            ``{ticker, isin, issuer, factsheet: {...}, holdings: {...}}``
+            where each half carries ``status`` (``"ok"`` / ``"skipped"``
+            / ``"failed"``), a human ``message``, and whatever detail it
+            has. HTTP 200 whenever the fund itself was addressable: a
+            half that could not run is a result, not a transport error.
+        """
+        from porxpy import issuers
+        from porxpy.upload import (get_upload_prefs, mapping_mismatch,
+                                   upload_commit, upload_preview_from_source)
+
+        isin = listing_identity_lookup_isin(ticker)
+        if not isin:
+            return jsonify({"error": f"no identity recorded for {ticker!r}; "
+                                     "refetch the fund first"}), 404
+
+        body = request.get_json(force=True, silent=True) or {}
+        do_fs = body.get("factsheet", True) is not False
+        do_hd = body.get("holdings", True) is not False
+
+        # The fund's name, for the adapters that recognise a house by it.
+        # Read straight out of the cached profile rather than re-fetched:
+        # this is a hint for picking an adapter, and a network round trip
+        # to improve a hint would be the wrong trade.
+        prof = ((cache_read(ticker, "profile").get("profile") or {})
+                .get("value") or {})
+        if not isinstance(prof, dict):
+            prof = {}
+        ref = issuers.fund_ref(isin, ticker,
+                               prof.get("longName") or prof.get("shortName") or "")
+        adapter = issuers.adapter_for(ref)
+
+        ptok = _job_token()
+        progress_start(ptok, 0, f"asking {adapter.label}", "steps")
+        out = {"ticker": ticker, "isin": isin,
+               "issuer": {"key": adapter.key, "label": adapter.label},
+               "factsheet": {"status": "skipped", "message": "not requested"},
+               "holdings":  {"status": "skipped", "message": "not requested"}}
+        try:
+            if do_fs:
+                progress_phase(ptok, "looking for the latest factsheet")
+                out["factsheet"] = _issuer_refresh_factsheet(ticker, isin,
+                                                             ref, adapter, ptok)
+            if do_hd:
+                progress_phase(ptok, "looking for the latest holdings file")
+                out["holdings"] = _issuer_refresh_holdings(
+                    ticker, isin, ref, adapter, ptok, get_upload_prefs,
+                    mapping_mismatch, upload_preview_from_source, upload_commit,
+                    use_house_mapping=bool(body.get("use_house_mapping")))
+        finally:
+            progress_finish(ptok)
+        return jsonify(out)
+
+    def _located_failure(kind: str, adapter, found) -> dict:
+        """The report for a document that could not be located.
+
+        One shape for both halves, because "we could not find it" needs
+        the same three things said either way: that nothing was stored,
+        what was attempted, and - the part users actually act on - that
+        uploading it once by hand teaches PorxPy the address.
+        """
+        detail = list(found.tried)
+        if found.note:
+            detail.append(found.note)
+        return {"status": "skipped",
+                "message": f"no {kind} found at {adapter.label}",
+                "tried": detail}
+
+    def _issuer_refresh_factsheet(ticker: str, isin: str, ref, adapter,
+                                  ptok: str) -> dict:
+        """Fetch, store and (if possible) read the latest factsheet.
+
+        Storing and reading are separate outcomes on purpose. A stored
+        factsheet is useful on its own - it is the document, viewable,
+        and one click from being read later - so an install with no API
+        key gets the fetch and a plain sentence about the part that did
+        not run.
+        """
+        from porxpy import issuers
+        found = issuers.locate(ref, adapter, "factsheet")
+        if not found.got:
+            return _located_failure("factsheet", adapter, found)
+
+        got = found.got
+
+        # An unchanged document is not worth re-reading (v0.106.2).
+        #
+        # This button is pressed on a schedule, and an issuer's factsheet
+        # is revised monthly at best — so most runs download the same
+        # bytes that are already stored. Replacing them would clear the
+        # extraction that belongs to them (an extraction must not
+        # outlive its document) and then pay the AI helper to produce
+        # the same reading again. Comparing the bytes costs nothing and
+        # is exact: same document, same reading, keep both.
+        prev = factsheet_get(isin) or {}
+        prev_fp = factsheet_file(isin)
+        if prev.get("extraction") and prev_fp:
+            try:
+                unchanged = prev_fp.read_bytes() == got.data
+            except OSError:
+                unchanged = False
+            if unchanged:
+                return {"status": "ok", "url": got.url, "why": found.why,
+                        "stored": prev.get("filename"),
+                        "bytes": prev.get("bytes"),
+                        "message": (f"{prev.get('filename')} is unchanged "
+                                    f"since the copy already stored"),
+                        "extraction": {
+                            "status": "skipped",
+                            "message": "the document has not changed, so the "
+                                       "reading already on file still stands"}}
+
+        try:
+            meta = factsheet_put(isin, got.filename, got.data)
+        except ValueError as exc:
+            return {"status": "failed", "message": str(exc), "url": got.url}
+
+        # Same two follow-ups the upload route does, for the same
+        # reasons: the previous document's reading must not outlive it,
+        # and where this one came from is worth remembering - this time
+        # it is a URL, which is exactly what makes the NEXT refresh able
+        # to skip discovery entirely.
+        _clear_supplied_source(isin, "factsheet", None)
+        upload_source_put(isin, "factsheet", got.url,
+                          source_kind="url", filename=got.filename)
+
+        res = {"status": "ok", "stored": meta.get("filename"),
+               "bytes": meta.get("bytes"), "url": got.url, "why": found.why,
+               "message": f"stored {meta.get('filename')} from {found.why}"}
+
+        blocked = ai_unavailable()
+        if blocked:
+            # NOT a failure. See ai_unavailable().
+            res["extraction"] = {"status": "skipped", "message": blocked}
+            return res
+
+        progress_phase(ptok, "reading the factsheet")
+        payload, err, _status = run_factsheet_extraction(isin, "", ptok, ticker)
+        if err is not None:
+            res["extraction"] = {"status": "failed",
+                                 "message": err.get("error") or "extraction failed"}
+            return res
+
+        # Applying the reading to the pinned fields happens inside
+        # run_factsheet_extraction, so the manual Extract button does
+        # exactly the same thing. It was a loop here, and that path had
+        # no equivalent.
+        applied = (payload or {}).get("fields_applied") or {}
+        failed = (payload or {}).get("fields_failed") or {}
+        ex = (payload or {}).get("extraction") or {}
+        res["extraction"] = {
+            "status": "ok",
+            "fields_applied": applied,
+            "fields_failed": failed,
+            "as_of": ex.get("as_of") or "",
+            "message": (f"read the factsheet and applied "
+                        f"{len(applied)} pinned field(s)"),
+        }
+        return res
+
+    def _mapping_summary(blob: dict) -> dict:
+        """A stored mapping said in terms a person can check.
+
+        The dialog that asks "use the standard mapping?" has to show
+        enough for the answer to mean something, and a dict of column
+        indices is not that. The column NAMES it was made against are,
+        which is the same thing that makes the mapping checkable at
+        import time.
+        """
+        cols = blob.get("columns") or []
+        named = {}
+        for fieldname, idx in sorted((blob.get("mapping") or {}).items()):
+            if isinstance(idx, int) and 0 <= idx < len(cols):
+                named[fieldname] = cols[idx]
+        return {"columns": named,
+                "header_row": blob.get("header_row"),
+                "from_ticker": blob.get("from_ticker") or "",
+                "from_file": blob.get("from_file") or "",
+                "saved_at": blob.get("saved_at") or ""}
+
+    def _issuer_refresh_holdings(ticker: str, isin: str, ref, adapter,
+                                 ptok: str, get_upload_prefs, mapping_mismatch,
+                                 upload_preview_from_source, upload_commit,
+                                 use_house_mapping: bool = False) -> dict:
+        """Fetch the latest holdings file and re-run the saved import.
+
+        The saved import, exactly: the same mapping, header row, decimal
+        and weight-unit choices, the same per-field defaults and the same
+        enrichment setting the user committed last time. Nothing here
+        decides how to read a file - that decision was the user's, and
+        re-making it automatically is how an unattended import produces
+        a plausible wrong answer.
+
+        Which is also why the mapping is CHECKED against the file that
+        arrived before anything is committed: see
+        :func:`porxpy.upload.mapping_mismatch`.
+        """
+        from porxpy import issuers
+        from porxpy.upload import resolve_header_row
+        from porxpy.utils import issuer_mapping_get
+
+        # A synthetic ETF has no holdings worth downloading (v0.107.0).
+        #
+        # It gets its index return from a swap, and the file it publishes
+        # under "holdings" is the SUBSTITUTE BASKET the counterparty
+        # posts as collateral: real securities, correctly listed, and
+        # nothing whatever to do with what the fund tracks. A synthetic
+        # S&P 500 ETF routinely posts Japanese equities. Importing that
+        # as look-through does not merely add noise, it asserts an
+        # exposure the fund does not have, and it would then flow into
+        # every breakdown, every target deviation and the optimiser.
+        #
+        # So the holdings half is skipped for these funds and says why.
+        # The factsheet half still runs, and it is the RIGHT source for
+        # them: the issuer's own published index breakdown is what a
+        # synthetic fund's exposure actually is.
+        #
+        # Read from the override store rather than the effective
+        # structure block: Yahoo publishes no replication method at all,
+        # so "synthetic" can only ever be an assertion — by the user, by
+        # justETF or from a factsheet — and assertions live there. A fund
+        # nobody has classified reads "unknown" and is handled normally,
+        # which is the honest default: not knowing is not a reason to
+        # skip the download.
+        replication = str(override_get(isin, "replication") or "").strip().lower()
+        if replication == "synthetic":
+            return {"status": "skipped",
+                    "message": "this fund is synthetically replicated, so the "
+                               "file it publishes is the swap collateral "
+                               "basket rather than what it tracks - PorxPy "
+                               "does not import it as holdings. Its exposure "
+                               "comes from the factsheet instead."}
+
+        # Which mapping to use, and whose decision that is.
+        #
+        # A fund's OWN saved mapping wins: the user made it against this
+        # fund's own file. The fund house's standard is the fallback,
+        # and never silent - applying one house-wide default to a fund
+        # nobody has looked at is precisely the unattended-import risk
+        # the column check exists for, so it is offered and confirmed.
+        # `use_house_mapping` is that confirmation coming back.
+        own = get_upload_prefs(ticker)
+        if not (own and (own.get("mapping") or {})):
+            own = None
+        house = issuer_mapping_get(adapter.key)
+
+        # v0.106.1: the file is judged BEFORE it is accepted, not after.
+        #
+        # A fund house publishes several reports per fund - iShares has
+        # a holdings CSV and a SpreadsheetML fund export, with different
+        # columns, in different languages, headed on different rows -
+        # and which one a mapping belongs to is only answerable by
+        # opening it. Ranking them by filename was a guess, and when the
+        # guess was wrong the run reported the file as having changed
+        # layout, which was untrue and unactionable.
+        #
+        # So each candidate is previewed and checked against the mapping
+        # in turn, and the first that FITS is the one imported. The
+        # first readable one is kept aside regardless, because a run
+        # that matches nothing still has something useful to offer: the
+        # file itself, handed to the mapping dialog.
+        state: dict = {"preview": None, "prefs": None, "row": 0,
+                       "used_house": False, "fallback": None,
+                       "reason": "", "scratch": None}
+
+        def _judge(got) -> str:
+            try:
+                scratch = _stash_bytes(got.filename, got.data)
+                preview = upload_preview_from_source(str(scratch))
+            except (ValueError, RuntimeError, OSError) as exc:
+                return f"could not read it: {exc}"
+            if state["fallback"] is None:
+                state["fallback"] = (preview, got, scratch)
+            reason = ""
+            for blob, is_house in ((own, False), (house, True)):
+                if not blob:
+                    continue
+                row, why = resolve_header_row(blob, preview,
+                                              require_columns=True)
+                if row is not None:
+                    state.update(preview=preview, prefs=blob, row=row,
+                                 used_house=is_house, scratch=scratch)
+                    return ""
+                reason = reason or why
+            state["reason"] = reason or state["reason"]
+            return reason or "no saved mapping fits this file"
+
+        found = issuers.locate(ref, adapter, "holdings",
+                               accept=_judge if (own or house) else None)
+
+        # Nothing fitted - but if something was READABLE, the useful
+        # answer is not "skipped", it is the mapping dialog with that
+        # file already in it. The user is one mapping away from a fund
+        # that refreshes by itself for ever after, and the download has
+        # already happened.
+        if not found.got:
+            fb = state["fallback"]
+            if fb is None:
+                return _located_failure("holdings file", adapter, found)
+            preview, got, _scratch = fb
+            return {"status": "needs_mapping",
+                    "url": got.url,
+                    "downloaded": got.filename,
+                    "preview": preview,
+                    "reason": state["reason"],
+                    "message": (f"PorxPy downloaded {got.filename} from "
+                                f"{adapter.label} but has no mapping that "
+                                f"fits it"
+                                + (f" - {state['reason']}" if state["reason"] else "")
+                                + ". Map its columns once and every refresh "
+                                  "after this one can run unattended.")}
+
+        got = found.got
+        preview = state["preview"]
+        prefs = state["prefs"]
+        used_house = state["used_house"]
+
+        # The house standard fitted, and the user has not said to use
+        # it. Ask - with the file already downloaded and previewed, so
+        # either answer is one round trip away from being acted on.
+        if used_house and not use_house_mapping:
+            return {"status": "needs_mapping",
+                    "house": adapter.key,
+                    "house_label": adapter.label,
+                    "house_mapping": _mapping_summary(house),
+                    "url": got.url,
+                    "downloaded": got.filename,
+                    "preview": preview,
+                    "message": (f"No column mapping saved for this fund. "
+                                f"PorxPy has a standard {adapter.label} "
+                                f"mapping and it fits {got.filename} - "
+                                f"use it for this fund?")}
+
+        progress_phase(ptok, "importing and enriching the holdings")
+        try:
+            result = upload_commit(
+                preview["token"], ticker=ticker, isin=isin,
+                mapping=prefs.get("mapping") or {},
+                # The row the header was FOUND on, not the one the
+                # mapping was saved with. An issuer's preamble carries
+                # the fund name, its inception date and a holdings date,
+                # and those come and go per fund and per report.
+                header_row=state["row"],
+                decimal=prefs.get("decimal") or "auto",
+                weight_unit=prefs.get("weight_unit") or "auto",
+                defaults=prefs.get("defaults") or {},
+                # The saved choice, like every other setting above
+                # (v0.110.2). It was forced on until then, on the
+                # reasoning that a freshly downloaded file is when the
+                # issuer's blanks are most worth filling — which is
+                # true, and still left the mapping dialog offering a
+                # checkbox this path ignored. A control that does not
+                # control anything is worse than no control, and the
+                # user who unticks it has said something.
+                #
+                # WHICH fields get filled is still not decided here:
+                # that is utils.enrichment_fields(), the same list the
+                # fund page's button uses.
+                enrich=bool(prefs.get("enrich")),
+            )
+        except (ValueError, RuntimeError) as exc:
+            return {"status": "failed", "url": got.url,
+                    "message": f"the import failed: {exc}"}
+
+        return {"status": "ok", "url": got.url, "why": found.why,
+                "mapping_from": (f"the standard {adapter.label} mapping"
+                                 if used_house else "this fund's saved mapping"),
+                # Said out loud because it is no longer always the same
+                # answer: the import follows the saved choice, and the
+                # user should not have to infer which way it went.
+                "enriched": bool(prefs.get("enrich")),
+                "rows": result.get("rows_written"),
+                "weight_sum_pct": result.get("weight_sum_pct"),
+                "warnings": result.get("warnings") or {},
+                "message": (f"imported {result.get('rows_written')} rows from "
+                            f"{found.why}")}
+
+    # -----------------------------------------------------------------------
+    # Fund houses — sites and standard mappings (v0.106.0)
+    # -----------------------------------------------------------------------
+    @app.route("/api/settings/field_sources", methods=["GET", "PUT"])
+    def api_field_source_defaults() -> Response:
+        """The per-field source defaults applied to newly saved funds.
+
+        ``PUT`` body: ``{"sources": {field: source, ...}}`` — the whole
+        map, replacing what was stored. Sent by the Edit fund dialog's
+        *Save choices as default* button, which reads the sources
+        currently chosen in the dialog.
+
+        Fields pinned to ``user`` are dropped rather than rejected: that
+        pin means "the value I typed is the answer", and a value typed
+        for one fund is not a default for every other. The response says
+        what was kept, so the dialog can report it honestly rather than
+        implying it saved more than it did.
+        """
+        from porxpy.utils import (field_source_defaults,
+                                  field_source_defaults_set)
+        if request.method == "GET":
+            return jsonify({"sources": field_source_defaults()})
+        body = request.get_json(force=True, silent=True) or {}
+        incoming = body.get("sources")
+        if not isinstance(incoming, dict):
+            return jsonify({"error": "sources must be an object"}), 400
+        saved = field_source_defaults_set(incoming)
+        dropped = sorted(set(incoming) - set(saved))
+        return jsonify({"sources": saved, "dropped": dropped})
+
+    @app.route("/api/issuers", methods=["GET"])
+    def api_issuers() -> Response:
+        """Every fund house PorxPy knows, with its settings.
+
+        One call backs both surfaces that need this: the Settings tab's
+        Fund houses panel, and the prompt after a holdings upload that
+        offers to make the new mapping a house standard.
+
+        ``sites`` is in the user's own priority order, first tried
+        first. ``discovers`` says whether this house's adapter can find
+        documents by itself or only re-fetch a URL the user has
+        supplied — the difference decides whether an empty site list is
+        a limitation or simply irrelevant.
+
+        Returns:
+            ``{houses: [{key, label, sites, discovers, default_sites,
+            holdings_mapping}]}``.
+        """
+        from porxpy import issuers
+        from porxpy.config import DEFAULT_ISSUER_SITES
+        from porxpy.utils import issuer_mapping_get, issuer_sites
+        out = []
+        for a in issuers.ADAPTERS:
+            hm = issuer_mapping_get(a.key)
+            out.append({
+                "key": a.key,
+                "label": a.label,
+                "sites": issuer_sites(a.key),
+                "default_sites": list(DEFAULT_ISSUER_SITES.get(a.key) or ()),
+                # Read off the class rather than stored: "can this house
+                # browse its own site" is a fact about the code, and a
+                # copy of it in settings would go stale the moment
+                # somebody described the house's documents.
+                #
+                # Since v0.109.0 that description IS the answer: a house
+                # discovers exactly when it has document specs. (It used
+                # to test for an overridden `discover_at`, which every
+                # house stopped doing when that method became shared —
+                # so the flag read False for iShares, which plainly does
+                # discover.)
+                "discovers": bool(type(a).DOCUMENTS),
+                "holdings_mapping": (_mapping_summary(hm) if hm else None),
+            })
+        return jsonify({"houses": out})
+
+    @app.route("/api/issuers/<house>/sites", methods=["PUT"])
+    def api_issuer_sites(house: str) -> Response:
+        """Replace one house's site list, in priority order.
+
+        Body: ``{"sites": [url, ...]}``. Order is the setting — the
+        adapters walk it first to last — so it is stored exactly as
+        given and never sorted.
+        """
+        body = request.get_json(force=True, silent=True) or {}
+        sites = body.get("sites")
+        if not isinstance(sites, list):
+            return jsonify({"error": "sites must be a list"}), 400
+        from porxpy.utils import issuer_sites_set
+        try:
+            saved = issuer_sites_set(house, sites)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 404
+        return jsonify({"house": house, "sites": saved})
+
+    @app.route("/api/issuers/<house>/holdings_mapping",
+               methods=["PUT", "DELETE"])
+    def api_issuer_mapping(house: str) -> Response:
+        """Set or clear a fund house's standard holdings mapping.
+
+        ``PUT`` with ``{"ticker": "..."}`` copies that fund's saved
+        upload prefs into the house standard. Copied on the SERVER from
+        the stored prefs rather than posted by the browser, so the
+        standard is provably the mapping that just worked rather than
+        the dialog's idea of it, and the two shapes cannot drift.
+
+        ``DELETE`` clears it.
+
+        A house standard only makes sense because one issuer's holdings
+        exports share a layout across its whole range — which is true of
+        iShares and is the reason this exists. It is still checked
+        against every file it is applied to (see
+        ``upload.mapping_mismatch``), so a house that turns out to be
+        less uniform than expected produces a refusal, not bad data.
+        """
+        from porxpy.upload import get_upload_prefs
+        from porxpy.utils import issuer_mapping_set
+
+        if request.method == "DELETE":
+            try:
+                issuer_mapping_set(house, None)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 404
+            return jsonify({"house": house, "holdings_mapping": None})
+
+        body = request.get_json(force=True, silent=True) or {}
+        ticker = (body.get("ticker") or "").strip()
+        prefs = get_upload_prefs(ticker) if ticker else None
+        if not prefs or not (prefs.get("mapping") or {}):
+            return jsonify({"error": f"no saved column mapping for "
+                                     f"{ticker or '(no ticker)'}"}), 404
+        if not (prefs.get("columns") or []):
+            return jsonify({"error": "that mapping was saved before PorxPy "
+                                     "recorded column names, so it cannot be "
+                                     "checked against another file — re-upload "
+                                     "the file once to record them"}), 409
+        from porxpy.utils import upload_source_get as _usg
+        rec = dict(prefs)
+        rec["from_ticker"] = ticker
+        rec["from_file"] = ((_usg(listing_identity_lookup_isin(ticker) or "",
+                                  "holdings") or {}).get("filename") or "")
+        try:
+            saved = issuer_mapping_set(house, rec)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 404
+        return jsonify({"house": house,
+                        "holdings_mapping": _mapping_summary(saved or {})})
+
+    @app.route("/api/funds/<ticker>/issuer", methods=["GET"])
+    def api_fund_issuer(ticker: str) -> Response:
+        """Which fund house this fund belongs to, if any.
+
+        Asked by the holdings upload dialog once a commit succeeds, so
+        it can offer to make the mapping the house standard — an offer
+        that must not appear for a fund whose issuer PorxPy does not
+        recognise.
+        """
+        from porxpy import issuers
+        from porxpy.utils import issuer_mapping_get
+        isin = listing_identity_lookup_isin(ticker) or ""
+        prof = ((cache_read(ticker, "profile").get("profile") or {})
+                .get("value") or {})
+        if not isinstance(prof, dict):
+            prof = {}
+        ref = issuers.fund_ref(isin, ticker,
+                               prof.get("longName") or prof.get("shortName") or "")
+        a = issuers.adapter_for(ref)
+        known = a is not issuers.GENERIC_ADAPTER
+        hm = issuer_mapping_get(a.key) if known else None
         return jsonify({"ticker": ticker, "isin": isin,
-                        "extraction": result,
-                        "factsheet": stored})
+                        "known": known,
+                        "key": a.key if known else "",
+                        "label": a.label if known else "",
+                        "has_standard_mapping": bool(hm)})
 
     @app.route("/api/funds/<ticker>/factsheet/file", methods=["GET"])
     def api_fund_factsheet_file(ticker: str) -> Response:
@@ -4979,6 +5715,91 @@ def create_app() -> Flask:
             as_attachment=False,
             download_name=meta.get("filename") or fp.name,
         )
+
+    # What may be written to the upload scratch directory, and under
+    # what name. Shared by the drag-and-drop endpoint and the issuer
+    # refresh (v0.105.0), which both arrive with bytes and a name and no
+    # path: one implementation, so a file fetched from an issuer is
+    # sanitised, extension-checked and named by exactly the same rules
+    # as one a user drops.
+    STASHABLE_EXTENSIONS = ((".csv", ".tsv", ".txt", ".xlsx", ".xlsm", ".xls")
+                            + FACTSHEET_EXTENSIONS)
+
+    def _stash_bytes(name: str, data: bytes):
+        """Write bytes to the upload scratch directory; return the path.
+
+        Args:
+            name: The name the file arrived under. Only its stem and
+                extension are used - the rest is discarded, because a
+                client-supplied name is attacker-controlled in principle
+                and path-bearing in practice on some platforms.
+            data: The file.
+
+        Returns:
+            ``Path`` to the written file, which every downstream reader
+            takes as an ordinary source.
+
+        Raises:
+            ValueError: For an extension nothing here can parse.
+            OSError: If the write fails.
+        """
+        base = Path(name or "").name
+        ext = Path(base).suffix.lower()
+        if ext not in STASHABLE_EXTENSIONS:
+            raise ValueError(f"unsupported file type: {ext or '(none)'}")
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", Path(base).stem)[:60] or "dropped"
+        dest = UPLOAD_DIR / f"drop_{uuid.uuid4().hex[:8]}_{safe}{ext}"
+        dest.write_bytes(data or b"")
+        return dest
+
+    @app.route("/api/upload/open/<token>", methods=["POST"])
+    def api_upload_open(token: str) -> Response:
+        """Open a previewed file in whatever the machine opens it with.
+
+        PorxPy runs on the user's own machine, and the mapping dialog
+        shows five sample rows of a file that may have thirty columns
+        and six lines of preamble. Deciding which column is which is far
+        easier with the actual file open beside the dialog — in Excel,
+        for a spreadsheet — and the app is in a position to just open
+        it.
+
+        Only the file THIS TOKEN was previewed from, and only when that
+        was a local path: the token is the permission, so a caller
+        cannot name an arbitrary path to launch. A file fetched straight
+        from a URL has no local copy and simply reports that it has
+        none, which is not an error.
+
+        Returns:
+            ``{opened: bool, path, note}``.
+        """
+        from porxpy.upload import _load_token
+        payload = _load_token(token)
+        if payload is None:
+            return jsonify({"error": "preview token expired or not found"}), 404
+        if (payload.get("source_kind") or "") != "disk":
+            return jsonify({"opened": False, "path": "",
+                            "note": "this file was read straight from a URL, "
+                                    "so there is no local copy to open"})
+        path = Path(str(payload.get("source_value") or ""))
+        if not path.exists():
+            return jsonify({"opened": False, "path": str(path),
+                            "note": "the file is no longer on disk"})
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(str(path))          # noqa: S606
+            else:
+                import subprocess
+                subprocess.Popen(
+                    ["open" if sys.platform == "darwin" else "xdg-open",
+                     str(path)])
+        except Exception as exc:                  # noqa: BLE001
+            # Never fatal: the dialog works perfectly well without this,
+            # and a machine with no handler for .csv is a preference,
+            # not a fault.
+            return jsonify({"opened": False, "path": str(path),
+                            "note": f"could not open it: {exc}"})
+        return jsonify({"opened": True, "path": str(path), "note": ""})
 
     @app.route("/api/upload/stash", methods=["POST"])
     def api_upload_stash() -> Response:
@@ -5003,24 +5824,14 @@ def create_app() -> Flask:
         if f is None or not (f.filename or "").strip():
             return jsonify({"error": "no file in request"}), 400
 
-        # Keep the extension — the parser dispatches on it — but not the
-        # rest of the client-supplied name, which is attacker-controlled
-        # in principle and path-bearing in practice on some platforms.
+        # The extension whitelist and the naming rule live in
+        # _stash_bytes, shared with the issuer refresh, so a fetched file
+        # and a dropped one cannot be treated differently.
         name = Path(f.filename).name
-        ext = Path(name).suffix.lower()
-        # Data files plus factsheet documents: this endpoint backs every
-        # drop zone, and a list that omitted PDFs would let the factsheet
-        # zone accept a file the server then refused.
-        STASHABLE = ((".csv", ".tsv", ".txt", ".xlsx", ".xlsm", ".xls")
-                     + FACTSHEET_EXTENSIONS)
-        if ext not in STASHABLE:
-            return jsonify({"error": f"unsupported file type: {ext or '(none)'}"}), 400
-
-        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        safe = re.sub(r"[^A-Za-z0-9._-]", "_", Path(name).stem)[:60] or "dropped"
-        dest = UPLOAD_DIR / f"drop_{uuid.uuid4().hex[:8]}_{safe}{ext}"
         try:
-            f.save(str(dest))
+            dest = _stash_bytes(name, f.read() or b"")
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         except OSError as exc:
             return jsonify({"error": f"could not save file: {exc}"}), 500
 

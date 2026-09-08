@@ -1,6 +1,6 @@
 # FACET_TREE.md — the four facet trees
 
-*Current as of v0.103.2. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.110.3. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Sections 1–5 describe how the facet trees behave **today**, across all
@@ -410,6 +410,59 @@ should agree on it, and the source-rank rule that settles a facet
 disagreement settles this one too), it is sortable and filterable in both
 holdings tables, and it is editable per row. It is never a breakdown, a
 target, or something the optimiser reads.
+
+---
+
+## 8d. A thematic focus is a target, but not a tree (v0.104.0)
+
+`focus_theme` is targetable — you can ask for 8% artificial intelligence
+and the optimiser will design toward it — and it is not one of this
+document's four trees. The distinction is the same one §8, §8b and §8c
+draw, approached from a fourth side, and it is worth stating because
+"targetable" and "is a facet tree" have now come apart in both
+directions.
+
+**It is a metadata facet, not a breakdown.** Its value is a scalar on the
+fund's structure block: `focus_detail`, but only when `focus_type` says
+the focus is thematic. Like `market_cap` and `style_box` it reaches the
+portfolio rollup as a one-hot at weight 1.0, which is precisely what a
+theme means — a fund built around water counts for water with every
+euro in it, because every holding in it was bought for that mandate.
+There is no look-through that could refine that, and a "60% thematic"
+reading of an AI fund would be a claim nobody made. So it has no
+breakdown card on the fund page, no source selector, and no entry in
+`FACET_LEVELS`.
+
+**It has no vocabulary file, and cannot have one.** Every tree in this
+document exists because raw text can be resolved to a canonical node
+that carries its ancestors. Nothing can enumerate "Artificial
+Intelligence" ahead of time — which is exactly why
+`focus_detail_vocabulary` returns `None` (free text) for a thematic
+focus while returning real vocabularies for a geography or sector one.
+`config.focus_theme_key` therefore does the only normalisation available
+to it: case-fold and collapse whitespace, so that two funds spelling one
+theme differently land in one bucket rather than two. That is a
+comparison rule, not a resolution: the fund keeps whatever the user
+typed, and there is no parent to derive.
+
+**The residuals carry their usual meanings, and the split matters more
+here than elsewhere.** A fund whose focus is geographic, sectoral or
+absent answers `n/a` — it is not a theme fund whose theme is missing,
+the question simply does not apply to it — while a fund marked thematic
+with no theme named answers `unknown`, a gap someone can close in Edit
+fund. On this facet `n/a` is normally the *majority* answer, which is
+why the X-ray card and the Targets tab spell it "No thematic focus"
+rather than leaving it as the two-letter footnote it is on the other
+facets. Neither residual can carry a target: one is a data gap and the
+other is the absence of the thing being targeted.
+
+**Where its values come from.** The Targets editor offers the themes
+your own funds actually declare, read from `overrides.json`, with the
+number of funds behind each. That is complete rather than convenient: a
+thematic focus can only ever be *asserted*, by the user or by the AI
+factsheet reader, and both write there. Nothing derives one —
+`_derive_focus_from_name` answers only "sector" or "geography", because
+a fund name cannot be matched against a vocabulary that does not exist.
 
 ---
 

@@ -1691,9 +1691,10 @@
           </div>
           <div class="pleg" id="pCurLeg"></div>
         </div>
-        <!-- v0.28.0 — the two metadata facets. One-hot per fund, so
-             there is no look-through variant and no source selector:
-             these render identically in both breakdown modes. -->
+        <!-- v0.28.0 — the metadata facets (a third, thematic focus,
+             joined them in v0.104.0). One-hot per fund, so there is no
+             look-through variant and no source selector: these render
+             identically in both breakdown modes. -->
         <div class="cc">
           <div class="ct">
             // market cap
@@ -1713,6 +1714,16 @@
             <canvas id="pSbChart"></canvas>
           </div>
           <div class="pleg" id="pSbLeg"></div>
+        </div>
+        <div class="cc">
+          <div class="ct">
+            // thematic focus
+            <span class="bkcov" id="ftCov"></span>
+          </div>
+          <div style="position:relative;width:100%;height:190px">
+            <canvas id="pFtChart"></canvas>
+          </div>
+          <div class="pleg" id="pFtLeg"></div>
         </div>
       </div>
       </div><!-- /pSubXray -->
@@ -2312,6 +2323,20 @@
         </span>
       </label>
 
+      <div class="ct" style="margin:1.75rem 0 .5rem;border-top:1px solid var(--border);padding-top:1.5rem">// fund houses</div>
+      <div style="font-family:var(--mono);font-size:.7rem;color:var(--muted);line-height:1.6;margin:0 0 .9rem">
+        Where <strong style="color:var(--text)">Get latest Factsheet and Holdings</strong>
+        looks, per fund house. A house runs a separate site per market and each
+        lists only the share classes sold there — the same iShares ETF is
+        <em>IWDA</em> in Amsterdam and <em>SWDA</em> in London — so the sites are
+        tried in turn and the first that answers wins.
+        <br><br>
+        <strong style="color:var(--text)">The order is the priority.</strong>
+        Put the market your funds are listed in first. A site you paste a
+        document URL from is added here automatically.
+      </div>
+      <div id="setIssuers" style="margin:0 0 1rem"></div>
+
       <div class="ct" style="margin:1.75rem 0 .5rem;border-top:1px solid var(--border);padding-top:1.5rem">// factsheets</div>
       <div class="fgrp" style="grid-template-columns:200px 1fr;margin:0 0 1rem;align-items:center">
         <div class="field">
@@ -2589,6 +2614,10 @@
 
     <div class="mfoot">
       <span id="efDirtyNote" class="mhint" style="flex:1;color:var(--muted)"></span>
+      <button class="btn btn-s" id="efApplyDefaultsBtn" onclick="applyDefaultFieldSources()"
+              title="Set every field that has a default source to it, and fetch what that source says. Staged in this dialog like any other source change — nothing is kept until you press Save.">Apply default sources</button>
+      <button class="btn btn-s" id="efDefaultsBtn" onclick="saveFieldSourceDefaults()"
+              title="Remember which source each field is read from, and pin new funds to those sources as they are saved. Fields set to your own value are not included — a value you typed for this fund is not a default for every other.">Save choices as default</button>
       <button class="btn btn-s" onclick="closeEditFundModal()">Cancel</button>
       <button class="btn btn-p" id="editFundSaveBtn" onclick="saveEditFundModal()">Save</button>
     </div>
@@ -3248,6 +3277,24 @@
 
      The user only adds buckets they care about. Empty facets stay
      empty. Save → PUT /api/portfolios/<pid>/targets. -->
+<!-- Issuer document refresh report (v0.105.0). Read-only: the work is
+     already done by the time this opens, and the dialog exists because
+     the run has three possible outcomes per half and "skipped" must not
+     look like "failed". -->
+<div class="modal-bg" id="issuerReportModal">
+  <div class="modal" style="max-width:620px;width:95vw;max-height:85vh;overflow-y:auto">
+    <div class="modal-h">
+      <h3 id="issuerReportTitle">Latest documents</h3>
+    </div>
+    <div class="modal-b">
+      <div id="issuerReportBody"></div>
+    </div>
+    <div class="modal-f" style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-s" onclick="hideModal('issuerReportModal')">Close</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-bg" id="targetsEditorModal">
   <div class="modal" style="max-width:760px;width:95vw;max-height:90vh;overflow-y:auto">
     <div class="modal-h">
@@ -5641,7 +5688,7 @@ function renderOptimizerTolerances(){
 
   grid.innerHTML = facets.map(f => `
     <div class="field">
-      <label class="mfl">${escapeHtml(_TG_FACET_LABELS[f] || f)} %</label>
+      <label class="mfl">${escapeHtml(facetLabel(f))} %</label>
       <input class="opterr" type="number" min="0.5" max="20" step="0.5"
              data-facet="${f}" value="${prev[f] != null ? prev[f] : 5}">
     </div>`).join('');
@@ -5655,7 +5702,7 @@ function renderOptimizerTolerances(){
   if (summary){
     summary.textContent = facets.length
       ? `${facets.length} categor${facets.length === 1 ? 'y' : 'ies'} targeted: `
-        + facets.map(f => _TG_FACET_LABELS[f] || f).join(', ')
+        + facets.map(f => facetLabel(f)).join(', ')
       : '';
   }
 }
@@ -5996,9 +6043,18 @@ function renderOptimizerResult(d){
       const lbl = `${facetLabel(facet)}${
         Object.keys(levels).length > 1 ? ` · ${LEVEL_LABELS_LONG[level] || level}` : ''}`;
       if (!r.candidates_answering){
-        lvlNotes.push(`<b>${escapeHtml(lbl)}</b>: no candidate fund reports at
-          this level — every target here reads 0%. Set these funds'
-          ${escapeHtml(facetLabel(facet))} card to Holdings or Factsheet.`);
+        // The remedy depends on the KIND of facet. A metadata facet has
+        // no breakdown card and no look-through to switch to, so naming
+        // one sends the user hunting for a control that does not exist.
+        // (Same fix as the backend's facet_warnings — the two messages
+        // describe one situation and must not prescribe two cures.)
+        lvlNotes.push(_TG_META_FACETS.includes(facet)
+          ? `<b>${escapeHtml(lbl)}</b>: no candidate fund is classified for
+             this — every target here reads 0%. It is a fund-level
+             classification, so set it per fund in Edit fund.`
+          : `<b>${escapeHtml(lbl)}</b>: no candidate fund reports at
+             this level — every target here reads 0%. Set these funds'
+             ${escapeHtml(facetLabel(facet))} card to Holdings or Factsheet.`);
       } else if ((r.targeted_keys_absent || []).length){
         lvlNotes.push(`<b>${escapeHtml(lbl)}</b>: nothing in the universe holds
           ${r.targeted_keys_absent.map(k => escapeHtml(tgKeyLabel(facet, k))).join(', ')}
@@ -6007,7 +6063,10 @@ function renderOptimizerResult(d){
       } else if (r.candidates_answering < r.candidates_total){
         lvlNotes.push(`<b>${escapeHtml(lbl)}</b>: measured on
           ${r.candidates_answering} of ${r.candidates_total} funds; the rest
-          report this facet as unknown and can only serve the remainder.`);
+          ${_TG_META_FACETS.includes(facet)
+             ? 'carry no such classification'
+             : 'report this facet as unknown'}
+          and can only serve the remainder.`);
       }
     }
   }
@@ -8222,6 +8281,16 @@ function renderPostFundActions(d){
   // refreshed by re-uploading.
   btns.push(`<button class="btn btn-s btn-sm" onclick="reloadFundDataForced()" title="Refetch everything now, whatever the age limits say: the profile, prices and sectors from Yahoo, plus every pinned field from its own source. Fields set to your own value are left alone, and uploaded holdings are not affected.">↻ Reload Fund Data</button>`);
 
+  // The issuer-document refresh (v0.105.0), placed next to Reload Fund
+  // Data because the two answer the same question about different
+  // sources: that one re-asks Yahoo, this one re-asks the fund house.
+  // It is the one thing Reload Fund Data explicitly does NOT do — its
+  // own tooltip says uploaded holdings are not affected — so the pair
+  // now covers the whole of "make this fund current".
+  btns.push(`<button class="btn btn-s btn-sm" onclick="getLatestIssuerDocuments()"
+      title="Go to this fund's issuer for the current factsheet and holdings file. The factsheet is stored and, if the AI helper is on, read and applied to the fields you have pinned to it. The holdings file is imported with the column mapping you saved last time and enriched through Yahoo, replacing the uploaded holdings.">
+      ⤓ Get latest Factsheet and Holdings</button>`);
+
   // Factsheet controls. The upload button is always offered; View only
   // once there is something to view, since a button that reliably says
   // "nothing here" is worse than no button.
@@ -8494,6 +8563,17 @@ function fmtFocus(fs){
   if (t === 'none' || !fs.focus_detail) return '—';
   const label = {region:'Region', sector:'Sector', thematic:'Thematic'}[t] || t;
   return `${label}: ${fs.focus_detail}`;
+}
+// v0.104.0 — a bucket key on the `focus_theme` facet. The key is the
+// theme itself (free text, normalised to lower case by the backend), so
+// there is no vocabulary to look up; only the two residuals need names.
+// "n/a" is spelled out because on this facet it is the majority answer
+// and a real one — the fund has a geography focus, a sector focus or
+// none — rather than the rare footnote it is on the other facets.
+function fmtFocusTheme(v){
+  if (v === 'unknown') return 'Theme not named';
+  if (v === 'n/a')     return 'No thematic focus';
+  return v ? v.charAt(0).toUpperCase() + v.slice(1) : '—';
 }
 
 // v0.21.0 — display label for the distribution policy. Detected from
@@ -10966,6 +11046,183 @@ async function reloadFundDataForced(){
   await reloadCurrentFund(true);
 }
 
+// ── Issuer document refresh (v0.105.0) ─────────────────────────────────────
+// Go to the fund house for the current factsheet and holdings file. The
+// server does both halves and reports them separately; this renders that
+// report and reloads the fund so the new data is on screen.
+//
+// Through withJobProgress like every other slow external call: this one
+// makes several requests to the issuer, may download several MB, and can
+// then spend half a minute inside the AI helper. A frozen button would
+// be indistinguishable from a hang.
+async function getLatestIssuerDocuments(opts){
+  opts = opts || {};
+  const ticker = lastFundData && lastFundData.ticker;
+  if (!ticker) return;
+  // The retry after "use the standard mapping?" asks for the HOLDINGS
+  // HALF ONLY (v0.106.2).
+  //
+  // It used to re-post the whole run, which meant the factsheet was
+  // fetched, stored and — the expensive part — sent to the AI helper a
+  // SECOND time, for a question that was only ever about holdings. The
+  // user saw it in the progress bar: read the factsheet, get asked
+  // about the mapping, read the factsheet again. One document, one
+  // reading, one API call.
+  const wantFactsheet = opts.factsheet !== false;
+  let d;
+  try {
+    d = await withJobProgress(
+      wantFactsheet ? 'Asking the issuer' : 'Importing the holdings',
+      async (tok) => {
+        const r = await fetch(
+          `${API}/funds/${encodeURIComponent(ticker)}/issuer_refresh`, {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({progress_token: tok,
+                                  factsheet: wantFactsheet,
+                                  use_house_mapping: !!opts.useHouseMapping}),
+          });
+        return await r.json();
+      });
+  } catch(e){
+    alert(`Could not reach the issuer: ${e.message || e}`);
+    return;
+  }
+  if (d.error){ alert(d.error); return; }
+  // Carry the first call's factsheet outcome into this one's report, so
+  // skipping the re-fetch does not also lose the news about it.
+  if (opts.carryFactsheet) d.factsheet = opts.carryFactsheet;
+
+  // The one outcome that is a QUESTION rather than a result: this fund
+  // has no mapping of its own, and the house has a standard one. Asked
+  // rather than assumed, because applying a portfolio-wide default to a
+  // file nobody has looked at is exactly the unattended-import risk the
+  // column check exists for.
+  if (d.holdings?.status === 'needs_mapping'){
+    const m = d.holdings.house_mapping;
+    if (m){
+      // A house standard exists AND fits the downloaded file. Ask.
+      const cols = Object.entries(m.columns || {}).map(([f,c]) => `  ${f} → ${c}`).join('\n');
+      const ok = confirm(
+        `${d.holdings.message}\n\n`
+        + (m.from_ticker ? `Saved from ${m.from_ticker}.\n` : '')
+        + `${cols}\n\n`
+        + 'It is still checked against this fund\'s file before anything is replaced.');
+      if (ok){
+        await getLatestIssuerDocuments({useHouseMapping: true,
+                                        factsheet: false,
+                                        carryFactsheet: d.factsheet});
+        return;
+      }
+    }
+    // Either there was no mapping that fits, or the user declined the
+    // house standard. Either way the file is already downloaded and
+    // parsed, so the useful next step is the mapping dialog with it in
+    // — not a message telling them to go and fetch it themselves.
+    if (d.holdings.preview){
+      showIssuerRefreshReport({...d, holdings: {
+        status: 'skipped',
+        message: `${d.holdings.downloaded || 'the file'} was downloaded — `
+                 + 'map its columns to finish the import',
+        url: d.holdings.url}});
+      openUploadModal();
+      enterUploadMapping(d.holdings.preview, null);
+      return;
+    }
+    d.holdings = {status:'skipped',
+                  message:'not imported — no column mapping was applied'};
+  }
+  showIssuerRefreshReport(d);
+  // Only when something actually landed. A run that skipped both halves
+  // changed nothing, and reloading would suggest otherwise.
+  if (d.factsheet?.status === 'ok' || d.holdings?.status === 'ok'){
+    await reloadCurrentFund(false);
+  }
+}
+
+// Offer a just-committed mapping as the fund house's standard.
+//
+// Only for a fund whose issuer PorxPy recognises, and silent otherwise:
+// an offer to "make this the standard for —" has nothing to complete
+// the sentence with. Deliberately a plain confirm rather than a dialog,
+// because it arrives on top of an upload the user has already finished
+// and must be dismissable in one keystroke.
+async function offerHouseMapping(ticker){
+  if (!ticker) return;
+  let info;
+  try {
+    const r = await fetch(`${API}/funds/${encodeURIComponent(ticker)}/issuer`);
+    info = await r.json();
+  } catch(e){ return; }
+  if (!info || !info.known) return;
+  const verb = info.has_standard_mapping ? 'Replace' : 'Set';
+  if (!confirm(
+      `${verb} the standard ${info.label} column mapping with the one you just used?\n\n`
+      + `It is then offered for any ${info.label} fund that has no mapping of its own, `
+      + `when you press "Get latest Factsheet and Holdings". `
+      + `Every file it is applied to is still checked against these column names first.`)) return;
+  try {
+    const r = await fetch(
+      `${API}/issuers/${encodeURIComponent(info.key)}/holdings_mapping`, {
+        method:'PUT', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ticker}),
+      });
+    const d = await r.json();
+    if (!r.ok || d.error) alert(d.error || `HTTP ${r.status}`);
+  } catch(e){ alert(`Could not save: ${e.message || e}`); }
+}
+
+// The report, as a modal rather than an alert: three outcomes per half,
+// each with a sentence the user may need to act on, and a "skipped"
+// that must not read like a failure. An alert() would flatten all of
+// that into one wall of text with no way to tell the three apart.
+function showIssuerRefreshReport(d){
+  const TONE = {
+    ok:      {icon:'✓', colour:'var(--green)'},
+    skipped: {icon:'–', colour:'var(--muted)'},
+    failed:  {icon:'⚠', colour:'var(--amber)'},
+  };
+  const half = (title, blk) => {
+    const b = blk || {status:'skipped', message:''};
+    const t = TONE[b.status] || TONE.skipped;
+    const bits = [];
+    if (b.rows != null) bits.push(`${Number(b.rows).toLocaleString()} rows`);
+    if (b.mapping_from) bits.push(b.mapping_from);
+    if (b.enriched != null)
+      bits.push(b.enriched ? 'enriched through Yahoo'
+                           : 'not enriched (your saved choice)');
+    if (b.weight_sum_pct != null) bits.push(`weights sum to ${Number(b.weight_sum_pct).toFixed(2)}%`);
+    // The extraction is a THIRD outcome nested inside the factsheet's,
+    // because "fetched but not read" is the normal state of an install
+    // with no API key and has to be visibly different from "not fetched".
+    const ex = b.extraction;
+    const exTone = ex ? (TONE[ex.status] || TONE.skipped) : null;
+    const applied = ex && ex.fields_applied ? Object.keys(ex.fields_applied) : [];
+    return `
+      <div style="margin-bottom:.9rem">
+        <div style="font-family:var(--mono);font-size:.72rem;color:${t.colour}">
+          ${t.icon} ${escapeHtml(title)}
+        </div>
+        <div style="font-size:.78rem;margin:.15rem 0 0 1.1rem">
+          ${escapeHtml(b.message || '')}
+          ${bits.length ? `<div style="color:var(--muted);font-size:.72rem">${escapeHtml(bits.join(' · '))}</div>` : ''}
+          ${b.url ? `<div style="font-family:var(--mono);font-size:.66rem;color:var(--muted);word-break:break-all">${escapeHtml(b.url)}</div>` : ''}
+          ${(b.tried || []).length ? `<ul style="margin:.3rem 0 0 .9rem;padding:0;color:var(--muted);font-size:.72rem">
+              ${b.tried.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>` : ''}
+          ${ex ? `<div style="margin-top:.35rem;color:${exTone.colour};font-size:.74rem">
+              ${exTone.icon} Extraction — ${escapeHtml(ex.message || '')}
+              ${applied.length ? `<div style="color:var(--muted);font-size:.7rem">${escapeHtml(applied.join(', '))}</div>` : ''}
+            </div>` : ''}
+        </div>
+      </div>`;
+  };
+  const box = document.getElementById('issuerReportBody');
+  if (!box){ alert(`${d.factsheet?.message || ''}\n${d.holdings?.message || ''}`); return; }
+  document.getElementById('issuerReportTitle').textContent =
+    `Latest documents — ${d.issuer?.label || 'issuer'}`;
+  box.innerHTML = half('Factsheet', d.factsheet) + half('Holdings', d.holdings);
+  showModal('issuerReportModal');
+}
+
 async function reloadCurrentFund(forceRefresh=false){
   if (!lastFundData) return false;
   // Capture identity BEFORE clearing — clearFundView() drops lastFundData.
@@ -11275,12 +11532,32 @@ async function renderBdUploadResolution() {
   bdUploadOnChange();   // sets enabled/disabled
 }
 
+// The display name of a facet, for every surface that names one: the
+// Resolve dialog, the optimiser's result tables and warnings, and the
+// Targets tab and its editor.
+//
+// v0.104.0: ONE map. The Targets tab kept a second one (_TG_FACET_LABELS)
+// that this one did not know about, and the two disagreed in both
+// directions on the same screen — the optimiser panel wrote "Country" in
+// its result table and "Region" in the target inputs directly above it,
+// while this map had no entry at all for the metadata facets and printed
+// them raw as "market_cap". Adding a third metadata facet would have
+// meant remembering both, which is the drift the consistency rule
+// exists to prevent, so they are now one function.
+//
+// The country facet is "Country" here, not "Region" as the Targets tab
+// used to say. That label dated from before targets were levelled, when
+// the tab offered regions alone; a country target can be set at any of
+// the three levels now, and the level is named on each row.
 function facetLabel(f) {
   return ({
     asset_class: 'Asset class',
     sector:      'Sector',
     country:     'Country',
     currency:    'Currency',
+    market_cap:  'Market cap',
+    style_box:   'Equity style',
+    focus_theme: 'Thematic focus',
   })[f] || f;
 }
 
@@ -11411,7 +11688,7 @@ function renderBdUploadAdopt(){
       <label style="display:flex;align-items:center;gap:8px;padding:.28rem 0;
                     font-family:var(--mono);font-size:.7rem">
         <input type="checkbox" class="bdadopt" data-facet="${f}" checked>
-        <span>${escapeHtml(_TG_FACET_LABELS[f] || f)}</span>
+        <span>${escapeHtml(facetLabel(f))}</span>
         ${n ? `<span style="color:var(--muted)">${n} row(s)</span>` : ''}
       </label>`;
   }).join('');
@@ -12796,6 +13073,28 @@ function _efDisplayValue(field, pin){
   return `<span class="efv">${escapeHtml(String(pin.value))}</span>`;
 }
 
+// A field's value as it is STORED, not as it is shown.
+//
+// The counterpart to fundFieldValue, and a different question from it
+// (v0.110.3). That one formats for a human — "Large cap", "0.20%",
+// "—" — which is right for a tile and wrong for anything that feeds a
+// control the user is about to submit: "Large cap" is not a value the
+// market_cap vocabulary contains, so a <select> offering "large" cannot
+// select it, silently falls back to its first option, and submits a
+// value the server then rejects.
+//
+// Not a near-copy of that switch: there is no formatting here at all,
+// only a lookup across the three blocks a field can live in.
+function fundFieldRaw(data, key){
+  if (!data) return null;
+  if (key === 'primary_asset_class') return (data.asset_class || {}).class ?? null;
+  const fs = data.fund_structure || {};
+  if (Object.prototype.hasOwnProperty.call(fs, key)) return fs[key];
+  const p = data.profile || {};
+  if (Object.prototype.hasOwnProperty.call(p, key)) return p[key];
+  return null;
+}
+
 // The input shown when a field is set to "My own value".
 //
 // focus_detail is the interesting one: its vocabulary depends on the
@@ -12850,7 +13149,13 @@ function _efOwnControl(f, pin){
   }
 
   if (f.type === 'enum' && (f.vocab || []).length){
+    // A value outside the vocabulary cannot be selected, and a <select>
+    // with nothing selected displays its first option — which the user
+    // then reasonably accepts, without an onchange ever firing. So say
+    // that no choice has been made instead of pretending one has.
+    const inVocab = (f.vocab || []).some(v => v === cur);
     return `<select onchange="efSetOwnValue('${f.key}', this.value)">`
+      + (inVocab ? '' : `<option value="" selected>— choose a value —</option>`)
       + (f.vocab || []).map(v => opt(v, _efVocabLabel(f.key, v))).join('')
       + `</select>`;
   }
@@ -12951,7 +13256,13 @@ async function efChangeSource(field, source){
     // Nothing to fetch: the user's value IS the answer. Seeded with
     // whatever is on screen so they edit rather than retype.
     if (pin.value == null && lastFundData){
-      const cur = fundFieldValue(lastFundData, field);
+      // RAW, not formatted. Seeding from the display value put "Large
+      // cap" where the vocabulary holds "large": the dropdown could
+      // select no option, showed its first one instead, never fired
+      // onchange because nothing was chosen, and the save was then
+      // rejected — so accepting the value on screen silently failed to
+      // pin the field.
+      const cur = fundFieldRaw(lastFundData, field);
       pin.value = cur == null ? '' : String(cur);
     }
     pin.unknown = false; pin.fetched = true;
@@ -13019,6 +13330,119 @@ function efSetOwnValue(field, value){
 // fetched rather than re-fetched: they were already retrieved when each
 // source was chosen, and asking again would double every call and could
 // return something other than what the user just approved.
+// "Apply default sources" — set this fund's fields to the configured
+// defaults, on demand.
+//
+// The counterpart to "Save choices as default": that one records the
+// sources, this one forces them onto a fund. It exists because the
+// automatic application is deliberately narrow — defaults reach a fund
+// only as it is first saved, and never over a pin somebody made by hand
+// — so there has to be a way to say "no, use them here too", for a fund
+// that predates the defaults or one whose pins have drifted.
+//
+// Staged, not saved. Each field goes through efChangeSource, the same
+// path a source button click takes, so the value is fetched and shown
+// and nothing is durable until Save. That also means Cancel undoes the
+// whole thing, which is what makes the button safe to press to see what
+// it would do.
+async function applyDefaultFieldSources(){
+  if (!efState) return;
+  const btn = document.getElementById('efApplyDefaultsBtn');
+
+  // Read them now rather than at dialog-open: they may have been
+  // changed in Settings, or by the other button a moment ago.
+  let sources;
+  try {
+    const r = await fetch(`${API}/settings/field_sources`);
+    sources = (await r.json()).sources || {};
+  } catch(e){ alert(`Could not read the defaults: ${e.message || e}`); return; }
+
+  // Only fields this dialog actually shows, and only where the default
+  // differs from what is already selected — a field already on its
+  // default needs no network call and must not be marked dirty.
+  const fields = Object.keys(sources)
+    .filter(f => efState.pins[f] && efState.pins[f].source !== sources[f]);
+  if (!Object.keys(sources).length){
+    alert('No default sources are set yet.\n\nPick the sources you want on '
+        + 'any fund, then press "Save choices as default" to record them.');
+    return;
+  }
+  if (!fields.length){
+    setStatus('ok', 'Every field with a default is already on it.');
+    return;
+  }
+
+  // The one case worth a warning: a field set to your own value holds
+  // something you typed, and switching its source drops it. Recoverable
+  // by Cancel, but not obviously so, and worth naming before it happens.
+  const typed = fields.filter(f => efState.pins[f].source === 'user');
+  if (typed.length && !confirm(
+      `${typed.length} field(s) are set to your own value and would be `
+      + `switched to a source, losing what you typed:\n\n  ${typed.join(', ')}\n\n`
+      + `Nothing is saved until you press Save, so Cancel still undoes it. Continue?`)){
+    return;
+  }
+
+  setBtnBusy(btn, 'Applying…');
+  try {
+    // Sequentially, through the same function a source click uses. One
+    // request per field is more than a bulk fetch would need, and it is
+    // the right trade: this reuses the staging path exactly, so a field
+    // set by this button is indistinguishable from one set by hand.
+    for (const f of fields) await efChangeSource(f, sources[f]);
+    setStatus('ok', `Set ${fields.length} field(s) to their default source `
+                  + `— press Save to keep them.`);
+  } finally {
+    clearBtnBusy(btn);
+  }
+}
+
+// "Save choices as default" — remember this dialog's per-field sources
+// and apply them to funds as they are saved from now on.
+//
+// The sources ONLY, never the values: a default is an instruction about
+// where to look, and the answer is per fund. That is also why a field
+// pinned to "user" cannot take part — its pin means "the value I typed
+// is the answer", and there is no value to carry to another fund. The
+// server drops those and says which, so this can report what actually
+// happened rather than what was asked for.
+//
+// Existing funds are untouched. A pin already on a fund is a decision
+// somebody made about that fund, and a default is a weaker statement
+// than a decision.
+async function saveFieldSourceDefaults(){
+  if (!efState) return;
+  const btn = document.getElementById('efDefaultsBtn');
+  const sources = {};
+  for (const [field, pin] of Object.entries(efState.pins || {})){
+    if (pin && pin.source && pin.source !== 'user') sources[field] = pin.source;
+  }
+  if (!Object.keys(sources).length){
+    alert('Nothing to save as a default — every field here is set to your '
+        + 'own value, and a value typed for one fund is not a default for '
+        + 'the rest.');
+    return;
+  }
+  setBtnBusy(btn, 'Saving…');
+  try {
+    const r = await fetch(`${API}/settings/field_sources`, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({sources}),
+    });
+    const d = await r.json();
+    if (!r.ok || d.error){ alert(d.error || `HTTP ${r.status}`); return; }
+    const n = Object.keys(d.sources || {}).length;
+    const dropped = (d.dropped || []).length;
+    setStatus('ok', `Saved ${n} default field source${n === 1 ? '' : 's'}`
+      + (dropped ? ` (${dropped} skipped — set to your own value)` : '')
+      + ' — applied to funds as they are saved.');
+  } catch(e){
+    alert(`Could not save: ${e.message || e}`);
+  } finally {
+    clearBtnBusy(btn);
+  }
+}
+
 async function saveEditFundModal(){
   if (!efState) return;
   const btn = document.getElementById('editFundSaveBtn');
@@ -14303,7 +14727,17 @@ async function extractFactsheet(){
     factsheetMeta = d.factsheet || factsheetMeta;
     renderPostFundActions(lastFundData);
     showExtractionReport(d.extraction || null);
-    setStatus('ok', 'Factsheet read');
+    // Name what the reading actually CHANGED, not just that it ran.
+    // Applying it to the fields pinned to the factsheet is the point of
+    // reading it, and a status line that says only "Factsheet read"
+    // gives no way to tell whether anything landed.
+    const applied = Object.keys(d.fields_applied || {});
+    const failed  = Object.keys(d.fields_failed  || {});
+    setStatus('ok', 'Factsheet read'
+      + (applied.length
+          ? ` — applied to ${applied.length} pinned field(s): ${applied.join(', ')}`
+          : ' — no fields are pinned to the factsheet, so nothing was applied')
+      + (failed.length ? ` · ${failed.length} could not be read` : ''));
     // Facets landed as a new source, and the fund page's cards read them
     // from the payload — so refetch rather than leave stale cards. The
     // extraction fills rating inputs (TER, size) and facet items alike,
@@ -14810,12 +15244,27 @@ async function submitUploadPreview(){
     const d = await r.json();
     if (!r.ok) { showUploadFileError(d.error || `HTTP ${r.status}`); return; }
 
-    // Build the upload state. If we have saved prefs from this fund,
-    // pre-seed mapping / defaults / decimal / weight unit / enrich /
-    // header row from them — initMappingViewFromPreview() will then
-    // skip the alias-match auto-pick for any field that already has
-    // a value (see autoPickFor).
-    const prefs = pendingUploadPrefs;
+    enterUploadMapping(d);
+  } catch(e){
+    showUploadFileError('Network error: ' + e.message);
+  } finally {
+    clearBtnBusy(btn);
+  }
+}
+
+// Enter the mapping stage from a preview payload.
+//
+// Split out of submitUploadPreview in v0.106.1 so the issuer refresh can
+// reach it too: when no stored mapping fits a file it has just
+// downloaded, the useful answer is not an error message but this dialog
+// with that file already in it. One implementation, so the dialog cannot
+// behave differently depending on who opened it.
+function enterUploadMapping(d, prefsOverride){
+    // If we have saved prefs from this fund, pre-seed mapping /
+    // defaults / decimal / weight unit / enrich / header row from them —
+    // initMappingViewFromPreview() will then skip the alias-match
+    // auto-pick for any field that already has a value (see autoPickFor).
+    const prefs = (prefsOverride !== undefined) ? prefsOverride : pendingUploadPrefs;
     const seedMapping = (prefs && prefs.mapping) || {};
     uploadState = {
       preview: d,
@@ -14882,11 +15331,27 @@ async function submitUploadPreview(){
     initMappingViewFromPreview();
     document.getElementById('uvFile').style.display    = 'none';
     document.getElementById('uvMapping').style.display = '';
-  } catch(e){
-    showUploadFileError('Network error: ' + e.message);
-  } finally {
-    clearBtnBusy(btn);
-  }
+    showModal('uploadModal');
+    // Open the file itself beside the dialog. Deciding which column is
+    // which is much easier with the real thing in front of you — and a
+    // comma-delimited CSV opened in a spreadsheet set to expect
+    // semicolons is exactly the case where the five sample rows here
+    // and the file on disk look like different documents.
+    openPreviewedFileLocally(d.token);
+}
+
+// Ask the server to open a previewed file with the machine's own
+// handler. Best-effort by design: it is a convenience beside the dialog,
+// so a machine with nothing registered for .csv simply does nothing and
+// says so in the console rather than at the user.
+async function openPreviewedFileLocally(token){
+  if (!token) return;
+  try {
+    const r = await fetch(`${API}/upload/open/${encodeURIComponent(token)}`,
+                          {method:'POST'});
+    const d = await r.json();
+    if (d && d.note) console.log('[upload] ' + d.note);
+  } catch(e){ /* never worth interrupting the dialog for */ }
 }
 
 // Wire up the mapping view once the preview lands.
@@ -15603,6 +16068,11 @@ async function submitUploadCommit(){
     }
     statusMsg += ' — re-fetching fund…';
     setStatus('spin', statusMsg);
+    // Offer this mapping as the fund house's standard. After the commit
+    // rather than inside the dialog: the mapping has just been proved
+    // to work on a real file, which is the only evidence that makes it
+    // worth offering to funds nobody has mapped yet.
+    offerHouseMapping(lastFundData && lastFundData.ticker);
 
     // Re-fetch the fund by its FULL identity so the new full-holdings
     // list shows up. Using reloadCurrentFund — NOT fetchFund — avoids
@@ -15888,10 +16358,134 @@ function renderSettingsControls(){
 async function renderSettingsTab(){
   await loadAppSettings();
   renderSettingsControls();
+  // Fetched separately from the settings blob because the panel needs
+  // more than the stored values: which houses have an adapter at all,
+  // and whether each can discover documents or only re-fetch a URL.
+  // Both are facts about the code, so they come from the server that
+  // holds it rather than from a list mirrored into the page.
+  renderIssuerHouses();
   // Not a setting: whether the API key is present in the environment.
   // It belongs to opening the tab, not to painting its values.
   refreshAiStatus();
   setSettingsStatus('');
+}
+
+// ── Fund houses ───────────────────────────────────────────────────────────
+// One block per house: the ordered site list, and the house's standard
+// holdings mapping.
+//
+// Each control saves immediately rather than waiting for the Settings
+// Save button. These are list operations — move up, remove, add — and a
+// list that reorders on screen but not on disk until a separate button
+// is pressed is a list the user cannot trust while editing it.
+let _issHouses = [];
+
+async function renderIssuerHouses(){
+  const box = document.getElementById('setIssuers');
+  if (!box) return;
+  try {
+    const r = await fetch(`${API}/issuers`);
+    _issHouses = (await r.json()).houses || [];
+  } catch(e){ box.innerHTML = ''; return; }
+
+  box.innerHTML = _issHouses.map(h => {
+    const rows = (h.sites || []).map((u, i) => `
+      <div style="display:flex;gap:.3rem;align-items:center;margin:.15rem 0">
+        <span style="font-family:var(--mono);font-size:.62rem;color:var(--muted);width:1.4rem">${i+1}.</span>
+        <span style="flex:1;font-family:var(--mono);font-size:.68rem;word-break:break-all">${escapeHtml(u)}</span>
+        <button class="btn-icon" title="Move up" ${i===0?'disabled':''}
+                onclick="issMove('${h.key}',${i},-1)">↑</button>
+        <button class="btn-icon" title="Move down" ${i===(h.sites.length-1)?'disabled':''}
+                onclick="issMove('${h.key}',${i},1)">↓</button>
+        <button class="btn-icon" title="Remove" onclick="issRemove('${h.key}',${i})">✕</button>
+      </div>`).join('')
+      || `<div style="font-family:var(--mono);font-size:.68rem;color:var(--muted);font-style:italic;margin:.15rem 0">
+            No sites yet${h.discovers ? '' : ' — this house is found only by a URL you have used before'}.
+          </div>`;
+
+    const m = h.holdings_mapping;
+    const mapLine = m
+      ? `<div style="font-family:var(--mono);font-size:.66rem;color:var(--muted);margin-top:.35rem">
+           Standard holdings mapping${m.from_ticker ? ` from ${escapeHtml(m.from_ticker)}` : ''}:
+           ${escapeHtml(Object.entries(m.columns || {}).map(([f,c]) => `${f}=${c}`).join(', ') || '—')}
+           <button class="btn-icon" title="Forget this standard mapping"
+                   onclick="issClearMapping('${h.key}')">✕</button>
+         </div>`
+      : `<div style="font-family:var(--mono);font-size:.66rem;color:var(--muted);font-style:italic;margin-top:.35rem">
+           No standard holdings mapping. You are asked to set one after you map a fund's holdings file.
+         </div>`;
+
+    return `
+      <div style="border:1px solid var(--border);border-radius:6px;padding:.6rem .7rem;margin:0 0 .55rem">
+        <div style="display:flex;align-items:center;gap:.5rem">
+          <strong style="font-family:var(--mono);font-size:.74rem">${escapeHtml(h.label)}</strong>
+          <span class="src ${h.discovers ? 'cache' : ''}" style="font-size:.6rem">
+            ${h.discovers ? 'finds documents itself' : 'remembered URLs only'}</span>
+        </div>
+        <div style="margin-top:.35rem">${rows}</div>
+        <div style="display:flex;gap:.3rem;margin-top:.35rem">
+          <input id="issAdd_${h.key}" placeholder="https://www.ishares.com/uk/individual/en"
+                 style="flex:1;min-width:0;background:var(--surface2);border:1px solid var(--border2);
+                        border-radius:6px;color:var(--text);font-family:var(--mono);
+                        font-size:.68rem;padding:.3rem .45rem">
+          <button class="btn btn-s btn-sm" onclick="issAdd('${h.key}')">+ Add site</button>
+        </div>
+        ${mapLine}
+      </div>`;
+  }).join('');
+}
+
+async function _issSaveSites(house, sites){
+  try {
+    const r = await fetch(`${API}/issuers/${encodeURIComponent(house)}/sites`, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({sites}),
+    });
+    const d = await r.json();
+    if (!r.ok || d.error){ alert(d.error || `HTTP ${r.status}`); return; }
+  } catch(e){ alert(`Could not save: ${e.message || e}`); return; }
+  renderIssuerHouses();
+}
+
+function _issSitesOf(house){
+  return ((_issHouses.find(h => h.key === house) || {}).sites || []).slice();
+}
+
+function issMove(house, i, dir){
+  const sites = _issSitesOf(house);
+  const j = i + dir;
+  if (j < 0 || j >= sites.length) return;
+  [sites[i], sites[j]] = [sites[j], sites[i]];
+  _issSaveSites(house, sites);
+}
+
+function issRemove(house, i){
+  const sites = _issSitesOf(house);
+  sites.splice(i, 1);
+  // An emptied list falls back to the shipped defaults on the server
+  // rather than meaning "look nowhere" — say so, since the row
+  // disappearing and then coming back would otherwise look like a bug.
+  if (!sites.length && !confirm(
+      'That is the last site. Clearing the list restores this house\'s '
+      + 'default sites — to stop using one, move it to the bottom instead.')) return;
+  _issSaveSites(house, sites);
+}
+
+function issAdd(house){
+  const el = document.getElementById(`issAdd_${house}`);
+  const v = (el && el.value || '').trim();
+  if (!v) return;
+  if (!/^https?:\/\//i.test(v)){ alert('A site must start with http:// or https://'); return; }
+  _issSaveSites(house, _issSitesOf(house).concat([v.replace(/\/+$/, '')]));
+}
+
+async function issClearMapping(house){
+  if (!confirm('Forget the standard holdings mapping for this fund house?')) return;
+  try {
+    await fetch(`${API}/issuers/${encodeURIComponent(house)}/holdings_mapping`,
+                {method:'DELETE'});
+  } catch(e){ /* the re-render below shows whether it went */ }
+  renderIssuerHouses();
 }
 
 // Scoring weights: one editable block per preset.
@@ -19033,6 +19627,7 @@ function renderAllBreakdowns(view){
   renderCurrencyBreakdownYM(view);
   renderMarketCapBreakdown(view);
   renderStyleBoxBreakdown(view);
+  renderFocusThemeBreakdown(view);
 }
 
 // ---------------------------------------------------------------------------
@@ -19042,25 +19637,38 @@ function renderAllBreakdowns(view){
 // porxpy.targets.compute_target_deviations). The frontend just renders;
 // it never re-computes deviation locally.
 
-// Per-facet Chart.js instances. Indexed by facet name so we can destroy
-// before re-creating (Chart.js complains when two charts share a canvas).
-let _tgCharts = { asset_class: null, sector: null, country: null, currency: null,
-                  market_cap: null, style_box: null };
-
-// v0.28.0 — six facets, in two groups. The split is not cosmetic: the
-// first four are look-through distributions measured from holdings, with
-// a coverage caveat; the last two are fund-level classifications with an
-// unclassified residual. Grouping lets that caveat be stated once per
-// group instead of repeated on every section.
+// v0.28.0 — the targetable facets, in two groups. The split is not
+// cosmetic: the first four are look-through distributions measured from
+// holdings, with a coverage caveat; the rest are fund-level
+// classifications with an unclassified residual. Grouping lets that
+// caveat be stated once per group instead of repeated on every section.
+//
+// v0.104.0 adds thematic focus to the second group. The group's label
+// moved from "Style" with it: market cap, equity style and theme are
+// all classifications OF THE FUND, and calling the set after one of its
+// members stopped describing it once there were three.
 const _TG_GROUPS = [
   { key:'exposure', label:'Exposure',
     note:'Measured from holdings, aggregated to portfolio level.',
     facets:['asset_class','sector','country','currency'] },
-  { key:'style', label:'Style',
-    note:'Fund-level classifications — one bucket per fund, not a look-through. Unclassified funds show as "unknown".',
-    facets:['market_cap','style_box'] },
+  { key:'style', label:'Fund classification',
+    note:'Fund-level classifications — one bucket per fund, not a look-through. A fund built around a theme counts for it with all of its money. Unclassified funds show as "unknown".',
+    facets:['market_cap','style_box','focus_theme'] },
 ];
 const _TG_ALL_FACETS = _TG_GROUPS.flatMap(g => g.facets);
+// The metadata facets — this file's mirror of config.META_FACETS. Read
+// off the group above rather than spelled out again, so the group and
+// the list can never name different sets.
+const _TG_META_FACETS = (_TG_GROUPS.find(g => g.key === 'style') || {}).facets || [];
+
+// Per-facet Chart.js instances. Indexed by facet name so we can destroy
+// before re-creating (Chart.js complains when two charts share a canvas).
+//
+// Derived from _TG_ALL_FACETS rather than written out, as is the
+// canonical-values cache below. Both used to be hand-kept object
+// literals, which meant adding a facet needed three lists updated in
+// step and failed silently in whichever one was missed.
+let _tgCharts = Object.fromEntries(_TG_ALL_FACETS.map(f => [f, null]));
 
 // The cash reserve being edited, in base currency. Kept beside
 // _tgEditorState because it is saved by the same button in the same
@@ -19072,18 +19680,7 @@ let _tgReserve = 0;
 // Shape: {asset_class: {key: pct, ...}, sector: {...}, country: {...}, currency: {...}}
 let _tgEditorState = null;
 // Available canonical values per facet, lazy-fetched + cached across opens.
-let _tgCanonical = { asset_class: null, sector: null, country: null, currency: null,
-                     market_cap: null, style_box: null };
-
-// Friendly facet labels (used in headers and tooltips).
-const _TG_FACET_LABELS = {
-  market_cap:  'Market cap',
-  style_box:   'Equity style',
-  asset_class: 'Asset class',
-  sector:      'Sector',
-  country:     'Region',         // country facet is shown as REGIONS
-  currency:    'Currency',
-};
+let _tgCanonical = Object.fromEntries(_TG_ALL_FACETS.map(f => [f, null]));
 
 // Render the Targets tab. Decides between the empty-state placeholder
 // and the live deviation tile based on view.target_deviations.any_targets.
@@ -19178,7 +19775,7 @@ function renderTargetsTile(view){
     const cLvl = block.committed_level || facet;
     const cAt  = cLvl !== facet
       ? ` at ${(LEVEL_LABELS_LONG[cLvl] || cLvl).toLowerCase()}` : '';
-    head.innerHTML = `<span>${_TG_FACET_LABELS[facet]}</span>` +
+    head.innerHTML = `<span>${escapeHtml(facetLabel(facet))}</span>` +
       (block.has_targets
         ? `<span class="tg-facet-sum" title="${escapeAttr(TG_COMMITTED_HINT)}">`
           + `targets commit ${(block.target_committed_pct || 0).toFixed(1)}%${cAt}</span>`
@@ -19452,6 +20049,14 @@ function tgKeyLabel(facet, key){
   if (facet === 'currency') {
     return key.toUpperCase();
   }
+  if (facet === 'focus_theme') {
+    // Free text, so there is nothing to look up — but the two residuals
+    // do need naming, and on this facet "n/a" is the majority answer
+    // rather than a footnote. Same formatter as the X-ray card, so a
+    // theme is never captioned one way in the chart and another in the
+    // deviation table.
+    return fmtFocusTheme(key);
+  }
   return key;
 }
 
@@ -19545,9 +20150,14 @@ async function _tgFetchCanonical(facet){
       // vocabulary ("bond"). This is what makes target-vs-actual
       // comparison line up. See Fund_class_definitions.csv.
       url = `${API}/targets/asset_classes`;
-    } else if (facet === 'market_cap' || facet === 'style_box') {
-      // Closed config vocabulary, minus the values that cannot carry a
-      // target ("unknown", "n/a"). See /api/targets/meta.
+    } else if (_TG_META_FACETS.includes(facet)) {
+      // The metadata facets, all of them through one endpoint. Two have
+      // a closed config vocabulary minus the values that cannot carry a
+      // target ("unknown", "n/a"); focus_theme has an open one and the
+      // endpoint answers with the themes the user's own funds actually
+      // carry. The shape is identical either way, which is the point —
+      // nothing here needs to know which kind it asked for. See
+      // /api/targets/meta.
       url = `${API}/targets/meta/${facet}`;
     } else {
       url = `${API}/uploaded_breakdowns/canonical/${facet}`;
@@ -19679,7 +20289,7 @@ function _renderTgEditorBody(){
     sec.className = 'tge-section';
     sec.innerHTML = `
       <div class="tge-head">
-        <div class="lbl">${_TG_FACET_LABELS[facet]}</div>
+        <div class="lbl">${escapeHtml(facetLabel(facet))}</div>
         <div class="sum"${sumStyle} title="${escapeAttr(TG_COMMITTED_HINT)}">${
           escapeHtml(tgCommittedLabel(facet, sum))}</div>
       </div>
@@ -19747,25 +20357,50 @@ function _renderTgEditorBody(){
           filterFn: (t) => !isUsed(t),
         });
       } else {
-        // market_cap and style_box are fund-level classifications, not
-        // facet trees — no vocabulary file, no levels, nothing to
-        // expand. A flat list is the honest control for them, so this
-        // asymmetry is a decision rather than a picker somebody forgot
-        // to convert.
+        // The metadata facets are fund-level classifications, not facet
+        // trees — no vocabulary file, no levels, nothing to expand. A
+        // flat list is the honest control for them, so this asymmetry
+        // is a decision rather than a picker somebody forgot to
+        // convert. focus_theme (v0.104.0) is flat for a stronger reason
+        // still: its values are free text, so there is no tree that
+        // could exist.
         const multi = levels.length > 1;
+        const optLabel = c => {
+          const base = multi
+            ? `${LEVEL_LABELS_LONG[c.level] || c.level} — ${c.label}`
+            : c.label;
+          // focus_theme entries carry how many funds hold the theme, and
+          // the count is worth showing: its vocabulary is free text read
+          // back off the funds, so a one-fund entry is as likely to be a
+          // typo in somebody's Edit fund dialog as a real theme, and
+          // nothing else on screen would tell the two apart.
+          return (c.funds != null)
+            ? `${base} · ${c.funds} fund${c.funds === 1 ? '' : 's'}`
+            : base;
+        };
         const opts = available.map(c =>
           `<option value="${escapeAttr(c.level + '||' + c.key)}">` +
-          `${escapeHtml(multi ? `${LEVEL_LABELS_LONG[c.level] || c.level} — ${c.label}`
-                              : c.label)}</option>`).join('');
+          `${escapeHtml(optLabel(c))}</option>`).join('');
         add.innerHTML = `
           <select id="${pid}">${opts}</select>
           <button class="btn-icon" onclick="addTgEditorRow('${facet}')">+ Add</button>
         `;
       }
     } else {
+      // Two different empty states. "All added" assumes there was
+      // something to add — true for every facet with a vocabulary file
+      // behind it, and false for focus_theme, whose vocabulary is
+      // whatever the user's own funds happen to declare. Saying "all
+      // added" to someone who has declared no theme anywhere sends them
+      // looking for rows that were never offered.
+      const nothingToOffer = !(_tgCanonical[facet] || []).length;
+      const msg = !nothingToOffer ? 'All available buckets are added.'
+        : (facet === 'focus_theme'
+            ? 'No fund has a thematic focus yet — set one in Edit fund on a fund’s page, then it can be targeted here.'
+            : 'Nothing available to target here.');
       add.innerHTML = `
         <span style="font-family:var(--mono);font-size:.65rem;color:var(--muted);font-style:italic">
-          All available buckets are added.
+          ${escapeHtml(msg)}
         </span>`;
     }
   }
@@ -19800,7 +20435,7 @@ function addTgEditorRow(facet){
   const sel = document.getElementById(`tgEditAdd_${facet}`);
   if (!sel || !sel.value) return;
   // Two shapes, because two controls feed this. The flat <select> that
-  // market_cap and style_box still use carries "level||key" in one
+  // the metadata facets still use carries "level||key" in one
   // string; the facet tree picker carries the node KEY alone, which is
   // the contract every picker in the app has (its hidden input keeps the
   // caller's id and holds the value). For the second, the level is read
@@ -20237,7 +20872,7 @@ function renderCurrencyBreakdownYM(view){
   }).join('');
 }
 
-// ── Meta facets: market cap / equity style ───────────────────────────────
+// ── Meta facets: market cap / equity style / thematic focus ──────────────
 // One renderer per facet, used in BOTH breakdown modes. These facets are
 // fund-level classifications rather than look-through distributions —
 // there is nothing to aggregate from holdings, so the Yahoo/look-through
@@ -20291,6 +20926,16 @@ function renderStyleBoxBreakdown(view){
   renderMetaFacetBreakdown(view, 'style_box', {
     covId:'sbCov', chartVar:'pSbChart', canvasId:'pSbChart', legId:'pSbLeg',
     fmt: k => (k === 'unknown' ? 'Unknown' : fmtStyleBox(k)),
+  });
+}
+
+// v0.104.0. Same renderer, same shape — the theme is a fund-level
+// classification exactly as the other two are, and a fund built around
+// a theme counts for it with all of its money.
+function renderFocusThemeBreakdown(view){
+  renderMetaFacetBreakdown(view, 'focus_theme', {
+    covId:'ftCov', chartVar:'pFtChart', canvasId:'pFtChart', legId:'pFtLeg',
+    fmt: fmtFocusTheme,
   });
 }
 

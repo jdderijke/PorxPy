@@ -1,6 +1,6 @@
 # WISHLIST.md — possible future enhancements
 
-*Started 2026-08-18, at v0.72.3. Last swept at v0.103.2.*
+*Started 2026-08-18, at v0.72.3. Last swept at v0.110.3.*
 
 Things worth doing that nobody has promised. This is deliberately **not**
 a defect list: a bug lives in the Known open issues section of the
@@ -106,6 +106,44 @@ column is about to be recorded one level deeper than it was written
 (see `FACET_TREE.md` §17). Deliberately not level chips — the preview's
 job is to show what will be stored, and `unknown` at a chip-selected
 level would read as "this row will not be stored".
+
+### Offer the themes already in use while typing a thematic focus
+
+`focus_theme` became targetable in v0.104.0, and the Targets editor
+offers the themes your funds actually declare. The place those themes
+are *created* — Edit fund → Focus detail, when Focus is `thematic` — is
+still a bare text box, because a theme is free text and no vocabulary
+can enumerate one in advance. That is correct as far as it goes, and it
+means "AI" and "Artificial Intelligence" become two buckets with nothing
+on screen suggesting they were meant to be one. A `<datalist>` on that
+input, fed from the same `/api/targets/meta/focus_theme` endpoint the
+Targets editor uses, would suggest existing themes without preventing a
+new one — the exactly-right shape for an open vocabulary. Not a defect:
+the app behaves as designed, and the app cannot know which two phrasings
+a user meant to unify.
+
+### Xtrackers factsheets, by finding the ISIN-to-asset-id mapping
+
+Xtrackers holdings are discovered from a template; its factsheets are
+not, because they live at `/download/asset/<guid>` behind an identifier
+with nothing of the fund in it. The mapping exists — the product page's
+own JavaScript resolves it — in an API that could not be found from
+outside. Capturing one request from a browser's network panel while a
+factsheet downloads would settle it, and the adapter needs only another
+line in its `DOCUMENTS` table once it is known.
+
+### Document discovery for the other four fund houses
+
+`issuers.py` registers iShares, Vanguard, Amundi, Xtrackers, VanEck and
+SPDR, and only iShares can currently find a fund's documents by itself;
+the other five fall back to re-fetching a URL the user has already used.
+The interface is shaped for it — a house only has to implement
+`discover()` — and the iShares adapter is written as the worked example,
+with the three facts about that site that made it possible spelled out.
+What each of the other five needs is somebody sitting down with its
+product pages and working out the equivalent three. Not a defect: the
+five adapters do what they claim, and each says in its own words that
+discovery is the part it is missing.
 
 ---
 

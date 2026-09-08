@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.103.2. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.110.3. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -134,7 +134,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.103.2 (built 2026-09-05)
+  PorxPy  v0.110.3 (built 2026-09-08)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -308,14 +308,13 @@ Below that, one section per facet, in two groups:
 | Group | Facets | What it measures |
 |---|---|---|
 | **Exposure** | Asset class · Sector · Region · Currency | Measured from holdings and aggregated to portfolio level — a genuine look-through. |
-| **Style** | Market cap · Equity style | Fund-level classifications: one bucket per fund, not a look-through. Unclassified funds show as "unknown". |
+| **Fund classification** | Market cap · Equity style · Thematic focus | Describes each fund as a whole: one bucket per fund, not a look-through. Unclassified funds show as "unknown". |
 
 In each section, pick a bucket and type a percentage. The four Exposure
 facets use the same tree picker as the rest of the app: open it, expand
 as far as you want to commit, and buckets you have already targeted are
-not offered again. Market cap and Equity style are fund-level
-classifications rather than trees, so they keep a plain list. Three
-things are worth knowing:
+not offered again. The three Fund classification facets are not trees,
+so they keep a plain list. Three things are worth knowing:
 
 - **Targets are sparse.** Set only the buckets you care about.
   Everything else is reported as "Untargeted", so you can see what you
@@ -332,6 +331,18 @@ things are worth knowing:
   *commits*, not the levels added up: semiconductors 15% inside
   technology 35% commits 35%, not 50%. Past 100% the figure turns amber,
   because at that point the section really is over-committed.
+
+**Thematic focus** is worth a paragraph of its own, because its list is
+built differently from every other. A theme is free text — nothing can
+enumerate "artificial intelligence" ahead of time — so the dropdown
+offers the themes *your own funds* declare, with the number of funds
+behind each, and nothing else. If it is empty, no fund has a thematic
+focus yet: set one on a fund's page under **Edit fund** → Focus →
+Thematic, name the theme, and it appears here. A fund with a theme
+counts toward that theme with all of its money, since every holding in
+it was bought for that mandate; funds with a geographic, sectoral or no
+focus report "No thematic focus" and can only serve the untargeted
+remainder.
 
 A workable first set, if you want one to type in:
 
