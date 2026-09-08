@@ -3,6 +3,47 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.112.0] - 2026-09-08
+
+### Changed — reading a factsheet and acting on it are now two steps
+
+The extraction report opens as soon as the reading finishes, as before,
+but nothing has reached the fund by then. It ends with **Cancel** and
+**Save and Close**, and only the second puts anything into effect: the
+facet tables become the `factsheet` breakdown source, the position table
+becomes the `factsheet` holdings source, and every field pinned to
+*Factsheet* takes its new value.
+
+That makes Cancel a real answer rather than a polite way of saying "too
+late". The reading stays on file either way, so a run can be reviewed
+now and applied later from the Extraction button — and applying twice is
+applying once, because `apply_factsheet_extraction` derives everything
+from the stored reading rather than from anything the caller sends.
+
+The closing note changed with the buttons: *"Nothing has been applied.
+Use Fetch from factsheet…"* is gone, replaced by *"Data will be applied
+on Save and Close."* The remark about choosing **Issuer (factsheet)** on
+a breakdown card stays, because that is a different question — applying
+stores the breakdown, and which source a card DISPLAYS is still a
+per-card choice.
+
+The unattended path is unaffected: the issuer refresh extracts with
+`apply=True` and reaches the same function, because there is nobody
+there to ask.
+
+### Removed — the Factsheet date field
+
+The upload dialog asked for the date printed on the sheet. The
+extraction now reads it off the document, which is where it is actually
+printed, and v0.111.0 put it on the View factsheet button — so the field
+was asking the user for something the app can find, and a hand-typed
+date silently outranked the document's own.
+
+The fallback is unchanged and still stated on screen: a document nobody
+reads is aged from its upload date, and the age caption says which of
+the two it used. The one thing this costs is an install with no API key,
+which can no longer set the date by hand.
+
 ## [0.111.0] - 2026-09-08
 
 ### Added — upload a factsheet and read it in one step

@@ -4884,14 +4884,16 @@ def create_app() -> Flask:
         if custom and not (settings.get("ai") or {}).get("edit_prompt"):
             return jsonify({"error": "prompt editing is switched off"}), 409
 
-        payload, err, status = run_factsheet_extraction(isin, custom,
-                                                        _job_token(), ticker)
+        # apply=False: the reading is stored and shown, and lands only
+        # when the user presses Save and Close in the report.
+        payload, err, status = run_factsheet_extraction(
+            isin, custom, _job_token(), ticker, apply=False)
         if err is not None:
             return jsonify(err), status
         return jsonify({"ticker": ticker, **payload})
 
-    def run_factsheet_extraction(isin: str, custom: str = "",
-                                 ptok: str = "", ticker: str = "") -> tuple:
+    def run_factsheet_extraction(isin: str, custom: str = "", ptok: str = "",
+                                 ticker: str = "", apply: bool = True) -> tuple:
         """Read a stored factsheet and store everything it yields.
 
         Lifted out of the route in v0.105.0 so the issuer refresh can do
@@ -4908,6 +4910,11 @@ def create_app() -> Flask:
                 call that routinely takes half a minute.
             ticker: The listing the request came from, passed through to
                 the per-field fetch.
+            apply: Whether to put the reading into effect. False leaves
+                the extraction stored and REVIEWABLE without touching
+                the fund — which is what the report dialog needs, since
+                it offers Save and Close beside Cancel. True is for the
+                unattended path, where there is nobody to ask.
 
         Applying the reading to the fields PINNED to the factsheet is
         part of reading it, not a separate favour (v0.111.0). A pin is
@@ -4993,6 +5000,74 @@ def create_app() -> Flask:
         # already a conclusion, and re-resolving a conclusion returns
         # itself. The item now carries `raw`, and _resolve_items answers
         # the question on every read, exactly as a holdings row does.
+        # Adopt the document's own date when we did not have one. This is
+        # what makes staleness honest: a factsheet is usually months old
+        # on the day it is uploaded, and only the document knows by how
+        # much.
+        if result.get("as_of") and not (meta.get("as_of") or "").strip():
+            factsheet_put(isin, meta.get("filename") or "factsheet",
+                          fp.read_bytes(), as_of=result["as_of"],
+                          note=meta.get("note") or "")
+
+        # Keep the prompt with the result. Six months on, "why did it read
+        # it that way" is answerable only if the instruction is on record
+        # alongside the answer.
+        result["prompt"] = custom or _ai.build_extraction_prompt()
+        result["prompt_edited"] = bool(custom)
+
+        progress_phase(ptok, "storing the result")
+        try:
+            stored = factsheet_set_extraction(isin, result)
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            progress_finish(ptok)
+            return None, {"error": f"extraction succeeded but could not be "
+                                   f"stored: {exc}",
+                          "extraction": result}, 500
+        out = {"isin": isin, "extraction": result, "factsheet": stored,
+               "applied": bool(apply),
+               "fields_applied": {}, "fields_failed": {}}
+        if apply:
+            out.update(apply_factsheet_extraction(isin, ticker))
+        progress_finish(ptok)
+        return out, None, 200
+
+    def apply_factsheet_extraction(isin: str, ticker: str = "") -> dict:
+        """Put a stored factsheet reading into effect.
+
+        Three writes, and they belong together because they are one
+        reading of one document: the facet tables become the
+        ``factsheet`` breakdown source, the position table becomes the
+        ``factsheet`` holdings source, and every field PINNED to the
+        factsheet takes its new value.
+
+        Split out of the extraction in v0.112.0 so the report dialog can
+        show what was read before any of it lands — *Save and Close*
+        calls this, *Cancel* does not. The unattended path (the issuer
+        refresh) calls the extraction with ``apply=True`` and reaches
+        here by the same route, so there is one implementation of "put
+        this reading into effect" rather than one per caller.
+
+        Reads the extraction back out of the factsheet store rather than
+        taking it as an argument: the stored reading is the one the user
+        was shown and the one Save is agreeing to, and re-deriving from
+        it means a re-apply is exactly the same operation as the first.
+
+        Args:
+            isin: Fund ISIN.
+            ticker: The listing, passed through to the per-field fetch.
+
+        Returns:
+            ``{fields_applied, fields_failed, facets, holdings_rows}``.
+        """
+        meta = factsheet_get(isin) or {}
+        result = meta.get("extraction") or {}
+        report: dict = {"fields_applied": {}, "fields_failed": {},
+                        "facets": 0, "holdings_rows": 0}
+        if not result:
+            return report
+
         facet_items: dict[str, list] = {}
         for facet, blk in (result.get("facets") or {}).items():
             rows = []
@@ -5027,7 +5102,7 @@ def create_app() -> Flask:
         except Exception as exc:
             import traceback
             traceback.print_exc()
-            result.setdefault("rejected", []).append(
+            report.setdefault("rejected", []).append(
                 {"item": "facets", "reason": f"could not be stored: {exc}"})
 
         # The position table becomes the fund's "factsheet" holdings
@@ -5065,40 +5140,17 @@ def create_app() -> Flask:
                 "fetched_at":     now_iso(),
                 "last_updated":   now_iso(),
             }, "factsheet")
+            report["holdings_rows"] = len(hold_rows)
         except Exception as exc:
             import traceback
             traceback.print_exc()
-            result.setdefault("rejected", []).append(
+            report.setdefault("rejected", []).append(
                 {"item": "holdings", "reason": f"could not be stored: {exc}"})
 
-        # Adopt the document's own date when we did not have one. This is
-        # what makes staleness honest: a factsheet is usually months old
-        # on the day it is uploaded, and only the document knows by how
-        # much.
-        if result.get("as_of") and not (meta.get("as_of") or "").strip():
-            factsheet_put(isin, meta.get("filename") or "factsheet",
-                          fp.read_bytes(), as_of=result["as_of"],
-                          note=meta.get("note") or "")
 
-        # Keep the prompt with the result. Six months on, "why did it read
-        # it that way" is answerable only if the instruction is on record
-        # alongside the answer.
-        result["prompt"] = custom or _ai.build_extraction_prompt()
-        result["prompt_edited"] = bool(custom)
+        report["facets"] = len(facet_items)
 
-        progress_phase(ptok, "storing the result")
-        try:
-            stored = factsheet_set_extraction(isin, result)
-        except Exception as exc:
-            import traceback
-            traceback.print_exc()
-            progress_finish(ptok)
-            return None, {"error": f"extraction succeeded but could not be "
-                                   f"stored: {exc}",
-                          "extraction": result}, 500
         # Into every field pinned to "factsheet", and into no others.
-        # After the store, because the per-field fetch reads the
-        # extraction back out of it.
         applied, failed = {}, {}
         for fieldname, env in field_pins(isin).items():
             if env.get("source") != "factsheet":
@@ -5111,10 +5163,9 @@ def create_app() -> Flask:
                 continue
             field_source_set(isin, fieldname, "factsheet", value)
             applied[fieldname] = {"value": value, "note": note}
-
-        progress_finish(ptok)
-        return {"isin": isin, "extraction": result, "factsheet": stored,
-                "fields_applied": applied, "fields_failed": failed}, None, 200
+        report["fields_applied"] = applied
+        report["fields_failed"] = failed
+        return report
 
     # -----------------------------------------------------------------------
     # Issuer document refresh (v0.105.0)
@@ -5693,6 +5744,29 @@ def create_app() -> Flask:
                         "key": a.key if known else "",
                         "label": a.label if known else "",
                         "has_standard_mapping": bool(hm)})
+
+    @app.route("/api/funds/<ticker>/factsheet/apply", methods=["POST"])
+    def api_fund_factsheet_apply(ticker: str) -> Response:
+        """Put the stored factsheet reading into effect.
+
+        What *Save and Close* in the extraction report calls. Reading a
+        factsheet and acting on it became two steps in v0.112.0 so the
+        report could be read before anything changed — Cancel simply
+        never calls this, and the reading stays on file to be applied
+        later or re-read.
+
+        Idempotent: applying twice is applying once, because it derives
+        everything from the stored reading rather than from anything the
+        caller sends.
+        """
+        isin = listing_identity_lookup_isin(ticker)
+        if not isin:
+            return jsonify({"error": f"no identity recorded for {ticker!r}"}), 404
+        meta = factsheet_get(isin) or {}
+        if not meta.get("extraction"):
+            return jsonify({"error": "this factsheet has not been read yet"}), 409
+        return jsonify({"ticker": ticker, "isin": isin,
+                        **apply_factsheet_extraction(isin, ticker)})
 
     @app.route("/api/funds/<ticker>/factsheet/file", methods=["GET"])
     def api_fund_factsheet_file(ticker: str) -> Response:

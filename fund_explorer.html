@@ -2926,9 +2926,11 @@
      navigates into it, double-click on a file picks it and closes.
      Select + Confirm does the same without the double-click. -->
 <!-- Factsheet upload. Same source model as every other upload: a URL, a
-     path, a Browse button, or a drop. The as-of date is asked for
-     because staleness is measured against the factsheet's OWN date — a
-     sheet can be three years old on the day it is uploaded. -->
+     path, a Browse button, or a drop.
+     The as-of date is no longer asked for (v0.112.0): the extraction
+     reads it off the document, which is where it is actually printed,
+     and staleness is measured from that. A document nobody reads falls
+     back to the upload date, and the age caption says which it used. -->
 <div class="modal-bg" id="extractReportModal">
   <div class="modal" style="max-width:820px;width:92vw">
     <div class="modal-h"><h3>What the factsheet says</h3></div>
@@ -2937,7 +2939,11 @@
     <div id="exReportAction" style="margin-top:1rem;padding-top:.8rem;
          border-top:1px solid var(--border);display:flex;align-items:center;flex-wrap:wrap"></div>
     <div class="mfoot">
-      <button class="btn btn-s" onclick="closeExtractionReport()">Close</button>
+      <span style="flex:1"></span>
+      <button class="btn btn-s" onclick="closeExtractionReport()"
+              title="Close without applying anything. The reading stays on file — reopen it from the Extraction button and apply it later.">Cancel</button>
+      <button class="btn btn-p" id="exApplyBtn" onclick="applyExtractionAndClose()"
+              title="Store the breakdowns and positions this reading found, and set every field pinned to Factsheet from it.">Save and Close</button>
     </div>
   </div>
 </div>
@@ -2968,18 +2974,6 @@
          and breakdown-CSV dialogs — see prefillUploadSource(). -->
     <div class="mhint" id="fsSourceLastUsed"
          style="display:none;margin-top:-.4rem;color:var(--muted);font-family:var(--mono);font-size:.7rem"></div>
-    <div class="fgrp" style="grid-template-columns:180px 1fr;align-items:end">
-      <div class="field">
-        <label class="mfl">Factsheet date</label>
-        <input id="fsAsOf" type="date">
-      </div>
-      <div class="mhint" style="color:var(--muted);font-size:.66rem;line-height:1.5">
-        The date printed on the sheet itself ("per Augustus 31, 2023"),
-        not today. Age is measured from this — leave it blank and the
-        upload date is used instead, which will read as fresher than the
-        data really is.
-      </div>
-    </div>
     <div class="fgrp single">
       <div class="field">
         <label class="mfl">Note (optional)</label>
@@ -14607,13 +14601,6 @@ async function loadFactsheetMeta(ticker){
 // the Date constructor handles the year rollover, so January gives 31
 // December of the year before. Built from local date parts rather than
 // toISOString(), which converts to UTC first and hands back the 30th to
-// anyone east of Greenwich.
-function factsheetDefaultAsOf(now){
-  const end = new Date((now || new Date()).getFullYear(),
-                       (now || new Date()).getMonth(), 0);
-  const pad = n => String(n).padStart(2, '0');
-  return `${end.getFullYear()}-${pad(end.getMonth() + 1)}-${pad(end.getDate())}`;
-}
 
 // The extract-after-upload checkbox only means something when the AI
 // helper can actually run. Off and explained rather than ticked and
@@ -14643,8 +14630,6 @@ function openFactsheetModal(){
   src.value = ''; src.dataset.resolvedPath = '';
   // A stored date wins: it is what the user already told us about THIS
   // document. Only a fresh upload gets the month-end default.
-  document.getElementById('fsAsOf').value =
-    (factsheetMeta?.as_of || '').slice(0, 10) || factsheetDefaultAsOf();
   document.getElementById('fsNote').value = factsheetMeta?.note || '';
   document.getElementById('fsError').style.display = 'none';
   document.getElementById('fsSaveBtn').disabled = true;
@@ -14706,7 +14691,6 @@ async function saveFactsheet(){
         // What the user sees in the field: for a drop that is the file
         // they dropped, not the scratch copy the server will read.
         filename: (document.getElementById('fsSourceInput').value || '').trim(),
-        as_of:  document.getElementById('fsAsOf').value || '',
         note:   document.getElementById('fsNote').value || '',
       }),
     });
@@ -14797,13 +14781,7 @@ async function extractFactsheet(){
     // Applying it to the fields pinned to the factsheet is the point of
     // reading it, and a status line that says only "Factsheet read"
     // gives no way to tell whether anything landed.
-    const applied = Object.keys(d.fields_applied || {});
-    const failed  = Object.keys(d.fields_failed  || {});
-    setStatus('ok', 'Factsheet read'
-      + (applied.length
-          ? ` — applied to ${applied.length} pinned field(s): ${applied.join(', ')}`
-          : ' — no fields are pinned to the factsheet, so nothing was applied')
-      + (failed.length ? ` · ${failed.length} could not be read` : ''));
+    setStatus('ok', 'Factsheet read — review it and press Save and Close to apply.');
     // Facets landed as a new source, and the fund page's cards read them
     // from the payload — so refetch rather than leave stale cards. The
     // extraction fills rating inputs (TER, size) and facet items alike,
@@ -14902,10 +14880,10 @@ function showExtractionReport(ex){
       <div style="font-family:var(--mono);font-size:.62rem;color:var(--muted);line-height:1.6">
         ${rej.map(r => `${escapeHtml(r.item)} — ${escapeHtml(r.reason)}`).join('<br>')}</div>` : ''}
     <div class="mhint" style="margin-top:.8rem;color:var(--muted)">
-      Nothing has been applied. Use <em>Fetch from factsheet</em> in the
-      fund's Edit dialog to take the fields, and the
-      <em>Issuer (factsheet)</em> option on a breakdown card to take a
-      breakdown${hRows.length ? ' — or on the holdings tile to take the positions' : ''}.
+      Data will be applied on <strong>Save and Close</strong>.
+      To show a breakdown on a card afterwards, choose
+      <em>Issuer (factsheet)</em> on that card${hRows.length
+        ? ' — or on the holdings tile to take the positions' : ''}.
     </div>`;
   _renderPromptPanel(ex);
   _renderExtractAction();
@@ -14966,6 +14944,42 @@ function _renderExtractAction(){
     <span class="mhint" style="margin-left:.6rem;color:var(--muted);font-size:.66rem">
       ${done ? 'Replaces the reading below. Costs one API call.'
              : 'Sends this factsheet to the API. Costs a few cents.'}</span>`;
+}
+
+// "Save and Close" — put the reading into effect.
+//
+// Reading a factsheet and acting on it are two steps (v0.112.0): the
+// extraction stores what it read and shows it, and nothing reaches the
+// fund until this. Cancel is therefore a real answer rather than a
+// polite way of saying "too late" — the reading stays on file either
+// way, so a run can be reviewed now and applied later from the
+// Extraction button.
+async function applyExtractionAndClose(){
+  const ticker = lastFundData?.ticker;
+  if (!ticker) return;
+  const btn = document.getElementById('exApplyBtn');
+  setBtnBusy(btn, 'Applying…');
+  try {
+    const r = await fetch(
+      `${API}/funds/${encodeURIComponent(ticker)}/factsheet/apply`,
+      { method:'POST' });
+    const d = await r.json();
+    if (!r.ok || d.error){ alert(d.error || `HTTP ${r.status}`); return; }
+    const fields = Object.keys(d.fields_applied || {});
+    setStatus('ok', `Applied: ${d.facets || 0} breakdown(s)`
+      + `, ${d.holdings_rows || 0} position(s)`
+      + (fields.length ? `, ${fields.length} pinned field(s)` : '')
+      + '.');
+    closeExtractionReport();
+    // The cards and the holdings tile read these from the fund payload,
+    // so the screen is stale until it is refetched.
+    invalidateFundDerived();
+    reloadCurrentFund(false).catch(() => {});
+  } catch(e){
+    alert(`Could not apply: ${e.message || e}`);
+  } finally {
+    clearBtnBusy(btn);
+  }
 }
 
 function closeExtractionReport(){

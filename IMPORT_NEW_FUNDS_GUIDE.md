@@ -1,6 +1,6 @@
 # IMPORT_NEW_FUNDS_GUIDE.md — importing new funds and ETFs
 
-*Current as of v0.111.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.112.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between typing an ISIN into an empty box and having a fully
@@ -82,7 +82,7 @@ version you are looking at:
 
 ```
 =======================================================
-  PorxPy  v0.111.0 (built 2026-09-08)
+  PorxPy  v0.112.0 (built 2026-09-08)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -445,6 +445,10 @@ button afterwards is for the other job: re-reading a document already on
 file, with an edited prompt. The box is cleared and disabled when the AI
 helper is switched off or has no key, and says which.
 
+The dialog no longer asks for the factsheet's date: the extraction reads
+it off the document. A sheet nobody reads is aged from its upload date
+instead, and the age caption says which of the two it used.
+
 Once a factsheet has been read, the **View factsheet** button carries the
 document's own date — `👁 View factsheet · 31 Jul 2026` — because that
 is what tells you whether what you are looking at is current. A document
@@ -473,6 +477,19 @@ one older than 183 days (adjustable in Settings) is flagged stale, and
 the **👁 View factsheet** button grows a ⚠.
 
 ### Reading it with Claude
+
+The report — *What the factsheet says* — opens as soon as the reading
+finishes, and **nothing has reached the fund yet**. Read it, then:
+
+- **Save and Close** applies it: the breakdowns become the `factsheet`
+  source on the cards, the positions become the `factsheet` holdings
+  source, and every field pinned to *Factsheet* takes its new value.
+- **Cancel** applies nothing. The reading stays on file, so you can
+  reopen it later from the **Extraction** button and apply it then.
+
+Applying twice is the same as applying once, so pressing Save on a
+report you have already applied changes nothing.
+
 
 What a reading does to your fund data: every field you have **pinned to
 Factsheet** in the Edit fund dialog is set from it, and no other field is
