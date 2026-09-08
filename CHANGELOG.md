@@ -3,6 +3,39 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.113.0] - 2026-09-08
+
+### Changed — a synthetic fund's reading is now unambiguous
+
+Three sharpenings of the v0.111.0 rule, each closing a way for a
+swap-based fund's document to produce something misleading.
+
+**No holdings at all.** The previous wording let the model report a
+position table when it judged it to be the fund's or the index's. There
+is no such table for these funds: whatever positions such a document
+prints are the collateral basket. The instruction is now to return an
+empty rows list and say so once in "rejected" — a list of securities the
+fund does not track is worse than no list.
+
+**An asset class that means something.** A swap is not an asset class,
+and reporting one describes the wrapper rather than the exposure. The
+model now returns a single `asset_class` row at 100% describing what the
+INDEX is made of — `regular stock` for an equity index, which nearly all
+of these are, and the matching key when the index is plainly a bond or
+commodity index instead.
+
+**Where the numbers came from, on screen.** Every facet now carries a
+`basis`: `direct` (the fund's own published table — the normal answer,
+and the only one for a physical fund), `index` (a breakdown of what it
+tracks) or `derived` (worked out rather than read off a page). The
+extraction report shows it as a column beside the table's own heading,
+so *"the index it tracks"* and *"derived, not printed"* are visible
+rather than something the reader has to infer from a quote.
+
+An unrecognised or absent basis reads as `direct`, which is what every
+physical fund's breakdown is and what every reading before this release
+was.
+
 ## [0.112.0] - 2026-09-08
 
 ### Changed — reading a factsheet and acting on it are now two steps

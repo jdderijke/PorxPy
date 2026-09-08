@@ -1,6 +1,6 @@
 # IMPORT_NEW_FUNDS_GUIDE.md — importing new funds and ETFs
 
-*Current as of v0.112.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.113.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between typing an ISIN into an empty box and having a fully
@@ -82,7 +82,7 @@ version you are looking at:
 
 ```
 =======================================================
-  PorxPy  v0.112.0 (built 2026-09-08)
+  PorxPy  v0.113.0 (built 2026-09-08)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -489,6 +489,14 @@ finishes, and **nothing has reached the fund yet**. Read it, then:
 
 Applying twice is the same as applying once, so pressing Save on a
 report you have already applied changes nothing.
+
+Each breakdown in the report says **where it came from**: *the fund's
+own table*, *the index it tracks*, or *derived, not printed*. That
+matters most for a synthetically replicated fund, whose published
+breakdown is of the swap collateral rather than of what it tracks — for
+those, PorxPy takes the index's breakdown where the document prints one,
+takes no positions at all, and records the asset class as what the index
+is made of.
 
 
 What a reading does to your fund data: every field you have **pinned to

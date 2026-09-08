@@ -14840,12 +14840,27 @@ function showExtractionReport(ex){
           <td class="tk" style="color:var(--muted);font-size:.62rem">${
             [r.sector_raw, r.country_raw, r.currency_raw].filter(Boolean).map(escapeHtml).join(' · ')
           }</td></tr>`).join('');
-  const fRows = facets.map(([f, b]) => `
+  // WHERE each breakdown came from, on screen rather than buried in a
+  // quote. For a synthetic fund this is the difference between the
+  // index's exposure and a basket of unrelated collateral, and the
+  // reader cannot tell which they are looking at without it.
+  const BASIS = {
+    direct:  {label: 'the fund’s own table', colour: 'var(--muted)'},
+    index:   {label: 'the index it tracks',        colour: 'var(--green)'},
+    derived: {label: 'derived, not printed',       colour: 'var(--amber)'},
+  };
+  const fRows = facets.map(([f, b]) => {
+    const bs = BASIS[b.basis] || BASIS.direct;
+    return `
       <tr><td class="tk">${escapeHtml(f)}</td>
           <td class="tk">${b.items.length} rows</td>
           <td class="tk">${b.sum_pct}%</td>
+          <td style="color:${bs.colour};font-size:.62rem">${escapeHtml(bs.label)}</td>
           <td style="color:${b.complete ? 'var(--muted)' : 'var(--amber)'};font-size:.62rem">
-            ${b.complete ? 'complete' : 'partial — the rest shows as unknown'}</td></tr>`).join('');
+            ${b.complete ? 'complete' : 'partial — the rest shows as unknown'}</td>
+          <td class="tk" style="color:var(--muted);font-size:.62rem">${
+            escapeHtml((b.quote || '').slice(0, 60))}</td></tr>`;
+  }).join('');
   document.getElementById('exReportBody').innerHTML = `
     <div class="mhint" style="color:var(--muted);margin-bottom:.6rem">
       ${fields.length} field(s), ${facets.length} breakdown(s)
@@ -14858,7 +14873,11 @@ function showExtractionReport(ex){
         <th class="nosort">page</th><th class="nosort">read from</th></tr></thead>
       <tbody>${rows}</tbody></table>` : ''}
     ${facets.length ? `<div class="mhint" style="margin:.7rem 0 .3rem;color:var(--muted)">breakdowns</div>
-      <table class="dtable" style="width:100%"><tbody>${fRows}</tbody></table>` : ''}
+      <table class="dtable" style="width:100%"><thead><tr class="htitles">
+        <th class="nosort">facet</th><th class="nosort">rows</th>
+        <th class="nosort">sum</th><th class="nosort">read from</th>
+        <th class="nosort">coverage</th><th class="nosort">table</th>
+      </tr></thead><tbody>${fRows}</tbody></table>` : ''}
     ${hRows.length ? `<div class="mhint" style="margin:.7rem 0 .3rem;color:var(--muted)">
         holdings — <strong>${hRows.length}</strong> positions
         ${hold.sum_pct != null ? `summing to ${Number(hold.sum_pct).toFixed(2)}%` : ''}

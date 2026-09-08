@@ -1,6 +1,6 @@
 # FACET_TREE.md — the four facet trees
 
-*Current as of v0.112.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.113.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Sections 1–5 describe how the facet trees behave **today**, across all
@@ -483,7 +483,20 @@ deviation and the optimiser. So PorxPy refuses them from both directions:
 - the extraction prompt tells the model to return no facets derived from
   the basket, to use the INDEX breakdown instead where the document
   prints one, and to return nothing of that kind rather than fall back
-  (v0.111.0).
+  (v0.111.0);
+- it returns no holdings whatever for such a fund, since any position
+  table printed for one is the basket (v0.113.0);
+- and it returns a single `asset_class` row at 100% describing what the
+  INDEX is made of — `regular stock` for an equity index — because a
+  swap is not an asset class and naming it as one describes the wrapper
+  rather than the exposure (v0.113.0).
+
+Every extracted facet carries a **basis** saying where its numbers came
+from: `direct` (the fund's own published table, and the only answer for
+a physical fund), `index` (a breakdown of what it tracks) or `derived`
+(worked out rather than read off a page). The extraction report shows
+it, so a reader can tell an index breakdown from a fund's own without
+interpreting a quote.
 
 The fund is treated this way only when `replication` is `synthetic`,
 which is always an assertion — by the user, by justETF or from a

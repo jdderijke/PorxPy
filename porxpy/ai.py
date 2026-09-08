@@ -391,6 +391,7 @@ Return ONE JSON object and nothing else. No prose, no markdown fences.
                   "label_in_document": "<the label as printed>"}}],
       "sum_pct": <the weights' total>,
       "complete": true | false,
+      "basis": "direct" | "index" | "derived",
       "page": <page number>,
       "quote": "<the table's heading, verbatim>"
     }}
@@ -467,6 +468,16 @@ with your best guess at "key" and the exact printed text in
 "label_in_document":
 {facets}
 
+"basis" on every facet says WHERE its numbers came from, because for
+some funds that is the difference between a fact and a fiction:
+
+  "direct"  - the fund's own published breakdown of what it holds. The
+              normal answer, and the only one for a physical fund.
+  "index"   - a breakdown of the INDEX the fund tracks, used when the
+              fund's own holdings are not its exposure (see below).
+  "derived" - worked out rather than read off a table, e.g. "an equity
+              index tracker is 100% shares". Say so plainly.
+
 SYNTHETIC REPLICATION changes which tables are the fund's own, and is
 the one case where the most prominent breakdown in the document is the
 wrong answer.
@@ -485,14 +496,21 @@ When the document identifies the fund as synthetically replicated:
   all. It describes securities the fund happens to hold as security for
   a swap, not the exposure anyone is buying.
 - If the document ALSO prints a breakdown of the INDEX the fund tracks,
-  return THAT as the fund's facets, and make the source unmistakable in
-  each facet's "quote" (e.g. "Index composition by sector").
+  return THAT as the fund's facets, with "basis": "index" and the index
+  table's own heading as the "quote".
 - If only the collateral breakdown is printed, return NO facets of that
   kind. An empty answer is correct; the collateral basket is not.
-- The same rule decides the position table: report it under "holdings"
-  only when it is the fund's or the index's positions. If it is the
-  collateral or substitute basket, return no holdings and say why in
-  "rejected".
+- Return NO holdings at all: an empty "rows" list. Whatever position
+  table such a document prints is the collateral basket, and a list of
+  securities the fund does not track is worse than no list. Say so once
+  in "rejected".
+- DO return an "asset_class" facet as a SINGLE row at 100 percent
+  describing what the INDEX is made of, with "basis": "derived". For an
+  equity index - which nearly all of these are - that row is
+  {{"key": "regular stock", "weight": 100}}. Use the matching asset key
+  when the index is plainly something else, such as a bond index or a
+  commodity index. Reporting the swap itself as the asset class
+  describes the wrapper rather than the exposure and is of no use.
 - Set "replication": "synthetic" in "fields" whenever the document says
   so, with the phrase that says it as the quote.
 
@@ -1105,11 +1123,21 @@ def validate_extraction(raw: dict) -> dict:
         # to 95.5 is partial whatever it claims, and a partial table
         # reported as complete misstates every row in it.
         complete = bool(blk.get("complete")) and total >= 99.0
+        # Where the numbers came from, not only what they say. For a
+        # synthetic fund the difference between the index's breakdown
+        # and the collateral basket's is the difference between the
+        # fund's exposure and a list of unrelated securities, so it is
+        # carried through to the report rather than left inside a quote
+        # the reader has to interpret.
+        basis = str(blk.get("basis") or "").strip().lower()
+        if basis not in ("direct", "index", "derived"):
+            basis = "direct"
         out_facets[facet] = {
             "items":    items,
             "sum_pct":  total,
             "complete": complete,
             "claimed_complete": bool(blk.get("complete")),
+            "basis":    basis,
             "page":     blk.get("page"),
             "quote":    (blk.get("quote") or "").strip()[:400],
         }
