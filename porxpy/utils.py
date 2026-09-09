@@ -1909,20 +1909,46 @@ def coerce_cash_position(raw: dict | None, *, id: str | None = None) -> dict:
     # contributing nothing to the asset-class breakdown, which is exactly
     # the bucket a deposit most obviously belongs in.
     #
-    # The stated value is taken in precedence order: an explicit raw, the
-    # node the user picked, then any level column a hand-edited or
-    # legacy record happens to carry. Done through the config helpers
-    # rather than four hardcoded field names, so a new facet or a renamed
-    # column is picked up here without a second edit.
+    # The stated value is taken in precedence order: THE NODE THE USER
+    # PICKED, then a raw, then any level column a hand-edited or legacy
+    # record happens to carry. Done through the config helpers rather
+    # than four hardcoded field names, so a new facet or a renamed column
+    # is picked up here without a second edit.
+    #
+    # v0.116.1: the node comes FIRST, where the raw used to. On a
+    # holdings row the raw outranks everything because it is evidence —
+    # what the issuer's file actually said — and the node is a conclusion
+    # drawn from it. A cash position has no issuer and no file. The user
+    # is its only source, so the node IS the evidence, and the raw is
+    # nothing but a copy this function made of an earlier node on an
+    # earlier save.
+    #
+    # Reading that copy first meant the first value a position was ever
+    # given outranked every later edit, permanently. In the user's own
+    # data: a position named "ABNAMRO dollar rekening" carrying
+    # currency_raw "EUR", which no amount of picking USD could shift,
+    # and every position pinned at asset_class `cash` with an empty
+    # sub_class because `_cash_defaults` had seeded asset_raw "cash" on
+    # the first save. The edit round-tripped, returned 200, and came
+    # back unchanged with nothing reporting a failure.
+    #
+    # This is the same defect the by-row holdings editor had (see
+    # `_pin_facet` in app.py, which fixed it there by pinning). The cash
+    # table is the surface that never got that fix; it now gets both —
+    # this precedence, which also repairs the positions already on disk
+    # without the user re-picking anything, and the pin the frontend now
+    # writes, which is how every other facet-editing surface in the app
+    # records a user decision.
     from porxpy.config import (BREAKDOWN_FACETS, FACET_LEVELS,
-                               facet_node_field, facet_raw_field)
+                               facet_node_field, facet_pinned_field,
+                               facet_raw_field)
     _cash_defaults = {"asset_class": "cash", "sector": CASH_SECTOR_DEFAULT}
     for _facet in BREAKDOWN_FACETS:
         _raw_f  = facet_raw_field(_facet)
         _node_f = facet_node_field(_facet)
-        _stated = (out.get(_raw_f) or "").strip()
+        _stated = (out.get(_node_f) or "").strip()
         if not _stated:
-            _stated = (out.get(_node_f) or "").strip()
+            _stated = (out.get(_raw_f) or "").strip()
         if not _stated:
             for _lv in FACET_LEVELS.get(_facet, (_facet,)):
                 _v = (out.get(_lv) or "").strip()
@@ -1936,6 +1962,17 @@ def coerce_cash_position(raw: dict | None, *, id: str | None = None) -> dict:
         if not _stated:
             _stated = _cash_defaults.get(_facet, "")
         out[_raw_f] = _stated
+        # A node on a cash position is a user decision by construction —
+        # nothing else can have put it there — so record it as one. The
+        # pin is what normalise_facets honours, and it is the only thing
+        # protecting the value on a path that re-normalises the row
+        # WITHOUT coming back through here, which is exactly how the
+        # portfolio holdings merge loses facets it has not been told to
+        # keep. Not needed by the precedence above; kept because relying
+        # on that alone would make this row the one place in the app
+        # where a user's facet choice is not pinned.
+        if (out.get(_node_f) or "").strip():
+            out[facet_pinned_field(_facet)] = True
 
     # Single chokepoint — resolves all five facets, preserves raws
     # on miss, stamps _unmatched_facets.
@@ -4210,6 +4247,134 @@ class progress_scope:
     def __exit__(self, exc_type, exc, tb) -> bool:
         progress_finish(self.token)
         return False
+
+
+def optimizer_settings_get(pid: str) -> dict:
+    """The Optimizer panel's settings for one portfolio (v0.117.0).
+
+    Returns the full shape every time — stored values merged over
+    :data:`~porxpy.config.DEFAULT_OPTIMIZER_SETTINGS` — so no caller has
+    to know which keys a given portfolio happens to have saved::
+
+        {"max_error_rel": {facet: fraction, ...},
+         "max_funds": int, "min_weight": float,
+         "min_trade": float, "score_preset": str}
+
+    ``max_error_rel`` is per FACET here, unlike the scalar default it
+    falls back to: the panel offers one box per targeted facet, and the
+    whole point of the per-facet tolerance is that they differ.
+
+    **Why these live on the portfolio rather than in settings.json.**
+    They are decisions about THIS portfolio, in the same way its targets
+    and its cash reserve are: a 60/40 income portfolio and a
+    single-theme equity sleeve want different tolerances, and a
+    different fund cap. Stored app-wide, switching portfolio would
+    silently re-tune the optimiser; stored per browser, they would not
+    travel with the portfolio they describe.
+
+    Args:
+        pid: Portfolio UUID.
+
+    Returns:
+        Complete settings dict. Defaults for an unknown portfolio, so a
+        caller may render a panel before deciding the portfolio exists.
+    """
+    from porxpy.config import DEFAULT_OPTIMIZER_SETTINGS
+
+    out = dict(DEFAULT_OPTIMIZER_SETTINGS)
+    # The scalar default becomes a per-facet map with no entries: every
+    # facet then falls back to it, which is what an unset panel means.
+    out["max_error_rel"] = {}
+
+    p = find_portfolio(pid) or {}
+    stored = p.get("optimizer_settings")
+    if not isinstance(stored, dict):
+        return out
+
+    for k, v in stored.items():
+        if k not in DEFAULT_OPTIMIZER_SETTINGS:
+            continue                      # unknown key: ignore, don't echo
+        if k == "max_error_rel":
+            out[k] = {f: t for f, t in (v or {}).items()
+                      if isinstance(f, str) and isinstance(t, (int, float))}
+        else:
+            out[k] = v
+    return out
+
+
+def optimizer_settings_set(pid: str, settings: dict) -> dict:
+    """Persist the Optimizer panel's settings for one portfolio.
+
+    Merge semantics, not replace: a key absent from ``settings`` keeps
+    whatever is stored. That is what lets the optimise endpoint save the
+    settings a run was made with without the caller having to send every
+    field it does not care about.
+
+    Every value is clamped to :data:`~porxpy.config.OPTIMIZER_SETTING_BOUNDS`
+    and coerced to its type here rather than at the route, because a
+    hand-edited ``portfolios.json`` reaches the panel by the same path a
+    request does and must not be able to put an out-of-range number in
+    front of the solver.
+
+    Args:
+        pid: Portfolio UUID.
+        settings: Partial settings dict; unknown keys are ignored.
+
+    Returns:
+        The complete settings dict as now stored (defaults merged in).
+
+    Raises:
+        KeyError: No portfolio with ``pid``.
+    """
+    from porxpy.config import (DEFAULT_OPTIMIZER_SETTINGS,
+                               OPTIMIZER_SETTING_BOUNDS)
+
+    def _clamp(key, value, default):
+        lo, hi = OPTIMIZER_SETTING_BOUNDS.get(key, (None, None))
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return default
+        if lo is not None:
+            v = max(lo, min(hi, v))
+        return int(round(v)) if isinstance(default, int) else v
+
+    portfolios = load_portfolios()
+    for i, p in enumerate(portfolios):
+        if p.get("id") != pid:
+            continue
+        cur = p.get("optimizer_settings")
+        cur = dict(cur) if isinstance(cur, dict) else {}
+
+        for k, v in (settings or {}).items():
+            if k not in DEFAULT_OPTIMIZER_SETTINGS:
+                continue
+            if k == "max_error_rel":
+                # Per facet, and only for facets that name a number. A
+                # facet dropped from the panel (its targets were cleared)
+                # keeps its stored tolerance rather than being deleted —
+                # re-adding the target should restore what the user chose
+                # for it, not silently reset it to the default.
+                keep = dict(cur.get(k) or {})
+                for facet, tol in (v or {}).items():
+                    if not isinstance(facet, str):
+                        continue
+                    keep[facet] = _clamp(
+                        k, tol, DEFAULT_OPTIMIZER_SETTINGS[k])
+                cur[k] = keep
+            elif k == "score_preset":
+                cur[k] = str(v or "").strip()
+            else:
+                cur[k] = _clamp(k, v, DEFAULT_OPTIMIZER_SETTINGS[k])
+
+        if cur:
+            p["optimizer_settings"] = cur
+        else:
+            p.pop("optimizer_settings", None)
+        portfolios[i] = p
+        save_portfolios(portfolios)
+        return optimizer_settings_get(pid)
+    raise KeyError(f"portfolio {pid!r} not found")
 
 
 def cash_reserve_get(pid: str) -> float:

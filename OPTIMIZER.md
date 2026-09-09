@@ -1,6 +1,6 @@
 # The PorxPy Optimizer — how it works
 
-*Applies to `porxpy/optimizer.py` as of v0.116.0. The full audit — every
+*Applies to `porxpy/optimizer.py` as of v0.118.0. The full audit — every
 claim in the document re-checked against the module — was done at
 v0.91.0; since then the v0.96.0 peer-scoring change was folded into §7b
 and §13's one remaining open issue was re-confirmed by reading
@@ -659,6 +659,40 @@ target.
   tickers, the portfolio total, cash as a fraction and as an amount after
   the trades, and the single worst deviation across all facets (the
   headline figure; per-facet detail is in `facets`).
+
+### A target set is a file too (v0.118.0)
+
+The Targets tab exports and imports the whole design as CSV —
+`targets_to_csv` / `targets_from_csv` in `targets.py` — carrying all
+seven targetable facets at every level, the per-facet tolerances and the
+three scalars below. The cash reserve and `score_preset` deliberately do
+not travel: the first describes a portfolio rather than a design, the
+second names a scoring model that may not exist in the install reading
+the file.
+
+Targets **replace** on import, tolerances and scalars **merge**. That
+asymmetry is deliberate: a target set is validated as a whole (§the
+parent/child check), so a partial import could install a set the editor
+would have refused, while the tolerances carry no cross-constraint.
+
+### Settings are remembered per portfolio (v0.117.0)
+
+The Optimizer panel's five controls — the per-facet tolerances, Max
+funds, Min weight, Min trade and the quality picker — are stored on the
+portfolio as `optimizer_settings`, beside its targets and its cash
+reserve, and shipped on the `/view` payload so the panel renders from one
+round-trip.
+
+They are saved on **Run**: the settings that produced the design on
+screen are by definition the ones worth keeping, and a separate Save
+button would let the panel and the answer beside it disagree. The write
+merges, so a request omitting a key keeps the stored one, and a facet
+whose targets are cleared keeps its tolerance for when they come back.
+
+Defaults come from `config.DEFAULT_OPTIMIZER_SETTINGS` — one source for
+the solver's fallback, the endpoint's body defaults and the panel — and
+values are clamped to `config.OPTIMIZER_SETTING_BOUNDS` on write, in
+`utils`, where a hand-edited `portfolios.json` cannot get past them.
 
 ### What the endpoint adds
 

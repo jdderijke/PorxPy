@@ -278,6 +278,45 @@ FUND_CATEGORIES: list[str] = [
 # settings UI, etc.). Order is listings-first for cosmetic stability.
 CACHE_CATEGORIES: list[str] = LISTING_CATEGORIES + FUND_CATEGORIES
 
+
+# ---------------------------------------------------------------------------
+# Optimiser run settings
+# ---------------------------------------------------------------------------
+# What the Optimizer panel opens on when a portfolio has never been
+# optimised. Stored per portfolio from v0.117.0 (see
+# `utils.optimizer_settings_get`) because these are the user's decisions
+# about THIS portfolio, not app-wide preferences: a 60/40 income
+# portfolio and a single-theme equity sleeve want different tolerances,
+# and re-typing them on every visit is how a considered setting turns
+# into whatever the default happened to be.
+#
+# Here rather than in optimizer.py or in the route because three places
+# need the same numbers — the solver's own fallback, the endpoint's
+# body defaults, and the panel that renders them — and three copies of
+# "10%" is three places it can drift.
+#
+# `max_error_rel` is the per-facet default, a fraction OF EACH TARGET;
+# a facet with no stored value gets this one. See optimizer.TOL_FLOOR
+# for the floor that stops a small target demanding an accuracy whole
+# shares cannot express.
+DEFAULT_OPTIMIZER_SETTINGS: dict[str, Any] = {
+    "max_error_rel": 0.10,   # within 10% of each target
+    "max_funds":     10,
+    "min_weight":    0.01,   # drop dust positions below 1%
+    "min_trade":     100.0,  # base currency; 0 would emit cent-sized trades
+    "score_preset":  "",     # "" = off, best fit only
+}
+
+# Bounds the stored settings are clamped to. The panel's inputs carry the
+# same numbers; this is the half that cannot be bypassed by a hand-edited
+# portfolios.json or a stale browser tab.
+OPTIMIZER_SETTING_BOUNDS: dict[str, tuple[float, float]] = {
+    "max_error_rel": (0.01, 1.0),
+    "max_funds":     (1, 30),
+    "min_weight":    (0.0, 0.5),
+    "min_trade":     (0.0, 1e9),
+}
+
 DEFAULT_CACHE_CONFIG: dict[str, dict[str, Any]] = {
     "profile":       {"enabled": True, "ttl_days": 30},
     # holdings = the unified per-position holdings slot. A single blob

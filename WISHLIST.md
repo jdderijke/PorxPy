@@ -1,6 +1,6 @@
 # WISHLIST.md — possible future enhancements
 
-*Started 2026-08-18, at v0.72.3. Last swept at v0.116.0.*
+*Started 2026-08-18, at v0.72.3. Last swept at v0.118.0.*
 
 Things worth doing that nobody has promised. This is deliberately **not**
 a defect list: a bug lives in the Known open issues section of the
@@ -124,15 +124,26 @@ new one — the exactly-right shape for an open vocabulary. Not a defect:
 the app behaves as designed, and the app cannot know which two phrasings
 a user meant to unify.
 
-### Xtrackers factsheets, by finding the ISIN-to-asset-id mapping
+### ~~Xtrackers factsheets, by finding the ISIN-to-asset-id mapping~~ — closed at v0.116.1, as not possible
 
-Xtrackers holdings are discovered from a template; its factsheets are
-not, because they live at `/download/asset/<guid>` behind an identifier
-with nothing of the fund in it. The mapping exists — the product page's
-own JavaScript resolves it — in an API that could not be found from
-outside. Capturing one request from a browser's network panel while a
-factsheet downloads would settle it, and the adapter needs only another
-line in its `DOCUMENTS` table once it is known.
+The API was found, by reading the site's own JavaScript bundle:
+`/product_literature/api/v1/DocumentMetadata/{culture}/{isin}`. It needs
+no cookie and no entry gate, and it is EMPTY for Xtrackers ETFs — zero
+documents for six funds across four sites, zero document categories for
+seven cultures. The product pages agree in their own words ("Zurzeit
+sind keine Downloads vorhanden") and never call the literature API at
+all. There is nothing to discover: DWS does not publish these documents
+to its web app. Kept as a record so nobody spends the afternoon again.
+
+### Clone a portfolio's design into a new one
+
+Considered alongside the CSV export added in v0.118.0 and deferred in
+favour of it: a Clone button would copy settings, targets and tolerances
+into a new empty portfolio in one action, with no funds and no cash
+positions. It is fewer clicks for the common case, but it cannot keep
+several target sets side by side, cannot be diffed, and cannot be edited
+outside the app — which is what the file was actually wanted for. Worth
+adding if the round-trip through a file becomes the annoying part.
 
 ### Document discovery for the other three fund houses
 

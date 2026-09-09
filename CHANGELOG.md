@@ -3,6 +3,216 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.118.0] - 2026-09-09
+
+### Added — export and import a target set as CSV
+
+Designing a coherent target set is slow, careful work, and it lived in
+exactly one place: the portfolio it was typed into. There was no way to
+keep two of them, diff them, or try a variant without destroying the
+original.
+
+**Targets tab → Export CSV / Import CSV.** One file per set, one row per
+entry, discriminated by `kind`:
+
+    kind,facet,level,key,label,value
+    target,country,region,northAmerica,North America,40
+    target,sector,sub_sector,biotechnology,Biotechnology,10
+    tolerance,country,,,,10
+    setting,,,max_funds,Max Funds,20
+    # value: target    = % of the fund side
+    #        tolerance = % of each target
+    #        setting   = max_funds a count, min_weight a %,
+    #                    min_trade an amount in base currency
+
+It carries all seven targetable facets — asset class, sector, country,
+currency, market cap, equity style and thematic focus — every level of
+each, the per-facet optimiser tolerances, and the three Optimizer
+scalars (Max funds, Min weight, Min trade).
+
+**What it deliberately does not carry.** The cash reserve: an amount in
+base currency saying how much of THIS portfolio stays liquid, which is
+per-portfolio rather than per-design — importing someone else's would be
+importing their bank balance. And `score_preset`: it names a scoring
+model that exists in the install that exported the file and may not
+exist in the one reading it.
+
+**Import is two-phase**, like the backup importer and for the same
+reason: it replaces work that took real effort, so nothing is written
+until the user has seen what the file does. The preview is the same
+endpoint with `?dry_run=1`, so what is shown is what will be applied
+rather than a second implementation that could disagree.
+
+**Targets REPLACE, tolerances and settings MERGE.** Not an
+inconsistency: a target set is validated as a whole — every parent
+against the sum of its children — so a partial import could install a
+set the editor would have refused to save. Tolerances and scalars carry
+no cross-constraint, so a file naming none changes none, which is what
+lets a targets-only file be a targets-only import.
+
+Every problem in a file is collected and reported together rather than
+one per round-trip, and nothing is written if there is even one:
+
+    row 2: unknown facet 'planets'. Known: asset_class, sector, …
+    row 3: 'galaxy' is not a level of country. Levels: country, region, …
+    row 4: sector needs a level (one of sub_sector, sector, super_sector)
+    row 8: unknown setting 'max_trades'. Known: max_funds, min_weight, …
+
+Details worth knowing:
+
+- **`label` is decorative** and ignored on import, so a row can be
+  retitled or the column deleted without changing what the file means.
+  `key` is always the authority.
+- **A level may be omitted only for a flat facet**, where its one level
+  is unambiguous. On a tree it is an error rather than a guess —
+  choosing the grain for the user is the decision `FACET_DEFAULT_LEVEL`
+  exists to keep out of the data.
+- **Zero-valued targets are dropped on export.** An absent target is not
+  a zero one, the optimiser already ignores zeros, and a `0` row in a
+  hand-edited file invites the reading that it means something.
+- **A spreadsheet's "CSV UTF-8" BOM is handled**, which would otherwise
+  hide inside the first column name and make every header look missing.
+- `value_pct` is accepted as an alias for `value`, so a file written by
+  the first build of this feature still imports.
+
+Rejected alternative: cloning a portfolio. It would copy the settings in
+one action, but it cannot keep several sets side by side, cannot be
+diffed, and cannot be edited outside the app — which is the whole point.
+Recorded in `WISHLIST.md` rather than built.
+
+## [0.117.0] - 2026-09-09
+
+### Added — the Optimizer panel remembers its settings, per portfolio
+
+Every tolerance box reopened on 10, every visit. Max funds reopened on
+10, Min weight on 1, Min trade on 100, and the quality picker on "off".
+A considered setting — the one thing on that panel the user actually
+reasons about — lasted exactly as long as the tab stayed open, and a
+value chosen last week was indistinguishable from a value never chosen.
+
+The panel's five controls are now stored on the portfolio, next to the
+targets and the cash reserve they belong with:
+
+    "optimizer_settings": {
+      "max_error_rel": {"country": 0.04, "sector": 0.25},
+      "max_funds": 14, "min_weight": 0.02,
+      "min_trade": 250.0, "score_preset": "cost_and_returns"
+    }
+
+**Per portfolio, not app-wide.** These are decisions about one
+portfolio, exactly as its targets are: a 60/40 income portfolio and a
+single-theme equity sleeve want different tolerances and a different fund
+cap. Stored app-wide, switching portfolio would silently re-tune the
+optimiser; stored in the browser, they would not travel with the
+portfolio they describe.
+
+**Saved on Run, not behind a Save button.** The panel has no notion of a
+draft: the settings that produced the design on screen are by definition
+the ones worth keeping. A separate save step would let the two disagree —
+which is the state the user was already in, a panel reading 10 beside a
+design fitted to something else.
+
+**All five, not just the tolerances.** They are one control set, and
+remembering the tolerance while Max funds silently reopened on 10 would
+be the same complaint one input to the left. The score preset is included
+even though the optimiser's picker is deliberately not bound to the
+session-wide scoring model: remembering what a portfolio was last
+designed under is not the same as binding it to how lists are ranked.
+
+Details worth knowing:
+
+- **Merge, not replace.** A request that omits `max_funds` keeps the
+  stored one. Sending a partial body must not silently reset the rest,
+  which is the bug this change exists to remove.
+- **A facet dropped from the panel keeps its tolerance.** Clear a
+  facet's targets and its boxes disappear; re-add them and the value you
+  chose comes back rather than resetting to the default.
+- **Clamped on write**, in `utils`, not at the route — a hand-edited
+  `portfolios.json` reaches the panel by the same path a request does
+  and must not put an out-of-range number in front of the solver.
+- **Never fails a run.** If the settings cannot be persisted the design
+  is still returned; the user asked for a portfolio, not for a
+  preference to be written.
+
+`config.DEFAULT_OPTIMIZER_SETTINGS` is the new single source for the
+defaults. Three places needed the same numbers — the solver's fallback,
+the endpoint's body defaults and the panel that renders them — and
+`optimizer.DEFAULT_TOL_REL` now reads from it rather than carrying its
+own copy of 10%.
+
+## [0.116.1] - 2026-09-09
+
+### Fixed — a cash position's currency and asset class could not be changed
+
+Changing the currency of a cash position reverted it to whatever it had
+been. Changing its asset class was stuck the same way: a position could
+not be moved off `cash` down to `free spendable cash`. Both edits
+round-tripped, returned 200, and came back unchanged with nothing
+reporting a failure.
+
+`coerce_cash_position` seeded each facet's stated value from the raw
+column first and the node the user picked second. On a holdings row that
+order is right: the raw is EVIDENCE — what the issuer's file actually
+said — and the node is a conclusion drawn from it, so re-resolving from
+the raw is the whole point of reading the row. A cash position has no
+issuer and no file. The user is its only source, so the node IS the
+evidence, and its raw is nothing but a copy this function made of an
+earlier node on an earlier save. Reading that copy first meant the first
+value a position was ever given outranked every later edit, for good.
+
+Visible in the shipped data: a position named "ABNAMRO dollar rekening"
+carrying `currency_raw: "EUR"`, and every position sitting at asset class
+`cash` with an empty `sub_class`, because `_cash_defaults` had seeded
+`asset_raw: "cash"` on the first save. A position created new with a
+finer sub class worked and always had — its raw was seeded to the right
+value the first time — which is why the fault looked arbitrary.
+
+**This is the same defect the by-row holdings editor had**, fixed there
+by `_pin_facet`: write the node without the pin and the next
+normalisation re-resolves the facet from the untouched raw and discards
+the edit. The cash table is the surface that never got that fix. It now
+gets both halves:
+
+- The node takes precedence over the raw for a cash position, with the
+  reason stated at the site of the change. This also repairs the
+  positions already on disk — no re-picking required, and no migration.
+- The picker writes `<facet>_pinned`, which is how every other
+  facet-editing surface in the app records a user decision, and the only
+  thing protecting the value on a path that re-normalises a row without
+  coming back through `coerce_cash_position`.
+
+All three pickers in the cash table share one handler, so country was
+broken identically and is fixed by the same change; it was simply less
+noticeable than a euro account that would not become a dollar one.
+
+### Fixed — two wrong claims about Xtrackers factsheets
+
+The adapter said the ISIN-to-download-id mapping "lives in an API this
+adapter could not find", which reads as an invitation to go looking. It
+has now been looked for and found, by reading the site's own JavaScript
+bundle rather than guessing at paths:
+
+    GET /product_literature/api/v1/DocumentMetadata/{culture}/{isin}
+        ?productType=Passive
+
+It answers 200 with `{"fundName", "documents"}`, needs no cookie, no
+entry gate and no declared investor role — and is EMPTY for Xtrackers
+ETFs. Zero documents for six funds across nl-nl, en-gb, de-de and en-lu;
+zero document categories from `LiteratureFilters` for seven cultures.
+The product pages agree in their own words ("Zurzeit sind keine Downloads
+vorhanden") and never call the literature API at all, because the
+document list comes from the server-rendered page model and that model
+carries none. So there is nothing to derive and no button to press —
+which also means a headless browser would not help here, since it cannot
+download a document the site does not offer.
+
+The second claim was a caveat in the wrong place: `robots.txt` on
+`etf.dws.com` disallows `/etfdata/*` and `/export/*`, which are the
+**holdings** endpoints this adapter already uses. `/api/*` and
+`/product_literature/api/*` are not disallowed. The v0.110.0 entry has
+been marked as superseded rather than rewritten, so the reasoning that
+led to the dead end stays legible.
+
 ## [0.116.0] - 2026-09-09
 
 ### Changed — the optimiser names the funds it cannot use
@@ -468,6 +678,12 @@ Verified against two of the user's own Xtrackers funds — 404 rows and
 Country / Currency / Exchange.
 
 ### Not added — Xtrackers factsheets, and why
+
+> **Corrected in v0.116.1.** Two claims below turned out to be wrong.
+> The API was found, and the `robots.txt` caveat was attached to the
+> wrong endpoint. The original text is kept so the reasoning that led
+> to the dead end is still legible; read the v0.116.1 entry for what is
+> actually true.
 
 They are served from `/download/asset/<guid>` behind an opaque
 identifier with nothing in it derived from the fund. The mapping from

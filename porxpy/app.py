@@ -1088,6 +1088,7 @@ def create_app() -> Flask:
         might never satisfy the tightest bucket at all.
         """
         from porxpy.optimizer import optimise_portfolio, DEFAULT_TOL_REL
+        from porxpy.utils import optimizer_settings_set
         # Local imports, matching the pattern used by the other endpoints.
         from porxpy.utils import cash_positions_get, cash_reserve_get
         # Country targets are region-keyed while fund breakdowns are
@@ -1492,6 +1493,32 @@ def create_app() -> Flask:
             body.get("score_preset"))
         result["skipped"]         = skipped
         result["cash_before"]     = round(cash_total, 2)
+        # Remember what this run was made with (v0.117.0).
+        #
+        # Saved on RUN rather than behind a Save button because the panel
+        # has no notion of a draft: the user tunes a tolerance and presses
+        # Propose design, and the settings that produced the answer on
+        # screen are by definition the ones worth keeping. A separate
+        # save step would let the two disagree, which is the state the
+        # user was already in — a panel showing 10 while the design in
+        # front of them had been fitted to something else.
+        # Only the keys this request actually carried. `optimizer_settings_set`
+        # merges, so an absent key must stay absent rather than arrive as
+        # None and be clamped back to the default — that would make a
+        # caller who omits `max_funds` silently RESET it, which is the
+        # bug this whole change exists to remove.
+        _keep = {k: body[k] for k in ("max_error_rel", "max_funds",
+                                      "min_weight", "min_trade",
+                                      "score_preset")
+                 if k in body}
+        try:
+            if _keep:
+                optimizer_settings_set(pid, _keep)
+        except Exception as exc:
+            # Never fail a design over its bookkeeping — the user asked
+            # for a portfolio, not for a preference to be written.
+            print(f"[Optimizer] could not persist settings for {pid}: {exc}")
+
         result["facet_warnings"]  = facet_warnings
         result["source_mix"]      = source_mix
         result["level_report"]    = level_report
@@ -1828,6 +1855,124 @@ def create_app() -> Flask:
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 404
         return jsonify({"targets": persisted, "cash_reserve": reserve})
+
+    @app.route("/api/portfolios/<pid>/targets/csv", methods=["GET"])
+    def api_portfolio_targets_csv_get(pid: str) -> Response:
+        """Download this portfolio's targets and tolerances as CSV.
+
+        The cash reserve is deliberately absent — see the note above
+        :func:`porxpy.targets.targets_to_csv`. Everything else on the
+        Targets tab and the Optimizer panel's tolerance boxes is here.
+
+        Returns:
+            ``text/csv`` with a ``Content-Disposition`` naming the file
+            after the portfolio, so several exports do not overwrite one
+            another in the browser's download folder.
+        """
+        from porxpy.targets import targets_to_csv
+        from porxpy.utils import optimizer_settings_get
+
+        p = find_portfolio(pid)
+        if not p:
+            return jsonify({"error": "portfolio not found"}), 404
+
+        opt = optimizer_settings_get(pid) or {}
+        text = targets_to_csv(portfolio_targets_get(pid) or {},
+                              opt.get("max_error_rel") or {},
+                              opt)
+
+        safe = "".join(c if c.isalnum() or c in "._- " else "_"
+                       for c in (p.get("name") or "portfolio")).strip() or "portfolio"
+        resp = Response(text, mimetype="text/csv; charset=utf-8")
+        resp.headers["Content-Disposition"] = (
+            f'attachment; filename="porxpy_targets_{safe}.csv"')
+        return resp
+
+    @app.route("/api/portfolios/<pid>/targets/csv", methods=["POST"])
+    def api_portfolio_targets_csv_post(pid: str) -> Response:
+        """Import targets and tolerances from CSV.
+
+        Body: the file itself, either as ``multipart/form-data`` under
+        ``file`` or as a raw ``text/csv`` payload. ``?dry_run=1`` parses
+        and validates without writing, which is what the browser calls
+        first so the user sees what a file will do before it does it —
+        the same inspect-then-apply shape the bundle importer uses, and
+        for the same reason: this overwrites work that took real effort.
+
+        **Targets REPLACE, tolerances MERGE.** Not an inconsistency: a
+        target set is validated as a whole (parents against the sum of
+        their children), so a partial import could leave a set that no
+        editor would have allowed to be saved. Tolerances carry no such
+        cross-constraint — each is independent — so a file that names
+        none leaves the ones already stored alone, exactly as omitting a
+        field does everywhere else in the optimiser settings.
+
+        The cash reserve is never touched.
+
+        Returns:
+            ``{ok, applied, targets, tolerances, problems, summary}``.
+            ``problems`` non-empty means nothing was written, whether or
+            not this was a dry run.
+        """
+        from porxpy.targets import targets_from_csv, validate_target_levels
+        from porxpy.utils import _coerce_targets, optimizer_settings_set
+
+        if not find_portfolio(pid):
+            return jsonify({"error": "portfolio not found"}), 404
+
+        f = request.files.get("file")
+        if f is not None:
+            raw = f.read()
+        else:
+            raw = request.get_data() or b""
+        try:
+            # utf-8-sig: a spreadsheet's "CSV UTF-8" export leads with a
+            # BOM, which would otherwise land inside the first column
+            # name and make every header look missing.
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = raw.decode("latin-1", errors="replace")
+
+        targets, tolerances, settings, problems = targets_from_csv(text)
+
+        # The same whole-set coherence check the manual save runs, so a
+        # file cannot install a set the editor would have refused.
+        coerced = _coerce_targets(targets)
+        if not problems:
+            problems = validate_target_levels(coerced)
+
+        n_targets = sum(len(b) for per in coerced.values()
+                        for b in per.values())
+        summary = (f"{n_targets} target(s) across "
+                   f"{len([f for f, per in coerced.items() if any(per.values())])} "
+                   f"facet(s), {len(tolerances)} tolerance(s), "
+                   f"{len(settings)} setting(s)")
+
+        dry = (request.args.get("dry_run") or "").lower() in ("1", "true", "yes")
+        applied = False
+        if not problems and not dry:
+            portfolio_targets_put(pid, coerced)
+            # One write for both halves of the Optimizer panel. Merge
+            # semantics throughout: a file naming no tolerances and no
+            # scalars changes neither, which is what lets a
+            # targets-only file be a targets-only import.
+            opt_patch = dict(settings)
+            if tolerances:
+                opt_patch["max_error_rel"] = tolerances
+            if opt_patch:
+                optimizer_settings_set(pid, opt_patch)
+            applied = True
+
+        return jsonify({
+            "ok":         not problems,
+            "applied":    applied,
+            "dry_run":    dry,
+            "targets":    coerced,
+            "tolerances": tolerances,
+            "settings":   settings,
+            "problems":   problems,
+            "summary":    summary,
+        }), (200 if not problems else 409)
 
     @app.route("/api/targets/meta/<facet>", methods=["GET"])
     def api_targets_meta(facet: str) -> Response:
@@ -2419,8 +2564,15 @@ def create_app() -> Flask:
             fundlevel_breakdowns_ex_cash, targets)
         # The cash reserve rides along with the targets it belongs to, so
         # the Targets tab and its editor can render without a second call.
-        from porxpy.utils import cash_reserve_get
+        from porxpy.utils import cash_reserve_get, optimizer_settings_get
         cash_reserve = cash_reserve_get(p.get("id") or "")
+        # The Optimizer panel's saved settings ride along too (v0.117.0),
+        # for the same reason the reserve does: the panel is rendered from
+        # this payload, and a second round-trip to fill in four inputs
+        # would let the screen paint defaults first and correct itself
+        # afterwards — which is exactly what "it forgot my tolerance"
+        # looks like even when the value was stored correctly.
+        optimizer_settings = optimizer_settings_get(p.get("id") or "")
 
         # Three totals, not one (v0.89.0). The portfolio funds list no
         # longer carries the cash rows — a cash position is not a fund —
@@ -2451,6 +2603,7 @@ def create_app() -> Flask:
             # (base currency). Read by the Targets tab; the optimiser
             # reads it from storage directly.
             "cash_reserve":          round(cash_reserve, 2),
+            "optimizer_settings":    optimizer_settings,
             # Slimmed: price_history and holdings_rows are dropped here
             # (see _slim_fund_data_for_view). Every aggregate above was
             # computed from the full ``enriched`` before this point.

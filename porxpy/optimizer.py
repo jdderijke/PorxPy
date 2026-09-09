@@ -79,6 +79,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from porxpy.config import DEFAULT_OPTIMIZER_SETTINGS
+
 
 # A synthetic bucket collecting every exposure that falls outside the
 # buckets the user actually targeted. See _build_facet_matrix.
@@ -91,7 +93,11 @@ WEIGHT_EPS = 1e-4
 # How much of each target may be missed, when the caller names no figure.
 # 10% of the target, so a 40% bucket allows 4pp and a 5% bucket allows
 # 0.5pp — both "a tenth of what I asked for".
-DEFAULT_TOL_REL = 0.10
+#
+# Read from config rather than written here (v0.117.0): the panel that
+# renders this number, the endpoint that defaults it and this solver must
+# agree, and they only do so by construction if there is one copy.
+DEFAULT_TOL_REL = float(DEFAULT_OPTIMIZER_SETTINGS["max_error_rel"])
 
 # The floor under a bucket's allowance, in whole-portfolio fractions.
 #

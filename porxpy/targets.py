@@ -335,3 +335,305 @@ def validate_target_levels(targets: dict) -> list[str]:
                         f"({', '.join(sorted(contributors))}). A parent "
                         f"cannot be smaller than the sum of its children.")
     return problems
+
+
+# ---------------------------------------------------------------------------
+# CSV interchange for a target set (v0.118.0)
+# ---------------------------------------------------------------------------
+# Designing a coherent target set is slow, careful work, and until now it
+# lived in exactly one place: the portfolio it was typed into. There was
+# no way to keep two of them, diff them, or try a variant without
+# destroying the original. A file fixes all three, and a CSV in
+# particular is the format that can be opened in a spreadsheet and edited
+# by hand — which is the actual request, not merely a transport.
+#
+# The tolerances travel with the targets deliberately. A tolerance is
+# meaningless without the target it is a share of ("within 10% of it"),
+# so a file carrying one without the other would describe half a design.
+#
+# The cash reserve deliberately does NOT travel. It is an amount in base
+# currency saying how much of THIS portfolio stays liquid — the one
+# number on the Targets tab that is per-portfolio rather than
+# per-design, and importing someone else's would be importing their bank
+# balance.
+#
+# One file, one row per entry, discriminated by `kind`. The wide
+# alternative — a tolerance column filled only on a facet's first row —
+# was rejected because the blanks are easy to get wrong by hand and
+# re-sorting the sheet, the first thing anyone does in a spreadsheet,
+# silently moves which row carries the tolerance.
+
+TARGETS_CSV_FIELDS: tuple[str, ...] = (
+    "kind", "facet", "level", "key", "label", "value")
+
+# The scalar Optimizer settings the file carries, and the unit each is
+# written in. They are not per facet, so they ride as `kind=setting` rows
+# with the setting's name in `key` and `facet` left blank.
+#
+# `score_preset` is deliberately NOT here. It names a scoring model that
+# exists in the install that exported the file and may not exist in the
+# one importing it, and a target set is meant to be portable between
+# portfolios and between installs. The other three are plain numbers that
+# mean the same thing everywhere.
+#
+# This is why the value column is `value` and not `value_pct`: it now
+# carries three units — a percentage, a count, and an amount of base
+# currency — and a column named for one of them would be lying about the
+# other two. The trailing comment block in the file says which is which.
+TARGETS_CSV_SETTINGS: dict[str, str] = {
+    "max_funds":  "count",
+    "min_weight": "percent",      # 1 = 1% of the fund side
+    "min_trade":  "base currency",
+}
+
+# Rows beginning with this are written as guidance and skipped on read.
+TARGETS_CSV_COMMENT = "#"
+
+
+def _pretty_key(key: str) -> str:
+    """A human label for a bucket key. Decorative only.
+
+    Written into the ``label`` column on export and IGNORED on import,
+    so a row can be retitled, translated, or the column deleted
+    entirely without changing what the file means. ``key`` is always the
+    authority.
+
+    Deliberately a small local prettifier rather than a second copy of
+    the frontend's ``tgKeyLabel``: this text never drives behaviour, and
+    sharing a labeller would couple a pure-compute module to the display
+    layer for a column nothing reads back. Most keys are already
+    canonical words ("corporate bond"); the camelCase ones are the
+    Morningstar region codes ("northAmerica").
+    """
+    if not key:
+        return ""
+    if key.isupper():                     # currency codes: EUR, USD
+        return key
+    out, prev_lower = [], False
+    for ch in key:
+        if ch.isupper() and prev_lower:
+            out.append(" ")
+        out.append(ch)
+        prev_lower = ch.islower()
+    return "".join(out).replace("_", " ").strip().title()
+
+
+def targets_to_csv(targets: dict, tolerances: dict | None = None,
+                   settings: dict | None = None) -> str:
+    """Render a target set, its tolerances and the Optimizer scalars.
+
+    Args:
+        targets: ``{facet: {level: {key: percent}}}`` as stored.
+        tolerances: ``{facet: fraction}`` — the optimiser's per-facet
+            relative tolerance. Written as a PERCENT, matching what the
+            Optimizer panel shows, so the file and the screen agree.
+        settings: The Optimizer panel's scalars. Only the keys in
+            :data:`TARGETS_CSV_SETTINGS` are written, and ``min_weight``
+            is converted to a percent for the same reason.
+
+    Returns:
+        CSV text: a header row, target rows sorted by facet then level
+        then key for a stable diff, then tolerance rows, then setting
+        rows, then comment lines giving the unit of ``value`` for each
+        kind — the one thing about this file a reader cannot infer.
+    """
+    import csv
+    import io
+
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(TARGETS_CSV_FIELDS)
+
+    for facet in sorted(targets or {}):
+        per_level = (targets or {}).get(facet) or {}
+        if not isinstance(per_level, dict):
+            continue
+        # Levels in the facet's own finest-first order rather than
+        # alphabetically, so the file reads the way FACET_LEVELS does.
+        order = list(FACET_LEVELS.get(facet) or (facet,))
+        for level in sorted(per_level,
+                            key=lambda l: (order.index(l) if l in order
+                                           else 99, l)):
+            block = per_level.get(level) or {}
+            for key in sorted(block):
+                try:
+                    pct = float(block[key])
+                except (TypeError, ValueError):
+                    continue
+                if pct <= 0:
+                    continue      # sparse: an absent target is not a zero one
+                w.writerow(["target", facet, level, key,
+                            _pretty_key(key), f"{pct:g}"])
+
+    for facet in sorted(tolerances or {}):
+        try:
+            frac = float((tolerances or {})[facet])
+        except (TypeError, ValueError):
+            continue
+        if frac <= 0:
+            continue
+        w.writerow(["tolerance", facet, "", "", "", f"{frac * 100:g}"])
+
+    for name in TARGETS_CSV_SETTINGS:
+        if name not in (settings or {}):
+            continue
+        try:
+            v = float((settings or {})[name])
+        except (TypeError, ValueError):
+            continue
+        # min_weight is stored as a fraction and shown as a percent. The
+        # file follows the SCREEN, so what a user reads here is what they
+        # would type into the panel.
+        if name == "min_weight":
+            v *= 100.0
+        w.writerow(["setting", "", "", name, _pretty_key(name), f"{v:g}"])
+
+    c = TARGETS_CSV_COMMENT
+    buf.write(f"{c} value: target    = % of the fund side\n")
+    buf.write(f"{c}        tolerance = % of each target\n")
+    buf.write(f"{c}        setting   = max_funds a count, min_weight a %,\n")
+    buf.write(f"{c}                    min_trade an amount in base currency\n")
+    buf.write(f"{c} label is decorative and ignored on import.\n")
+    return buf.getvalue()
+
+
+def targets_from_csv(text: str) -> tuple[dict, dict, dict, list[str]]:
+    """Parse CSV text back into targets, tolerances and Optimizer scalars.
+
+    Every problem is collected rather than raised, so the caller can
+    reject the file as a whole and show everything wrong with it at
+    once. That matches how a target set is validated on save: a set is
+    coherent or it is not, and correcting one error at a time through
+    five round-trips is the editor fighting the user.
+
+    Args:
+        text: The file's contents.
+
+    Returns:
+        ``(targets, tolerances, settings, problems)`` — targets as
+        ``{facet: {level: {key: percent}}}``, tolerances as
+        ``{facet: fraction}``, settings as ``{name: number}`` in the
+        units the optimiser stores (``min_weight`` back to a fraction),
+        and human-readable problems. When ``problems`` is non-empty the
+        first three must not be applied.
+    """
+    import csv
+    import io
+
+    from porxpy.config import META_FACETS, meta_target_allowed
+
+    targets: dict[str, dict[str, dict[str, float]]] = {}
+    tolerances: dict[str, float] = {}
+    settings: dict[str, float] = {}
+    problems: list[str] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    lines = [ln for ln in (text or "").splitlines()
+             if ln.strip() and not ln.lstrip().startswith(TARGETS_CSV_COMMENT)]
+    if not lines:
+        return {}, {}, {}, ["the file has no rows"]
+
+    reader = csv.DictReader(io.StringIO("\n".join(lines)))
+    # `value_pct` is accepted as an alias for `value`: files exported by
+    # the first build of this feature carried the older name, and
+    # refusing them would make a target set someone had already saved
+    # unreadable by the tool that wrote it.
+    names = reader.fieldnames or []
+    value_col = "value" if "value" in names else (
+        "value_pct" if "value_pct" in names else "")
+    missing = [c for c in ("kind", "facet") if c not in names]
+    if not value_col:
+        missing.append("value")
+    if missing:
+        return {}, {}, {}, [
+            f"missing column(s): {', '.join(missing)}. Expected a header row "
+            f"of: {', '.join(TARGETS_CSV_FIELDS)}"]
+
+    for n, row in enumerate(reader, start=2):          # row 1 is the header
+        kind  = (row.get("kind")  or "").strip().lower()
+        facet = (row.get("facet") or "").strip()
+        level = (row.get("level") or "").strip()
+        key   = (row.get("key")   or "").strip()
+        rawv  = (row.get(value_col) or "").strip()
+
+        if kind not in ("target", "tolerance", "setting"):
+            shown = kind or "(blank)"
+            problems.append(f"row {n}: kind must be 'target', 'tolerance' or "
+                            f"'setting', not {shown}")
+            continue
+        # A setting is not per facet, so it is checked against its own
+        # vocabulary and skips the facet gate entirely.
+        if kind != "setting" and facet not in TARGET_FACETS:
+            problems.append(f"row {n}: unknown facet {facet!r}. Known: "
+                            f"{', '.join(TARGET_FACETS)}")
+            continue
+        try:
+            val = float(rawv)
+        except (TypeError, ValueError):
+            problems.append(f"row {n}: value {rawv!r} is not a number")
+            continue
+        if val < 0:
+            problems.append(f"row {n}: value cannot be negative")
+            continue
+
+        if kind == "setting":
+            if key not in TARGETS_CSV_SETTINGS:
+                problems.append(
+                    f"row {n}: unknown setting {key!r}. Known: "
+                    f"{', '.join(TARGETS_CSV_SETTINGS)}")
+                continue
+            if key in settings:
+                problems.append(f"row {n}: {key} is set twice")
+                continue
+            # Back into the units the optimiser stores. The file speaks
+            # the panel's language; `optimizer_settings_set` clamps to
+            # the real bounds, so nothing here has to know them.
+            settings[key] = val / 100.0 if key == "min_weight" else val
+            continue
+
+        if kind == "tolerance":
+            if not 0 < val <= 100:
+                problems.append(
+                    f"row {n}: a tolerance is a percentage OF THE TARGET, so "
+                    f"it must be above 0 and at most 100")
+                continue
+            if facet in tolerances:
+                problems.append(f"row {n}: {facet} already has a tolerance")
+                continue
+            tolerances[facet] = val / 100.0
+            continue
+
+        # kind == "target"
+        levels = FACET_LEVELS.get(facet) or (facet,)
+        if not level:
+            # A flat facet's only level is its own name, so an omitted
+            # level is unambiguous there and an error anywhere else —
+            # guessing one on a tree would pick the grain for the user,
+            # which is the decision FACET_DEFAULT_LEVEL exists to keep
+            # out of the data.
+            if len(levels) == 1:
+                level = levels[0]
+            else:
+                problems.append(f"row {n}: {facet} needs a level (one of "
+                                f"{', '.join(levels)})")
+                continue
+        if level not in levels:
+            problems.append(f"row {n}: {level!r} is not a level of {facet}. "
+                            f"Levels: {', '.join(levels)}")
+            continue
+        if not key:
+            problems.append(f"row {n}: a target needs a key")
+            continue
+        if facet in META_FACETS and not meta_target_allowed(facet, key):
+            problems.append(
+                f"row {n}: {key!r} cannot carry a target on {facet}")
+            continue
+        if (facet, level, key) in seen:
+            problems.append(
+                f"row {n}: duplicate target for {facet}/{level}/{key}")
+            continue
+        seen.add((facet, level, key))
+        if val > 0:
+            targets.setdefault(facet, {}).setdefault(level, {})[key] = val
+
+    return targets, tolerances, settings, problems

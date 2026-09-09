@@ -1761,8 +1761,17 @@
           <div class="cc" style="margin-bottom:16px">
             <div class="ct" style="display:flex;align-items:center;justify-content:space-between">
               <span>// exposure vs targets</span>
-              <button class="btn btn-s" onclick="openTargetsEditor()">Edit targets</button>
+              <span style="display:flex;gap:.4rem;align-items:center">
+                <button class="btn btn-s btn-sm" onclick="tgExportCsv()"
+                        title="Download this portfolio's targets, tolerances and the three Optimizer numbers as a CSV you can keep, diff and hand-edit. The cash reserve is not included — it describes this portfolio, not the design.">↓ Export CSV</button>
+                <button class="btn btn-s btn-sm" onclick="document.getElementById('tgCsvFile').click()"
+                        title="Load a target set from a CSV. You will see exactly what it does before anything is written.">↑ Import CSV</button>
+                <input type="file" id="tgCsvFile" accept=".csv,text/csv"
+                       style="display:none" onchange="tgImportCsv(this)">
+                <button class="btn btn-s" onclick="openTargetsEditor()">Edit targets</button>
+              </span>
             </div>
+            <div id="tgCsvMsg" class="mhint" style="margin:.3rem 0 0"></div>
             <div style="font-family:var(--mono);font-size:.65rem;color:var(--muted);
                         margin:.2rem 0 .8rem;line-height:1.5">
               Bars show <span style="color:var(--green)">actual − target</span>:
@@ -5694,6 +5703,13 @@ function renderOptimizerTolerances(){
   if (!grid) return;
 
   const facets = _optTargetedFacets();
+  // Precedence: what is on screen right now (an edit the user has made
+  // but not yet run), then what this PORTFOLIO has saved, then the app
+  // default. The middle step is v0.117.0 — without it every visit
+  // reopened on 10 and the considered value the user chose last week was
+  // gone, which read as the app ignoring the input.
+  const saved = _optSavedSettings();
+  const savedTol = saved.max_error_rel || {};
   const prev = {};
   grid.querySelectorAll('input.opterr').forEach(el => { prev[el.dataset.facet] = el.value; });
 
@@ -5706,7 +5722,10 @@ function renderOptimizerTolerances(){
       <label class="mfl">${escapeHtml(facetLabel(f))} % of target</label>
       <input class="opterr" type="number" min="1" max="100" step="1"
              title="How much of each ${escapeAttr(facetLabel(f))} target may be missed, as a share of that target. 10 means a 40% target may be 4 points off and a 5% target 0.5 points. Never tighter than 0.5 points."
-             data-facet="${f}" value="${prev[f] != null ? prev[f] : 10}">
+             data-facet="${f}" value="${
+               prev[f] != null ? prev[f]
+               : (savedTol[f] != null ? +(savedTol[f] * 100).toFixed(2)
+                                      : OPT_DEFAULTS.max_error_rel * 100)}">
     </div>`).join('');
   grid.style.display = facets.length ? '' : 'none';
 
@@ -5720,6 +5739,45 @@ function renderOptimizerTolerances(){
       ? `${facets.length} categor${facets.length === 1 ? 'y' : 'ies'} targeted: `
         + facets.map(f => facetLabel(f)).join(', ')
       : '';
+  }
+}
+
+// The app-wide fallbacks, mirroring config.DEFAULT_OPTIMIZER_SETTINGS.
+// Only reached for a portfolio that has never been optimised; the server
+// is the authority and sends the merged shape on every view load.
+const OPT_DEFAULTS = { max_error_rel: 0.10, max_funds: 10,
+                       min_weight: 0.01, min_trade: 100, score_preset: '' };
+
+// This portfolio's saved Optimizer settings, off the view payload.
+function _optSavedSettings(){
+  return (currentPortfolioView && currentPortfolioView.optimizer_settings) || {};
+}
+
+// Fill the four scalar inputs and the quality picker from the same saved
+// block the tolerance boxes read (v0.117.0).
+//
+// All five travel together deliberately. They are one control set —
+// everything the user decides about how THIS portfolio is optimised —
+// and remembering the tolerance while Max funds silently reopened on 10
+// would be the same complaint one input to the left. The score preset is
+// included even though it is not bound to the session-wide scoring model
+// (see applyScorePreset): remembering the choice a portfolio was last
+// designed under is not the same as binding it to how lists are ranked.
+function applyOptimizerSettingsToPanel(){
+  const s = _optSavedSettings();
+  const set = (id, v) => { const el = document.getElementById(id);
+                           if (el && v != null) el.value = v; };
+  set('optMaxFunds',  s.max_funds  != null ? s.max_funds : OPT_DEFAULTS.max_funds);
+  set('optMinWeight', (s.min_weight != null ? s.min_weight
+                                            : OPT_DEFAULTS.min_weight) * 100);
+  set('optMinTrade',  s.min_trade  != null ? s.min_trade : OPT_DEFAULTS.min_trade);
+  const sel = document.getElementById('optScorePreset');
+  if (sel && s.score_preset != null){
+    // Only if the presets are loaded and still offer it — a model the
+    // user has since deleted must not leave the picker on a dead value.
+    if ([...sel.options].some(o => o.value === s.score_preset)){
+      sel.value = s.score_preset;
+    }
   }
 }
 
@@ -6363,13 +6421,19 @@ function switchPortfolioSubTab(name){
     if (el) el.textContent = p && p.base_currency ? `(${p.base_currency})` : '';
     // Targets may have changed since this panel was last shown.
     renderOptimizerTolerances();
+    // …and so may the portfolio, so the scalars are re-seeded from
+    // whatever THIS one has saved rather than left showing the last
+    // portfolio's numbers.
+    applyOptimizerSettingsToPanel();
     // Presets may not have been fetched yet if the Explore tab was never
     // opened, so fetch on demand rather than assuming.
     if (!(cacheScoreMeta.presets || []).length){
-      fetchCacheScores().then(renderOptimizerScorePresets)
+      fetchCacheScores().then(() => { renderOptimizerScorePresets();
+                                      applyOptimizerSettingsToPanel(); })
                         .catch(e => console.warn('scores:', e));
     } else {
       renderOptimizerScorePresets();
+      applyOptimizerSettingsToPanel();
     }
   }
 
@@ -6629,6 +6693,21 @@ function onCashFacetPick(posId, facet, value){
   const pos = cashPositions.find(p => p.id === posId);
   if (!pos) return;
   pos[FACET_NODE_FIELD[facet]] = value || '';
+  // PIN it (v0.116.1). Picking a value here is a user decision, and the
+  // pin is how every other facet-editing surface in the app says so —
+  // the Resolve dialog's by-row tab and the fund-page holdings table
+  // both go through `_pin_facet` on the backend, which exists because
+  // writing the node without the pin let the very next normalisation
+  // re-resolve the facet from the untouched raw and throw the edit away.
+  //
+  // The cash table never pinned, and had exactly that bug: a position
+  // named "ABNAMRO dollar rekening" could not be moved off EUR, and no
+  // position could be moved off asset class `cash` down to `free
+  // spendable cash`, because the raw written on the position's first
+  // save outranked every edit after it. Clearing is a decision too, so
+  // the pin is set for an empty pick as well — "this position states no
+  // country" must survive a re-read.
+  pos[FACET_PINNED_FIELD[facet]] = true;
   for (const lvl of (LEVELLED_FACETS[facet] || [])){
     // currency's only level IS its node field — blanking it would
     // discard the value just written.
@@ -19846,6 +19925,92 @@ let _tgReserve = 0;
 let _tgEditorState = null;
 // Available canonical values per facet, lazy-fetched + cached across opens.
 let _tgCanonical = Object.fromEntries(_TG_ALL_FACETS.map(f => [f, null]));
+
+// ── Targets as a CSV file (v0.118.0) ─────────────────────────────────
+// Designing a coherent target set is slow work that used to live in
+// exactly one place — the portfolio it was typed into — with no way to
+// keep two, diff them, or try a variant without destroying the original.
+//
+// Import is two-phase, like the backup importer and for the same
+// reason: this REPLACES a target set, so nothing is written until the
+// user has seen what the file actually does. The dry run is the same
+// endpoint with ?dry_run=1, so what is previewed is what will be
+// applied — a separate preview path could disagree with the real one.
+function _tgCsvMsg(html, cls){
+  const el = document.getElementById('tgCsvMsg');
+  if (!el) return;
+  el.innerHTML = cls ? `<span style="color:var(--${cls})">${html}</span>` : html;
+}
+
+async function tgExportCsv(){
+  if (!activePid) return;
+  _tgCsvMsg('Building the file…');
+  try {
+    const r = await fetch(
+      `${API}/portfolios/${encodeURIComponent(activePid)}/targets/csv`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    // bkDownload reads the filename off Content-Disposition and verifies
+    // the body arrived whole — the same saver the bundle exports use, so
+    // a truncated download cannot be written silently here either.
+    await bkDownload(r, 'porxpy_targets.csv');
+    _tgCsvMsg('Target set exported.', 'accent');
+  } catch(e){
+    _tgCsvMsg(escapeHtml(String(e.message || e)), 'red');
+  }
+}
+
+async function tgImportCsv(input){
+  const f = input.files && input.files[0];
+  input.value = '';                     // re-selecting the same file works
+  if (!f || !activePid) return;
+  _tgCsvMsg('Reading the file…');
+  try {
+    const text = await f.text();
+    const url  = `${API}/portfolios/${encodeURIComponent(activePid)}/targets/csv`;
+
+    // Phase 1 — validate, change nothing.
+    const dry = await fetch(url + '?dry_run=1',
+      {method:'POST', headers:{'Content-Type':'text/csv'}, body:text});
+    const d = await dry.json();
+    if (!d.ok){
+      _tgCsvMsg(`<b>${escapeHtml(f.name)} was not imported.</b><br>`
+        + (d.problems || []).map(p => '• ' + escapeHtml(p)).join('<br>'), 'red');
+      return;
+    }
+
+    // Phase 2 — say plainly what it will do, then do it. Naming the
+    // replacement explicitly because a target set is real work to
+    // rebuild and this is the step that destroys it.
+    if (!confirm(`Import ${f.name}?\n\n${d.summary}\n\n`
+               + `This REPLACES every target on this portfolio. `
+               + `Tolerances and Optimizer settings named in the file are `
+               + `updated; any it does not name are left alone.\n\n`
+               + `Your cash reserve and your holdings are not touched.`)) {
+      _tgCsvMsg('Import cancelled — nothing changed.');
+      return;
+    }
+    const res = await fetch(url,
+      {method:'POST', headers:{'Content-Type':'text/csv'}, body:text});
+    const applied = await res.json();
+    if (!applied.ok){
+      _tgCsvMsg((applied.problems || []).map(escapeHtml).join('<br>')
+                || 'Import failed.', 'red');
+      return;
+    }
+    _tgCsvMsg(`Imported: ${escapeHtml(applied.summary)}.`, 'accent');
+
+    // Repaint everything the file touched. The tolerance boxes read the
+    // view payload, so they are stale until it is refetched — the same
+    // reason saveTargetsEditor reloads rather than patching in place.
+    lastLoadedPid = '';
+    await reloadPortfolio(false);
+    renderTargetsTile(currentPortfolioView);
+    renderOptimizerTolerances();
+    applyOptimizerSettingsToPanel();
+  } catch(e){
+    _tgCsvMsg(escapeHtml(String(e.message || e)), 'red');
+  }
+}
 
 // Render the Targets tab. Decides between the empty-state placeholder
 // and the live deviation tile based on view.target_deviations.any_targets.

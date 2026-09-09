@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.116.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.118.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -134,7 +134,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.116.0 (built 2026-09-09)
+  PorxPy  v0.118.0 (built 2026-09-09)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -359,6 +359,25 @@ bars reading *actual − target*: positive is overweight, negative
 underweight. On an all-cash portfolio everything is underweight, which
 is the honest answer.
 
+### Keeping and reusing a target set
+
+A considered target set is real work, so it does not have to live in one
+portfolio. **Export CSV** on the Targets tab writes the whole design to a
+file — all seven facets, every level, the optimiser tolerances and the
+three Optimizer numbers (Max funds, Min weight, Min trade) — which you
+can keep, diff, edit in a spreadsheet, and **Import CSV** into another
+portfolio.
+
+Two things stay behind on purpose. Your **cash reserve** is an amount in
+your own currency describing *this* portfolio, not the design, so it is
+never exported or overwritten. And your holdings are untouched: importing
+a target set changes what you are aiming at, never what you own.
+
+Importing shows you exactly what the file will do and asks before writing
+— it replaces every target on the portfolio, so it is worth reading. If
+anything in the file is wrong you get every problem listed at once, by
+row number, and nothing is written.
+
 ---
 
 ## 8. Run the optimizer
@@ -375,6 +394,7 @@ The controls, top to bottom:
 | Control | What it does |
 |---|---|
 | **Prefer better funds** | Off by default. When set, the optimiser swaps in higher-ranked funds *after* the targets are met, and only where the swap keeps every category inside its tolerance. Ranking is the peer score — funds compared against others of the same asset class and focus. |
+| **Everything on this panel is remembered** | Per portfolio, saved when you press **Propose design**. The tolerances, Max funds, Min weight, Min trade and the ranking model all reopen where you left them the next time you come back to this portfolio — they are decisions about *this* portfolio, so another portfolio keeps its own. |
 | **Max fit error, per target category** | How much of each target may be missed, **as a share of that target**, per facet, defaulting to 10%. At 10, a 40% target may be 4 points off and a 5% target only 0.5 — never less than 0.5 points, which is finer than whole shares can express. It is relative rather than a fixed number of points because one number cannot mean the same thing at both sizes: 5 points of slack on a 5% target lets it sit at zero and still pass, which is how a fund bought for a small target could be sold with the category still showing a tick. This also *weights* the objective — the solver works hardest where the allowance is smallest — so spend your precision where it matters. |
 | **Max funds** | Cap on how many funds the design may use. Ten is a reasonable start; raise it if the optimiser reports it could not reach the error target within the cap. |
 | **Min weight %** | Positions smaller than this are dropped and the problem re-solved, so you do not end up with dust holdings. |

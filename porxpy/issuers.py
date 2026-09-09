@@ -994,13 +994,32 @@ class XtrackersAdapter(IssuerAdapter):
     :attr:`SITE_FACTS`, and are not guessable: the German site wants
     DEU/**DEU**, not the DEU/GER its language name suggests.
 
-    **Factsheets are not.** They are served from
-    ``/download/asset/<guid>`` behind an opaque identifier with nothing
-    in it derived from the fund, and the mapping from ISIN to guid lives
-    in an API this adapter could not find. So a factsheet is fetched
+    **Factsheets are not.** Not because the API is hidden — it was
+    found at v0.116.1, and is::
+
+        GET /product_literature/api/v1/DocumentMetadata/{culture}/{isin}
+            ?productType=Passive
+
+    It answers 200 with ``{"fundName", "documents"}`` and needs no
+    cookie, no entry gate and no declared investor role. It is simply
+    EMPTY for Xtrackers ETFs: zero documents for six funds across
+    nl-nl, en-gb, de-de and en-lu, and ``LiteratureFilters`` reports
+    zero document categories for every one of seven cultures. The
+    product pages agree in their own words — "Zurzeit sind keine
+    Downloads vorhanden" — and the page never calls the literature API
+    at all, because its document list comes from the server-rendered
+    page model and that model carries none.
+
+    So there is no button to press and no address to derive; DWS is not
+    publishing these documents to the web app. A factsheet is fetched
     from the URL the user supplied for that fund — the base class's
     strategy, which is exactly what it is for — and the note below says
     so rather than reporting an empty result.
+
+    Recorded at this length because the previous version of this
+    docstring said the mapping "lives in an API this adapter could not
+    find", which reads as an invitation to go and look for it. It has
+    been looked for and found. What is missing is the documents.
     """
 
     key = "xtrackers"
@@ -1039,11 +1058,11 @@ class XtrackersAdapter(IssuerAdapter):
 
     DISCOVERY_NOTES = {
         "factsheet": (
-            "Xtrackers serves factsheets from an opaque download id that "
-            "cannot be derived from the fund. Upload this fund's factsheet "
-            "once from its URL (right-click the download on the product "
-            "page and copy the link) and this button will re-fetch that "
-            "address from then on."),
+            "Xtrackers does not publish factsheets on its product pages — "
+            "the Documents section reads ‘no downloads available’ for every "
+            "fund checked, on every site. Upload this fund's factsheet once "
+            "from wherever you can obtain it and this button will re-fetch "
+            "that address from then on."),
     }
 
 
