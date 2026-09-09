@@ -3,6 +3,82 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.115.0] - 2026-09-09
+
+### Changed — optimiser tolerances are a share of the target, not a distance
+
+The Max fit error boxes on the Optimizer tab used to be percentage
+points: "any single bucket may be 5 points off". One number cannot mean
+the same thing at two sizes, and the failure it produced was silent.
+
+A portfolio targeting 5% emerging Europe, with the country tolerance at
+its default 5 points, achieved **0.6%** — 4.4 points short, inside the
+allowance, so the country facet reported a green tick. The user had just
+added an iShares MSCI Poland tracker (97% emerging Europe from its
+look-through) for that very target, and the optimiser sold all of it.
+Correctly, on its own terms: it had been told a gap of that size did not
+matter, and buying Poland cost it on sector, where the binding constraint
+was. Nothing on screen connected the two, so the fund looked ignored.
+
+Each bucket now gets its own allowance, `max(relative x target, 0.5pp)`.
+At the default 10%, a 40% target may be 4 points off and a 5% target 0.5
+— both "a tenth of what I asked for". There is no ceiling: a large target
+getting a large allowance is the instruction the user gave, and capping
+it would quietly restore the percentage-point behaviour for exactly the
+buckets where it was least obviously wrong. The 0.5-point floor exists
+because 10% of a 2% target is 0.2 points, finer than whole shares and the
+min-weight prune can express, so without it every run would report an
+unreachable target that is in practice met.
+
+The same allowance weights the objective, one row at a time rather than
+one facet at a time. The solver minimises the sum of squared
+`deviation / allowance`, so it equalises how far each bucket is through
+its own budget instead of treating a miss on a 5% target and a miss on a
+40% target as equally urgent. Tolerance doing double duty is not new —
+it has always been both the stopping test and the objective weight — but
+it was previously derived per facet, and making the allowance per bucket
+makes the weight per bucket for free. The two stay derived from one
+number deliberately: split them and the solver would work hardest exactly
+where the pass mark is loosest.
+
+On the portfolio above, the same run now buys the Poland tracker instead
+of selling it, and emerging Europe goes from 0.6% achieved to 3.3%.
+
+**Reading the result.** Because the deciding bucket and the biggest miss
+are no longer always the same row, the failure message names the bucket:
+`sector: consumer defensive 8.2pp off an allowance of 1.0pp` rather than
+`sector 8.2% (allowed 5%)`. The deviation tables gained an **Allowed**
+column carrying each bucket's own figure — sent by the backend as a new
+`tolerance` block mirroring `deviation`, so the relative rule and its
+floor exist in one place and the table cannot disagree with the solver
+about whether a row passed. A row is flagged when it is outside its own
+allowance; it used to be flagged at a fixed 2 points, which is why a 5%
+target achieving 0.6% read as unremarkable.
+
+**Expect more runs to report a miss.** Nothing got worse — the previous
+green ticks on small buckets were the bug. Raise the per-category
+percentage if a design is close enough for you.
+
+### Changed — API and internals
+
+- `POST /api/portfolios/<pid>/optimize` takes `max_error_rel` in place of
+  `max_error`. Same shape (`{facet: fraction}` or a bare float), new
+  meaning: a share of each target rather than percentage points. Renamed
+  rather than reinterpreted, so a stale caller fails visibly instead of
+  silently running to a different standard.
+- `optimise_portfolio` takes `max_error_rel`; `facet_weights` is now a
+  plain multiplier over the tolerance-derived row weights rather than a
+  replacement for them, and defaults to 1.0.
+- `_facet_devs` returns `{facet: {dev, ratio, tolerance, bucket, level,
+  bucket_dev}}` instead of a bare deviation, and `_all_within` takes no
+  tolerance argument — the allowance is baked into `ratio` by the one
+  function that computes it, so no caller can compare against a different
+  number by accident. `row_facet` is gone; the row labels it duplicated
+  are derived where needed.
+- `facets` in the response gains `relative`, `ratio`, `worst_bucket`,
+  `worst_level` and `worst_dev`; its `tolerance` is now the allowance of
+  the bucket that decided the facet.
+
 ## [0.114.0] - 2026-09-08
 
 ### Added — the Amundi adapter: factsheets, keyed by ISIN

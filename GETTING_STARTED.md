@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.114.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.115.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -134,7 +134,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.114.0 (built 2026-09-08)
+  PorxPy  v0.115.0 (built 2026-09-09)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -375,7 +375,7 @@ The controls, top to bottom:
 | Control | What it does |
 |---|---|
 | **Prefer better funds** | Off by default. When set, the optimiser swaps in higher-ranked funds *after* the targets are met, and only where the swap keeps every category inside its tolerance. Ranking is the peer score — funds compared against others of the same asset class and focus. |
-| **Max fit error, per target category** | How many percentage points any single bucket may be off, per facet, defaulting to 5. This also *weights* the objective: a facet you demand 2% on is worked five times harder than one you allow 10% on. Spend your precision where it matters. |
+| **Max fit error, per target category** | How much of each target may be missed, **as a share of that target**, per facet, defaulting to 10%. At 10, a 40% target may be 4 points off and a 5% target only 0.5 — never less than 0.5 points, which is finer than whole shares can express. It is relative rather than a fixed number of points because one number cannot mean the same thing at both sizes: 5 points of slack on a 5% target lets it sit at zero and still pass, which is how a fund bought for a small target could be sold with the category still showing a tick. This also *weights* the objective — the solver works hardest where the allowance is smallest — so spend your precision where it matters. |
 | **Max funds** | Cap on how many funds the design may use. Ten is a reasonable start; raise it if the optimiser reports it could not reach the error target within the cap. |
 | **Min weight %** | Positions smaller than this are dropped and the problem re-solved, so you do not end up with dust holdings. |
 | **Min trade** | Trades worth less than this amount in base currency are suppressed. 0 means no minimum. |

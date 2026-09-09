@@ -48,6 +48,27 @@ numpy solves it to tolerance in microseconds. numpy already arrives with
 pandas, so this module adds no dependency — which also keeps the planned
 PyInstaller Windows build free of scipy, its known packaging obstacle.
 
+**Tolerances are relative to the target** (v0.115.0). The user says
+"within 10% of what I asked for", not "within 5 percentage points", and
+each bucket's allowance is ``relative x target`` with a floor. The old
+absolute form was wrong in a way that only showed up on small targets:
+5pp of slack on a 40% target is a quarter of it, while on a 5% target it
+permits achieving *zero*. A real portfolio with a 5% emerging-Europe
+target sat at 0.6% achieved, the country facet still reported "met", and
+the solver correctly declined to buy the Poland tracker the user had just
+added for exactly that target — because it had already been told the gap
+did not matter. One number could not mean the same thing at both sizes,
+so it now means a proportion of each bucket rather than a distance.
+
+The same allowance shapes the objective, one row at a time. Row weights
+are ``1 / tolerance``, so the solver minimises the sum of squared
+``deviation / allowance`` — it equalises how far each bucket is through
+its OWN budget instead of treating a miss on a 5% target and a miss on a
+40% target as equally urgent. That used to be a per-facet weight derived
+from the per-facet tolerance; making the tolerance per-bucket makes the
+weight per-bucket for free, and the two must stay derived from one number
+or the solver would work hardest where the stopping test is loosest.
+
 Everything here works in **base currency** and in **fractions** (0–1).
 Converting prices/FX and turning percent targets into fractions is the
 caller's job (see ``app.api_portfolio_optimize``); this module never talks
@@ -66,6 +87,25 @@ OTHER_BUCKET = "__other__"
 # Weights below this are treated as zero when reporting the solution — a
 # 0.02% allocation is solver noise, not an intention.
 WEIGHT_EPS = 1e-4
+
+# How much of each target may be missed, when the caller names no figure.
+# 10% of the target, so a 40% bucket allows 4pp and a 5% bucket allows
+# 0.5pp — both "a tenth of what I asked for".
+DEFAULT_TOL_REL = 0.10
+
+# The floor under a bucket's allowance, in whole-portfolio fractions.
+#
+# Pure proportionality breaks at the bottom: 10% of a 2% target is 0.2pp,
+# finer than whole shares and the min-weight prune can express, so every
+# run would report an unreachable target that is in practice met. 0.5pp
+# is the grain below which the answer is noise rather than an answer.
+#
+# There is deliberately NO ceiling. A large target getting a large
+# allowance is the user's own instruction — "within 10% of it" — and
+# capping it at some absolute figure would quietly reintroduce the
+# percentage-point tolerance this replaced, for exactly the buckets where
+# it was least wrong and therefore hardest to notice.
+TOL_FLOOR = 0.005
 
 # Precision for SCREENING solves — the hundreds of throwaway fits greedy
 # and the swap search run to rank candidates against each other.
@@ -239,7 +279,8 @@ def _solve_weights(A: np.ndarray, t: np.ndarray,
 # ---------------------------------------------------------------------------
 def _build_facet_matrix(candidates: list[dict],
                         targets: dict,
-                        facet_weights: dict | None) -> tuple[np.ndarray, np.ndarray, list]:
+                        facet_weights: dict | None,
+                        tol_rel: dict | None) -> tuple[np.ndarray, np.ndarray, list]:
     """Assemble the exposure matrix and target vector across all facets.
 
     Only facets the user actually set targets for take part — an
@@ -259,13 +300,26 @@ def _build_facet_matrix(candidates: list[dict],
     ``facet_weights`` so that, say, asset-class accuracy can be made to
     matter more than sector accuracy.
 
+    **Each row carries its own tolerance** (v0.115.0), ``max(tol_rel[facet]
+    * target, TOL_FLOOR)``, and is scaled by ``1 / tolerance``. That single
+    number is both the stopping test and the objective weight, which is
+    what keeps the solver working hardest exactly where the user demanded
+    the most — see the module docstring.
+
+    Args:
+        tol_rel: ``{facet: fraction}`` — how much of each target may be
+            missed. Missing facets fall back to :data:`DEFAULT_TOL_REL`.
+
     Returns:
-        ``(A, t, rows)`` where ``A`` is ``(n_buckets, n_assets)``, ``t`` is
-        ``(n_buckets,)``, and ``rows`` is ``[(facet, bucket, level), ...]``
-        labelling each row for the caller's diagnostics. Assets are the
-        candidates, in order — there is no cash column (v0.90.0).
+        ``(A, t, rows, A_raw, t_raw, mask, tol_row)`` where ``A`` is
+        ``(n_buckets, n_assets)``, ``t`` is ``(n_buckets,)``, ``rows`` is
+        ``[(facet, bucket, level), ...]`` labelling each row for the
+        caller's diagnostics, and ``tol_row`` is that row's allowance in
+        real percentage points. Assets are the candidates, in order —
+        there is no cash column (v0.90.0).
     """
     facet_weights = facet_weights or {}
+    tol_rel = tol_rel or {}
     # One column per candidate. Cash used to have a column of its own, so
     # that a "leave 5% in cash" target could be met by leaving money
     # uninvested. Cash is now a RESERVE taken off the top before the
@@ -285,6 +339,11 @@ def _build_facet_matrix(candidates: list[dict],
     A_raw_rows: list[np.ndarray] = []
     t_raw_vals: list[float] = []
     is_explicit: list[bool] = []
+    # Per-row allowance, in the same real percentage points as t_raw, and
+    # the scale each row was multiplied by (kept so the whole system can be
+    # normalised once at the end rather than row by row).
+    tol_vals: list[float] = []
+    scales:   list[float] = []
 
     # v0.65.0: targets are {facet: {level: {key: fraction}}}.
     #
@@ -311,8 +370,9 @@ def _build_facet_matrix(candidates: list[dict],
         # comparably regardless of how many buckets it happens to have —
         # otherwise a 40-bucket country target would drown out a 4-bucket
         # asset-class target purely on row count.
-        fw = float(facet_weights.get(facet, 1.0))
-        scale = fw / np.sqrt(len(keys) + 1)
+        fw   = float(facet_weights.get(facet, 1.0))
+        norm = fw / np.sqrt(len(keys) + 1)
+        rel  = float(tol_rel.get(facet, DEFAULT_TOL_REL))
 
         for key in keys + [OTHER_BUCKET]:
             row = np.zeros(n_assets)
@@ -327,9 +387,19 @@ def _build_facet_matrix(candidates: list[dict],
 
             raw_target = (other_target if key == OTHER_BUCKET
                           else float(tgt[key]))
+            # This bucket's allowance, and therefore its weight in the
+            # objective. The OTHER bucket gets one on the same rule: when
+            # the targets sum to 100% its target is 0, so it floors at
+            # TOL_FLOOR and stray exposure is penalised hard — which is
+            # exactly the "I want exactly this mix" reading above.
+            tol_b = max(rel * raw_target, TOL_FLOOR)
+            scale = norm / tol_b
+
             A_rows.append(row * scale)
             t_vals.append(raw_target * scale)
             rows.append((facet, key, level))
+            tol_vals.append(tol_b)
+            scales.append(scale)
 
             A_raw_rows.append(row)
             t_raw_vals.append(raw_target)
@@ -348,52 +418,89 @@ def _build_facet_matrix(candidates: list[dict],
     if not A_rows:
         return (np.zeros((0, n_assets)), np.zeros(0), [],
                 np.zeros((0, n_assets)), np.zeros(0),
-                np.zeros(0, dtype=bool), np.zeros(0, dtype=object))
+                np.zeros(0, dtype=bool), np.zeros(0))
 
-    return (np.vstack(A_rows), np.array(t_vals), rows,
+    # One global rescale so the numbers stay well-conditioned rather than
+    # running to the raw 1/0.005 = 200. A common factor on both A and t
+    # leaves the argmin untouched — only the reported SSE moves, and that
+    # is compared against itself.
+    A_mat = np.vstack(A_rows)
+    t_vec = np.array(t_vals)
+    s_min = min(scales)
+    if s_min > 0:
+        A_mat = A_mat / s_min
+        t_vec = t_vec / s_min
+
+    return (A_mat, t_vec, rows,
             np.vstack(A_raw_rows), np.array(t_raw_vals),
             np.array(is_explicit, dtype=bool),
-            np.array([r[0] for r in rows]))
+            np.array(tol_vals))
 
 
 # ---------------------------------------------------------------------------
 # Greedy selection
 # ---------------------------------------------------------------------------
-def _facet_devs(A_raw: np.ndarray, t_raw: np.ndarray, mask: np.ndarray,
-                row_facet: np.ndarray, w: np.ndarray) -> dict:
-    """Worst deviation within EACH facet, in real percentage points.
+def _facet_devs(A_raw: np.ndarray, t_raw: np.ndarray, tol_row: np.ndarray,
+                mask: np.ndarray, rows: list, w: np.ndarray) -> dict:
+    """Worst bucket within EACH facet, measured against its own allowance.
 
-    ``{"asset_class": 0.012, "country": 0.048, ...}`` — 0.048 means some
-    region is 4.8 points off its target.
+    Returns ``{facet: {"dev", "ratio", "tolerance", "bucket", "level",
+    "bucket_dev"}}``:
+
+    * ``dev`` — the largest deviation anywhere in the facet, in real
+      percentage points. The headline figure, and what the badge shows.
+    * ``ratio`` — the largest ``deviation / allowance`` in the facet.
+      This, not ``dev``, decides whether the facet is met (v0.115.0):
+      allowances now differ per bucket, so the biggest miss and the worst
+      miss are no longer the same row. A 4pp gap on a 40% target is
+      comfortable; a 1pp gap on a 2% target is not.
+    * ``bucket`` / ``level`` / ``bucket_dev`` / ``tolerance`` — the row
+      that produced ``ratio``, so the caller can name it. "Sector is 8.8%
+      off" sends the user hunting; "utilities is 8.8pp off a 1.0pp
+      allowance" tells them which target to relax or which fund to find.
 
     Per-facet rather than one overall number because the facets are not
     equally important and you cannot say so with a single figure: forcing
     one tolerance means setting it to whatever the loosest facet needs,
     which drags the strict ones down with it.
     """
-    out: dict[str, float] = {}
+    out: dict[str, dict] = {}
     if A_raw.shape[0] == 0:
         return out
     resid = np.abs(A_raw @ w - t_raw)
+    ratio = resid / np.maximum(tol_row, 1e-12)
+    row_facet = np.array([r[0] for r in rows])
     for facet in set(row_facet.tolist()):
-        sel = (row_facet == facet) & mask
-        if sel.any():
-            out[facet] = float(resid[sel].max())
+        sel = np.where((row_facet == facet) & mask)[0]
+        if not sel.size:
+            continue
+        i_r = int(sel[int(np.argmax(ratio[sel]))])   # worst RELATIVE miss
+        out[facet] = {
+            "dev":        float(resid[sel].max()),
+            "ratio":      float(ratio[i_r]),
+            "tolerance":  float(tol_row[i_r]),
+            "bucket":     rows[i_r][1],
+            "level":      rows[i_r][2],
+            "bucket_dev": float(resid[i_r]),
+        }
     return out
 
 
-def _all_within(devs: dict, tol: dict) -> bool:
-    """True when every facet is inside its own tolerance."""
-    return all(dev <= tol.get(facet, 1.0) + 1e-12
-               for facet, dev in devs.items())
+def _all_within(devs: dict) -> bool:
+    """True when every facet's worst bucket is inside its own allowance.
+
+    The allowance is already baked into ``ratio`` by :func:`_facet_devs`,
+    so there is no tolerance argument any more — one place computes it,
+    and no caller can compare against a different number by accident.
+    """
+    return all(d["ratio"] <= 1.0 + 1e-9 for d in devs.values())
 
 
 def _greedy_select(A: np.ndarray, t: np.ndarray,
                    A_raw: np.ndarray, t_raw: np.ndarray,
-                   mask: np.ndarray, row_facet: np.ndarray,
+                   tol_row: np.ndarray, mask: np.ndarray, rows: list,
                    n_candidates: int,
                    max_funds: int,
-                   tol: dict,
                    lb: np.ndarray | None = None,
                    ub: np.ndarray | None = None,
                    forced: list[int] | None = None) -> tuple[list[int], dict, bool]:
@@ -465,10 +572,10 @@ def _greedy_select(A: np.ndarray, t: np.ndarray,
     else:
         best_sse = float("inf")
     cur_w = w_full
-    best_devs = _facet_devs(A_raw, t_raw, mask, row_facet, w_full)
+    best_devs = _facet_devs(A_raw, t_raw, tol_row, mask, rows, w_full)
 
     while len(selected) < max_funds and remaining:
-        if _all_within(best_devs, tol):
+        if _all_within(best_devs):
             return selected, best_devs, True      # the intended exit
 
         best_j, best_j_sse, best_j_w = None, best_sse, None
@@ -488,7 +595,7 @@ def _greedy_select(A: np.ndarray, t: np.ndarray,
 
         if best_j is None:
             # Nothing left improves the fit: unreachable with these funds.
-            return selected, best_devs, _all_within(best_devs, tol)
+            return selected, best_devs, _all_within(best_devs)
 
         selected.append(best_j)
         remaining.discard(best_j)
@@ -504,16 +611,15 @@ def _greedy_select(A: np.ndarray, t: np.ndarray,
         for pos, col in enumerate(cols):
             w_full[col] = w[pos]
         cur_w = w_full
-        best_devs = _facet_devs(A_raw, t_raw, mask, row_facet, w_full)
+        best_devs = _facet_devs(A_raw, t_raw, tol_row, mask, rows, w_full)
 
-    return selected, best_devs, _all_within(best_devs, tol)
+    return selected, best_devs, _all_within(best_devs)
 
 
 def _swap_refine(A: np.ndarray, t: np.ndarray,
                  A_raw: np.ndarray, t_raw: np.ndarray,
-                 mask: np.ndarray, row_facet: np.ndarray,
+                 tol_row: np.ndarray, mask: np.ndarray, rows: list,
                  selected: list[int], n_candidates: int,
-                 tol: dict,
                  lb: np.ndarray | None = None,
                  ub: np.ndarray | None = None,
                  forced: list[int] | None = None,
@@ -628,8 +734,8 @@ def _swap_refine(A: np.ndarray, t: np.ndarray,
         _, best_w = _fit(selected)
         n_swaps += 1
 
-    devs = _facet_devs(A_raw, t_raw, mask, row_facet, best_w)
-    return selected, devs, _all_within(devs, tol), n_swaps
+    devs = _facet_devs(A_raw, t_raw, tol_row, mask, rows, best_w)
+    return selected, devs, _all_within(devs), n_swaps
 
 
 def _portfolio_score(w_full: np.ndarray, cols: list[int],
@@ -660,9 +766,9 @@ def _portfolio_score(w_full: np.ndarray, cols: list[int],
 
 def _score_alternatives(A: np.ndarray, t: np.ndarray,
                         A_raw: np.ndarray, t_raw: np.ndarray,
-                        mask: np.ndarray, row_facet: np.ndarray,
+                        tol_row: np.ndarray, mask: np.ndarray, rows: list,
                         selected: list[int], n_candidates: int,
-                        tol: dict, tickers: list[str], names: list[str],
+                        tickers: list[str], names: list[str],
                         scores: dict, peer_of: list[str],
                         lb: np.ndarray | None = None,
                         ub: np.ndarray | None = None,
@@ -716,8 +822,9 @@ def _score_alternatives(A: np.ndarray, t: np.ndarray,
             w_full[col] = w[pos]
         return w_full
 
-    base_devs = _facet_devs(A_raw, t_raw, mask, row_facet, _fit(selected))
-    base_worst = max(base_devs.values()) if base_devs else 0.0
+    base_devs = _facet_devs(A_raw, t_raw, tol_row, mask, rows, _fit(selected))
+    base_worst = (max(d["dev"] for d in base_devs.values())
+                  if base_devs else 0.0)
 
     def _nm(j):
         return (names[j] if j < len(names) and names[j] else tickers[j])
@@ -751,8 +858,8 @@ def _score_alternatives(A: np.ndarray, t: np.ndarray,
         for k in cands[:max(0, top_n)]:
             trial = list(selected)
             trial[pos] = k
-            devs = _facet_devs(A_raw, t_raw, mask, row_facet, _fit(trial))
-            worst = max(devs.values()) if devs else 0.0
+            devs = _facet_devs(A_raw, t_raw, tol_row, mask, rows, _fit(trial))
+            worst = (max(d["dev"] for d in devs.values()) if devs else 0.0)
             # Per-facet before/after/delta, not just the worst figure.
             # A substitution that costs 1.4pp overall may be spending all
             # of it on a facet you barely care about, or all of it on the
@@ -760,14 +867,20 @@ def _score_alternatives(A: np.ndarray, t: np.ndarray,
             # number cannot tell those apart.
             per_facet = {}
             for f in set(list(devs.keys()) + list(base_devs.keys())):
-                b = base_devs.get(f, 0.0)
-                a = devs.get(f, 0.0)
+                b = base_devs.get(f) or {}
+                a = devs.get(f) or {}
+                # The allowance shown is the one belonging to the bucket
+                # that actually decides this facet — the worst relative
+                # miss AFTER the swap. Quoting a facet-wide figure would
+                # be quoting a number that no longer exists (v0.115.0).
                 per_facet[f] = {
-                    "before": round(b, 6),
-                    "after":  round(a, 6),
-                    "delta":  round(a - b, 6),
-                    "tolerance": round(float(tol.get(f, 0.0)), 6),
-                    "within":    a <= float(tol.get(f, float("inf"))) + 1e-9,
+                    "before": round(float(b.get("dev", 0.0)), 6),
+                    "after":  round(float(a.get("dev", 0.0)), 6),
+                    "delta":  round(float(a.get("dev", 0.0))
+                                    - float(b.get("dev", 0.0)), 6),
+                    "tolerance": round(float(a.get("tolerance", 0.0)), 6),
+                    "bucket":    a.get("bucket", ""),
+                    "within":    float(a.get("ratio", 0.0)) <= 1.0 + 1e-9,
                 }
             alts.append({
                 "ticker":       tickers[k],
@@ -779,7 +892,7 @@ def _score_alternatives(A: np.ndarray, t: np.ndarray,
                 "dev_after":    round(worst, 6),
                 "dev_delta":    round(worst - base_worst, 6),
                 "facets":       per_facet,
-                "within_tol":   _all_within(devs, tol),
+                "within_tol":   _all_within(devs),
             })
 
         out.append({
@@ -803,7 +916,7 @@ def optimise_portfolio(candidates: list[dict],
                        max_funds: int = 10,
                        min_weight: float = 0.01,
                        min_trade_base: float = 100.0,
-                       max_error: dict | float = 0.05,
+                       max_error_rel: dict | float = DEFAULT_TOL_REL,
                        facet_weights: dict | None = None,
                        scores: dict | None = None,
                        substitutions: dict | None = None,
@@ -858,21 +971,25 @@ def optimise_portfolio(candidates: list[dict],
         min_trade_base: Suppress trades smaller than this (base currency).
             A €30 rebalancing trade is not worth making, so this defaults
             to 100 rather than 0.
-        max_error: Acceptable worst-case deviation **per facet**, as
-            fractions: ``{"asset_class": 0.02, "sector": 0.10,
-            "country": 0.05, "currency": 0.15}``. A bare float is accepted
-            and applied to every facet. The solver keeps adding funds until
-            every facet is inside its own tolerance, or it runs out of
-            ``max_funds`` / of candidates that help.
+        max_error_rel: How much of each target may be missed, **per
+            facet**, as a fraction OF THE TARGET: ``{"asset_class": 0.05,
+            "sector": 0.20, "country": 0.10}`` reads "asset class within
+            5% of each of its targets". A bare float is accepted and
+            applied to every facet; missing facets get
+            :data:`DEFAULT_TOL_REL`. A bucket's allowance in percentage
+            points is therefore ``max(rel * target, TOL_FLOOR)`` — a 40%
+            target at 10% allows 4pp, a 5% target allows 0.5pp.
 
-            The tolerances also shape the objective (see ``facet_weights``)
-            — a facet you demand 2% on is weighted five times harder than
-            one you allow 10% on. Without that, the solver would spread its
-            effort evenly and might never satisfy the strict facet at all.
-        facet_weights: Explicit per-facet importance. Defaults to
-            ``1 / max_error[facet]``, i.e. residuals measured in units of
-            "how much I care". Override only if you want importance to
-            diverge from tolerance.
+            Relative, not absolute, since v0.115.0; see the module
+            docstring for what the percentage-point form got wrong. The
+            allowance also weights the objective row by row, so the solver
+            works hardest on the buckets with the least room.
+        facet_weights: Optional per-facet multiplier on top of that, for a
+            caller who wants importance to diverge from tolerance —
+            "country matters twice as much as sector even at the same
+            accuracy". Defaults to 1.0 everywhere, which is the normal
+            case: the tolerance already IS the statement of how much each
+            bucket matters.
         scores: ``{ticker: {"score_peer": 0-100 or None}}`` from
             :func:`porxpy.scoring.score_universe`. When supplied, the
             result carries a ``alternatives`` block listing, per chosen
@@ -900,12 +1017,21 @@ def optimise_portfolio(candidates: list[dict],
               "cash_after":   float,
               "frozen":       {"share", "base", "tickers"},
               "selected":     [ticker, ...],   # in selection order
-              "achieved":     {facet: {bucket: fraction}},
-              "deviation":    {facet: {bucket: achieved - target}},
+              "achieved":     {facet: {level: {bucket: fraction}}},
+              "deviation":    {facet: {level: {bucket: achieved - target}}},
+              "tolerance":    {facet: {level: {bucket: allowance}}},
               "target_met":   bool,     # every facet inside its tolerance?
-              "facets":       {facet: {"max_dev", "tolerance", "met"}},
+              "facets":       {facet: {"max_dev", "tolerance", "met",
+                                       "relative", "ratio", "worst_bucket",
+                                       "worst_level", "worst_dev"}},
               "max_dev":      float,    # worst deviation across all facets
             }
+
+        ``tolerance`` mirrors ``deviation`` bucket for bucket, so the
+        caller can show each target's own allowance beside its miss. In
+        ``facets``, ``tolerance``/``worst_*`` describe the single bucket
+        that decided the facet — the worst RELATIVE miss, which is not
+        always the biggest one.
 
         ``trades`` is directly consumable by ``porxpy.trades.apply_trades``
         — that is the whole point of the shape. Sells come out as negative
@@ -1062,29 +1188,24 @@ def optimise_portfolio(candidates: list[dict],
                            f"{', '.join(locked_tks)}."),
                 "trades": [], "positions": [], "selected": []}
 
-    # Normalise the tolerance to a per-facet dict.
-    if isinstance(max_error, (int, float)):
-        tol = {f: float(max_error) for f in targets}
+    # Normalise the relative tolerance to a per-facet dict. These are
+    # fractions OF EACH TARGET, not percentage points; _build_facet_matrix
+    # turns them into a per-bucket allowance, which is both the stopping
+    # test and the objective weight.
+    if isinstance(max_error_rel, (int, float)):
+        tol_rel = {f: float(max_error_rel) for f in targets}
     else:
-        tol = {f: float((max_error or {}).get(f, 0.05)) for f in targets}
-    tol = {f: (v if v > 0 else 0.001) for f, v in tol.items()}
-
-    # Objective weights default to 1/tolerance: a 2%-tolerance facet gets
-    # five times the weight of a 10% one, so the solver actually works
-    # harder where you demanded more. Normalised so the numbers stay
-    # well-conditioned rather than the raw 1/0.02 = 50.
-    if not facet_weights:
-        inv = {f: 1.0 / v for f, v in tol.items()}
-        lo = min(inv.values()) if inv else 1.0
-        facet_weights = {f: v / lo for f, v in inv.items()}
+        tol_rel = {f: float((max_error_rel or {}).get(f, DEFAULT_TOL_REL))
+                   for f in targets}
+    tol_rel = {f: (v if v > 0 else DEFAULT_TOL_REL) for f, v in tol_rel.items()}
 
     # Frozen funds get columns too, so their exposure is expressed in
     # exactly the same row space and scaling as everything else. They are
     # simply never selectable: `_greedy_select` is told there are only
     # `len(usable)` candidates, and `usable` comes first in the column
     # order.
-    A, t, rows, A_raw, t_raw, mask, row_facet = _build_facet_matrix(
-        usable + frozen, targets, facet_weights)
+    A, t, rows, A_raw, t_raw, mask, tol_row = _build_facet_matrix(
+        usable + frozen, targets, facet_weights, tol_rel)
     if A.shape[0] == 0:
         return {"ok": False, "reason": "no targets set",
                 "trades": [], "positions": [], "selected": []}
@@ -1119,19 +1240,19 @@ def optimise_portfolio(candidates: list[dict],
         # where the same money is a larger fraction. Divide the tolerance
         # by the same factor so the stopping test means what it meant
         # before.
-        tol_free = {fct: v / free for fct, v in tol.items()}
+        tol_free = tol_row / free
     else:
         f_scaled = np.zeros(A.shape[0])
         f_raw    = np.zeros(A_raw.shape[0]) if A_raw.shape[0] else np.zeros(0)
-        t_free, t_raw_free, tol_free = t, t_raw, tol
+        t_free, t_raw_free, tol_free = t, t_raw, tol_row
 
     # 1. Choose a small fund set — adding funds until the fit is good
     #    enough, not until it stops improving.
     _lb = lb_full if has_bounds else None
     _ub = ub_full if has_bounds else None
     sel, _devs, target_met = _greedy_select(
-        A, t_free, A_raw, t_raw_free, mask, row_facet,
-        len(usable), max_funds, tol_free, lb=_lb, ub=_ub, forced=forced)
+        A, t_free, A_raw, t_raw_free, tol_free, mask, rows,
+        len(usable), max_funds, lb=_lb, ub=_ub, forced=forced)
 
     # 1b. Local search over exchanges, undoing greedy's myopia.
     #
@@ -1154,8 +1275,8 @@ def optimise_portfolio(candidates: list[dict],
     #     deviation, never raise it — an exchange is accepted only when
     #     the residual falls.
     sel, _devs, target_met, n_swaps = _swap_refine(
-        A, t_free, A_raw, t_raw_free, mask, row_facet,
-        sel, len(usable), tol_free, lb=_lb, ub=_ub, forced=forced)
+        A, t_free, A_raw, t_raw_free, tol_free, mask, rows,
+        sel, len(usable), lb=_lb, ub=_ub, forced=forced)
 
     # 1c. Caller-requested substitutions.
     #
@@ -1278,8 +1399,8 @@ def optimise_portfolio(candidates: list[dict],
         except Exception:
             peer_of = ["" for _ in usable]
         alternatives = _score_alternatives(
-            A, t_free, A_raw, t_raw_free, mask, row_facet,
-            sel, len(usable), tol_free,
+            A, t_free, A_raw, t_raw_free, tol_free, mask, rows,
+            sel, len(usable),
             [c.get("ticker") or "" for c in usable],
             [c.get("name") or "" for c in usable], scores, peer_of,
             lb=_lb, ub=_ub, forced=forced, top_n=alternatives_top_n)
@@ -1307,12 +1428,19 @@ def optimise_portfolio(candidates: list[dict],
     # than an error, which is the worse failure.
     achieved: dict[str, dict[str, dict[str, float]]] = {}
     deviation: dict[str, dict[str, dict[str, float]]] = {}
+    # Each bucket's own allowance, mirroring `deviation` exactly (v0.115.0).
+    # Emitted rather than left for the browser to recompute: the floor and
+    # the relative rule live here, and a second implementation of them in
+    # the frontend is a second place they can drift.
+    tolerance: dict[str, dict[str, dict[str, float]]] = {}
     for facet, per_level in (targets or {}).items():
+        rel = float(tol_rel.get(facet, DEFAULT_TOL_REL))
         for level, tgt in (per_level or {}).items():
             if not tgt:
                 continue
             achieved.setdefault(facet, {})[level] = {}
             deviation.setdefault(facet, {})[level] = {}
+            tolerance.setdefault(facet, {})[level] = {}
             for key in sorted(tgt.keys()):
                 got = sum(w_full[j] * float((((c.get("exposures") or {})
                                               .get(facet) or {})
@@ -1323,19 +1451,30 @@ def optimise_portfolio(candidates: list[dict],
                 achieved[facet][level][key]  = round(float(got), 6)
                 deviation[facet][level][key] = round(
                     float(got) - float(tgt[key]), 6)
+                tolerance[facet][level][key] = round(
+                    max(rel * float(tgt[key]), TOL_FLOOR), 6)
 
     # Errors, per facet, in real percentage points on the buckets the user
     # actually targeted — the same numbers the deviation table shows, so the
     # summary and the table cannot disagree. Recomputed AFTER the dust-prune
     # re-solve, so it reflects the design actually being proposed.
-    devs       = _facet_devs(A_raw, t_raw, mask, row_facet, w_full)
-    target_met = _all_within(devs, tol)
+    devs       = _facet_devs(A_raw, t_raw, tol_row, mask, rows, w_full)
+    target_met = _all_within(devs)
 
+    # `max_dev` is the facet's biggest miss in percentage points — the
+    # headline. `tolerance`, `worst_*` and `ratio` all describe the bucket
+    # that DECIDED the facet, which since v0.115.0 is the worst miss
+    # relative to its own allowance and need not be the biggest one.
     facet_report = {
-        f: {"max_dev":   round(dev, 6),
-            "tolerance": round(tol.get(f, 0.05), 6),
-            "met":       bool(dev <= tol.get(f, 0.05) + 1e-12)}
-        for f, dev in devs.items()
+        f: {"max_dev":      round(d["dev"], 6),
+            "tolerance":    round(d["tolerance"], 6),
+            "worst_bucket": d["bucket"],
+            "worst_level":  d["level"],
+            "worst_dev":    round(d["bucket_dev"], 6),
+            "ratio":        round(d["ratio"], 4),
+            "relative":     round(float(tol_rel.get(f, DEFAULT_TOL_REL)), 6),
+            "met":          bool(d["ratio"] <= 1.0 + 1e-9)}
+        for f, d in devs.items()
     }
 
     if target_met:
@@ -1346,9 +1485,14 @@ def optimise_portfolio(candidates: list[dict],
         # tolerance" tells them exactly which target to relax or which fund
         # to go find.
         missed = [f for f, r in facet_report.items() if not r["met"]]
+        # Name the BUCKET, not just the facet. "sector 8.8% off" sent the
+        # user hunting through twelve sector rows; "sector: utilities 8.8pp
+        # off a 1.0pp allowance" names the target to relax and the kind of
+        # fund to go and find.
         detail = ", ".join(
-            f"{f} {facet_report[f]['max_dev']*100:.1f}% "
-            f"(allowed {facet_report[f]['tolerance']*100:g}%)"
+            f"{f}: {facet_report[f]['worst_bucket']} "
+            f"{facet_report[f]['worst_dev']*100:.1f}pp off an allowance of "
+            f"{facet_report[f]['tolerance']*100:.1f}pp"
             for f in missed)
         if len(sel) >= max_funds:
             reason = (f"Could not hit every tolerance using only {max_funds} "
@@ -1382,7 +1526,10 @@ def optimise_portfolio(candidates: list[dict],
         "selected":    [usable[j]["ticker"] for j in sel],
         "achieved":    achieved,
         "deviation":   deviation,
-        "facets":      facet_report,   # {facet: {max_dev, tolerance, met}}
+        # Per-bucket allowance, mirroring `deviation` (v0.115.0). The
+        # table shows target / achieved / miss / allowed on one row.
+        "tolerance":   tolerance,
+        "facets":      facet_report,   # {facet: {max_dev, tolerance, met, ...}}
         "swaps":         n_swaps,      # exchanges the fit refinement applied
         "alternatives":  alternatives, # per chosen fund, better-scoring peers
         "substitutions": applied_subs, # substitutions the caller requested
@@ -1391,5 +1538,6 @@ def optimise_portfolio(candidates: list[dict],
             "base":    round(frozen_base, 2),
             "tickers": [c["ticker"] for c in frozen],
         },
-        "max_dev":     round(max(devs.values()), 6) if devs else 0.0,
+        "max_dev":     (round(max(d["dev"] for d in devs.values()), 6)
+                        if devs else 0.0),
     }

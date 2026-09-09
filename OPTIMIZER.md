@@ -1,10 +1,12 @@
 # The PorxPy Optimizer — how it works
 
-*Applies to `porxpy/optimizer.py` as of v0.114.0. The full audit — every
+*Applies to `porxpy/optimizer.py` as of v0.115.0. The full audit — every
 claim in the document re-checked against the module — was done at
 v0.91.0; since then the v0.96.0 peer-scoring change was folded into §7b
 and §13's one remaining open issue was re-confirmed by reading
-`_add_target_rows` at v0.97.0 and is unchanged at v0.98.0. Check the stamp against
+`_add_target_rows` at v0.97.0 and is unchanged at v0.98.0. v0.115.0 moved
+tolerances from percentage points to a share of each target, which
+touched §2, §4, §4b, §10 and §12. Check the stamp against
 `porxpy/__init__.py` before trusting a claim.*
 
 ---
@@ -42,13 +44,14 @@ you hold as close as possible to the exposure you asked for.
 | `cash_base` | Cash available, in the portfolio's base currency |
 | `cash_exposure` | What cash itself counts as (asset class `cash`, a currency, a country) |
 | `max_funds` | Ceiling on how many funds the design may use |
-| `max_error` | Tolerance **per facet**, in fractions — `{"country": 0.02}` means "within 2 percentage points". Per facet, NOT per level; see §12 |
+| `max_error_rel` | Tolerance **per facet**, as a share OF EACH TARGET — `{"country": 0.10}` means "within 10% of every country target". A 40% target then allows 4pp and a 5% target 0.5pp, floored at `TOL_FLOOR` = 0.5pp. Per facet, NOT per level; see §12. Relative since v0.115.0 |
 | `min_weight` | Positions below this are pruned as dust |
 | `min_trade_base` | Trades below this amount are suppressed as noise |
 
 **Out:** a trade list, the resulting positions, the achieved exposure per
-targeted bucket, the residual deviation per facet, whether every tolerance
-was met, and if not, which facet failed and why.
+targeted bucket, the residual deviation per bucket and each bucket's own
+allowance, whether every tolerance was met, and if not, which bucket
+failed and by how much.
 
 Everything runs in **base currency** and in **fractions (0–1)**. Converting
 prices and FX, and turning the percentages you typed into fractions, is the
@@ -168,22 +171,38 @@ did state three separate intentions — but it is a consequence of the
 construction rather than a decision anyone took, and it is worth knowing
 before you conclude the solver is ignoring a facet you targeted once.
 
-### Where facet weights come from
+### Where row weights come from (v0.115.0)
 
-By default they derive from your tolerances:
+Every row carries its own allowance, and the allowance IS the weight:
 
 ```
-facet_weight_f = (1 / tolerance_f) / min over all facets of (1 / tolerance)
+allowance_b = max(max_error_rel[facet] x target_b, TOL_FLOOR)   # TOL_FLOOR = 0.005
+row_scale_b = facet_weights[facet] / sqrt(n_buckets + 1) / allowance_b
 ```
 
-A facet you demand 2% on is weighted five times harder than one you allow
-10% on. Without this, the solver would spread its effort evenly and might
-never satisfy the strict facet at all. The normalisation by the minimum
-just keeps the numbers near 1.
+then the whole system is divided by the smallest row_scale, so the numbers
+stay near 1 rather than running to the raw 1/0.005 = 200. A common factor
+on both A and t leaves the argmin untouched.
+
+Minimising the scaled residual is therefore minimising the sum of squared
+deviation-over-allowance: the solver equalises how far each bucket is
+through its OWN budget, instead of treating a miss on a 5% target and a
+miss on a 40% target as equally urgent. Before v0.115.0 the same idea was
+applied one facet at a time, from a facet-wide tolerance; making the
+allowance per bucket made the weight per bucket for free.
+
+The synthetic `__other__` row gets an allowance on the same rule. When
+your targets sum to 100% its target is 0, so it floors at 0.5pp and stray
+exposure is penalised hard — exactly the "I want exactly this mix"
+reading. When they sum to less, it is slack with a generous allowance and
+costs the solver almost nothing.
 
 **So tolerance does two jobs**: it sets the stopping test, and it sets how
-hard the solver tries. That coupling is deliberate, but worth knowing —
-tightening a tolerance changes the answer, not just the pass mark.
+hard the solver tries. That coupling is deliberate — split them and the
+solver would work hardest precisely where the pass mark is loosest — but
+it is worth knowing that tightening a tolerance changes the answer, not
+just the pass mark. `facet_weights` remains available as a plain
+multiplier, for a caller who wants importance to diverge from tolerance.
 
 ### Two matrices
 
@@ -558,10 +577,10 @@ contribute:
 f + (1 − φ)·(A_free · w) = t        →        A_free · w = (t − f) / (1 − φ)
 ```
 
-Tolerances are divided by the same factor:
+Allowances are divided by the same factor, row by row:
 
 ```
-tolerance_free = tolerance / (1 − φ)
+allowance_free = allowance / (1 − φ)
 ```
 
 because the solver now measures residuals inside the free sub-portfolio,
@@ -611,17 +630,24 @@ target.
 
 - **`trades`** — the buy/sell list, sorted by size.
 - **`positions`** — the resulting portfolio, frozen ones flagged.
-- **`achieved`** / **`deviation`** — `{facet: {level: {bucket: value}}}`,
-  mirroring the shape of `targets`. What the design actually delivers and
-  how far that is from the target, each bucket measured against the
-  exposure **at its own level**. Signed: positive is overweight.
-- **`facets`** — per facet: worst deviation, the tolerance, whether it was
-  met. Flat, one entry per facet — the levels of a facet are collapsed
-  into a single worst-case figure here, unlike `deviation` above.
-- **`target_met`** — all facets within tolerance.
-- **`reason`** — when a target is missed, which facet and by how much, plus
-  whether more funds would help or the exposure simply is not available in
-  your universe.
+- **`achieved`** / **`deviation`** / **`tolerance`** — `{facet: {level:
+  {bucket: value}}}`, all three mirroring the shape of `targets`. What the
+  design delivers, how far that is from the target, and that bucket's own
+  allowance, each measured against the exposure **at its own level**.
+  `deviation` is signed: positive is overweight. `tolerance` is emitted
+  rather than left for the caller to recompute (v0.115.0), so the relative
+  rule and its floor live in one place and a table cannot disagree with
+  the solver about whether a row passed.
+- **`facets`** — per facet: `max_dev`, the biggest miss anywhere in the
+  facet, plus the bucket that DECIDED it — `worst_bucket`, `worst_level`,
+  `worst_dev`, that bucket's `tolerance`, and `ratio` = worst_dev over
+  tolerance. `met` is `ratio <= 1`, not `max_dev <= tolerance`: allowances
+  differ per bucket now, so the biggest miss and the worst miss are no
+  longer the same row. `relative` echoes the setting the run used.
+- **`target_met`** — every facet's worst bucket within its own allowance.
+- **`reason`** — when a target is missed, which BUCKET, by how much, and
+  against what allowance, plus whether more funds would help or the
+  exposure simply is not available in your universe.
 - **`swaps`**, **`frozen`** — exchanges the fit refinement applied, and
   what was left untouched. `frozen` is `{share, base, tickers}`.
 - **`alternatives`** — per chosen fund, the better-scoring peers and what
@@ -673,14 +699,19 @@ trap is narrower but the rule is unchanged.
   seconds of wall clock.
 - **Tolerance does double duty** — stopping test and objective weight. Set
   `facet_weights` explicitly if you want those to differ.
-- **Tolerance and reported error are per facet, not per level.** The
-  matrix fits each level separately, but `max_error` is keyed by facet
-  alone and `_facet_devs` groups residuals by facet alone, so the three
-  levels of a sector target collapse into one worst-case number. You
-  cannot ask for 2pp at super-sector and 8pp at sub-sector, and when a
-  facet misses, the headline figure does not say which grain missed.
-  The per-bucket `deviation` block does carry the level, so the answer
-  is available — just not in the summary or the stopping test.
+- **Tolerance is SET per facet, though it now BINDS per bucket.**
+  `max_error_rel` is keyed by facet alone, so the three levels of a sector
+  target share one relative figure and you cannot ask for 5% at
+  super-sector and 20% at sub-sector. What each bucket actually gets does
+  vary — that figure times the bucket's own target — and since v0.115.0
+  `_facet_devs` reports the bucket and level that decided each facet, so
+  the summary no longer hides which grain missed. The remaining limit is
+  the input, not the report.
+- **No ceiling on an allowance.** At 20% relative, a 90% equity target
+  allows 18 points. That is the instruction as given, and a cap would
+  reintroduce the absolute tolerance v0.115.0 removed — but it does mean
+  a loose relative setting is looser on big buckets than the old 5pp
+  default was. Set that facet tighter if it is not what you meant.
 - **Exposure quality is the real limit.** The optimizer is exact about the
   data it is given. If a fund's look-through breakdown is stale, partial,
   or from an issuer card rather than actual holdings, the design is precise
@@ -711,10 +742,14 @@ Defects specific to the optimiser, as opposed to the deliberate
 boundaries in §12. Each is something that should be fixed rather than
 something someone chose.
 
-One remains, re-confirmed at v0.97.0: `_add_target_rows` still computes
-`scale = facet_weight / sqrt(len(keys) + 1)` inside a body called once
+One remains, re-confirmed at v0.115.0: `_add_target_rows` still computes
+its `norm = facet_weight / sqrt(len(keys) + 1)` inside a body called once
 per `(facet, level)` block, so the full facet weight is applied to every
-level of a facet that is targeted at more than one. The metadata-facet
+level of a facet that is targeted at more than one. The v0.115.0 move to
+per-bucket allowances did not touch this — the allowance divides `norm`,
+it does not replace the per-block normalisation — so a facet targeted at
+three levels still counts for roughly three times as much in the
+objective as one targeted at a single level. The metadata-facet
 blindness recorded here since v0.30.0 was **fixed in v0.89.0** — see the
 resolved entry below.
 

@@ -1848,9 +1848,12 @@
                objective — a facet you demand 2% on is worked five times harder
                than one you allow 10% on. -->
           <div class="mhint" style="margin:.2rem 0 .35rem">
-            Max fit error, per target category — how many percentage points any
-            single bucket may be off. Tighter categories are prioritised by the
-            solver, so spend your precision where it matters.
+            Max fit error, per target category — how much of each target may be
+            missed, as a share <em>of that target</em>. At 10%, a 40% target may
+            be 4 points off and a 5% target only 0.5 — never less than 0.5
+            points, which is finer than whole shares can express anyway. Tighter
+            categories are prioritised by the solver, so spend your precision
+            where it matters.
           </div>
           <!-- Built from the facets that actually carry targets. A
                tolerance on an untargeted facet is a setting with nothing
@@ -5694,11 +5697,16 @@ function renderOptimizerTolerances(){
   const prev = {};
   grid.querySelectorAll('input.opterr').forEach(el => { prev[el.dataset.facet] = el.value; });
 
+  // v0.115.0: the number is a share OF EACH TARGET, not percentage points.
+  // Range starts at 1 rather than 0.5 because a 0.5% relative tolerance is
+  // below the 0.5pp floor for every target under 100% and so would be a
+  // control with no effect.
   grid.innerHTML = facets.map(f => `
     <div class="field">
-      <label class="mfl">${escapeHtml(facetLabel(f))} %</label>
-      <input class="opterr" type="number" min="0.5" max="20" step="0.5"
-             data-facet="${f}" value="${prev[f] != null ? prev[f] : 5}">
+      <label class="mfl">${escapeHtml(facetLabel(f))} % of target</label>
+      <input class="opterr" type="number" min="1" max="100" step="1"
+             title="How much of each ${escapeAttr(facetLabel(f))} target may be missed, as a share of that target. 10 means a 40% target may be 4 points off and a 5% target 0.5 points. Never tighter than 0.5 points."
+             data-facet="${f}" value="${prev[f] != null ? prev[f] : 10}">
     </div>`).join('');
   grid.style.display = facets.length ? '' : 'none';
 
@@ -5718,7 +5726,7 @@ function renderOptimizerTolerances(){
 function _optCollectTolerances(){
   const out = {};
   document.querySelectorAll('#optErrGrid input.opterr').forEach(el => {
-    out[el.dataset.facet] = (parseFloat(el.value) || 5) / 100;
+    out[el.dataset.facet] = (parseFloat(el.value) || 10) / 100;
   });
   return out;
 }
@@ -5744,7 +5752,7 @@ async function runOptimizer(){
       min_weight: (parseFloat(document.getElementById('optMinWeight').value) || 0) / 100,
       min_trade:  parseFloat(document.getElementById('optMinTrade').value) || 0,
       // Only the targeted facets — the inputs exist only for those.
-      max_error: _optCollectTolerances(),
+      max_error_rel: _optCollectTolerances(),
       score_preset: (document.getElementById('optScorePreset') || {}).value || '',
       substitutions: Object.keys(optSubs).length ? optSubs : undefined,
     };
@@ -5793,10 +5801,17 @@ async function runOptimizer(){
 
     // A per-facet badge each, so you can see at a glance WHICH category
     // missed — "fit error 7%" alone doesn't tell you what to fix.
+    // The tooltip names the bucket that DECIDED the facet, and its own
+    // allowance. Since v0.115.0 every bucket has a different one, so a bare
+    // "worst 4.4% off" could not be judged without it — that ambiguity is
+    // what let a badge read ✓ while a target sat at an eighth of its value.
     const badges = Object.entries(d.facets || {}).sort().map(([f, x]) =>
       `<span class="src ${x.met ? 'cache' : 'sell'}" title="`
-      + escapeAttr(`${facetLabel(f)}: worst bucket ${(x.max_dev*100).toFixed(1)}% off, `
-                 + `tolerance ${(x.tolerance*100)}%`)
+      + escapeAttr(`${facetLabel(f)}: worst bucket ${(x.max_dev*100).toFixed(1)}pp off. `
+                 + `Decided by ${tgKeyLabel(f, x.worst_bucket || '')} — `
+                 + `${((x.worst_dev||0)*100).toFixed(1)}pp against an allowance of `
+                 + `${((x.tolerance||0)*100).toFixed(1)}pp `
+                 + `(${((x.relative||0)*100).toFixed(0)}% of its target).`)
       + `">${x.met ? '✓' : '⚠'} ${escapeHtml(facetLabel(f))} `
       + `${(x.max_dev*100).toFixed(1)}%</span>`).join('');
 
@@ -5931,7 +5946,7 @@ function renderOptimizerAlternatives(d){
         <th class="nosort r" style="width:74px">score${
           optScoreModelNote()}</th>
         ${facets.map(f => `<th class="nosort r" style="width:110px">${escapeHtml(f)}
-            <div class="sub">tol ${((base[f] || {}).tolerance * 100 || 0).toFixed(0)}pp</div></th>`).join('')}
+            <div class="sub">allow ${((base[f] || {}).tolerance * 100 || 0).toFixed(1)}pp</div></th>`).join('')}
       </tr>`;
 
     const keepOn = !optSubs[r.ticker];
@@ -6090,7 +6105,14 @@ function renderOptimizerResult(d){
     const rows = flat.map(([level, k, delta]) => {
       const got = (((d.achieved || {})[facet] || {})[level] || {})[k] || 0;
       const tgt = got - delta;
-      const off = Math.abs(delta) > 0.02;
+      // v0.115.0: every bucket carries its own allowance, sent by the
+      // backend rather than recomputed here — the relative rule and its
+      // floor live in one place, so the table and the solver cannot
+      // disagree about whether a row passed. A row is flagged when it is
+      // outside ITS OWN allowance, not against a fixed 2pp: that fixed
+      // figure was why a 5% target achieving 0.6% read as unremarkable.
+      const allow = (((d.tolerance || {})[facet] || {})[level] || {})[k];
+      const off = allow != null && Math.abs(delta) > allow + 1e-9;
       const multi = Object.keys(perLevel || {}).length > 1;
       return `<tr>
         <td>${escapeHtml(tgKeyLabel(facet, k))}${multi
@@ -6099,18 +6121,22 @@ function renderOptimizerResult(d){
         <td class="r tk">${(tgt*100).toFixed(1)}%</td>
         <td class="r tk">${(got*100).toFixed(1)}%</td>
         <td class="r tk ${off ? (delta>0?'pos':'neg') : ''}">${delta>0?'+':''}${(delta*100).toFixed(1)}%</td>
+        <td class="r tk" style="color:var(--muted)">${
+          allow == null ? '—' : '±' + (allow*100).toFixed(1)}</td>
       </tr>`;
     }).join('');
     blocks.push(`
       <div style="margin-bottom:.9rem">
         <div class="ct" style="font-size:.7rem">${escapeHtml(facetLabel(facet))}</div>
         <table class="dtable">
-          <colgroup><col><col style="width:100px"><col style="width:100px"><col style="width:90px"></colgroup>
+          <colgroup><col><col style="width:100px"><col style="width:100px">
+                    <col style="width:90px"><col style="width:90px"></colgroup>
           <thead><tr class="htitles">
             <th class="nosort"></th>
             <th class="nosort r">Target</th>
             <th class="nosort r">Achieved</th>
             <th class="nosort r">Δ</th>
+            <th class="nosort r" title="This bucket's own allowance, in percentage points: the tolerance you set for the category, taken as a share of this target (never less than 0.5).">Allowed</th>
           </tr></thead><tbody>${rows}</tbody>
         </table>
       </div>`);

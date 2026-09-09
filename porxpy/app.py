@@ -1028,21 +1028,31 @@ def create_app() -> Flask:
               "max_funds":   10,       # cap on funds in the design
               "min_weight":  0.01,     # drop dust positions below this
               "min_trade":   100.0,    # suppress trades below this (base ccy)
-              "max_error": {           # tolerance PER FACET, as fractions
-                  "asset_class": 0.02, # "within 2 percentage points"
-                  "sector":      0.10,
-                  "country":     0.05,
+              "max_error_rel": {       # tolerance PER FACET, RELATIVE
+                  "asset_class": 0.05, # "within 5% of each target"
+                  "sector":      0.20,
+                  "country":     0.10,
                   "currency":    0.15,
               },
               "candidates":  ["VWRL.AS", ...],   # restrict the universe
             }
 
-        ``max_error`` also shapes the objective, not just the stopping test:
-        a facet you demand 2% on is weighted five times harder than one you
-        allow 10% on. Otherwise the solver would spread effort evenly and
-        might never satisfy the strict facet at all.
+        ``max_error_rel`` is a fraction OF EACH TARGET, not a distance in
+        percentage points (v0.115.0). A 40% target at 0.10 allows 4pp; a
+        5% target allows 0.5pp — both "a tenth of what I asked for". The
+        absolute form it replaced could not mean the same thing at both
+        sizes: 5pp of slack let a 5% target sit at zero and still report
+        met, so the solver had no reason to buy the very fund the user had
+        added for it. A floor of 0.5pp keeps a tiny target from demanding
+        an accuracy whole shares cannot express.
+
+        The allowance also shapes the objective, not just the stopping
+        test: each bucket's row is weighted by ``1 / allowance``, so the
+        solver minimises deviations measured in units of "how much room
+        did I have here". Otherwise it would spread effort evenly and
+        might never satisfy the tightest bucket at all.
         """
-        from porxpy.optimizer import optimise_portfolio
+        from porxpy.optimizer import optimise_portfolio, DEFAULT_TOL_REL
         # Local imports, matching the pattern used by the other endpoints.
         from porxpy.utils import cash_positions_get, cash_reserve_get
         # Country targets are region-keyed while fund breakdowns are
@@ -1375,9 +1385,11 @@ def create_app() -> Flask:
             # Default 100, not 0 — a zero minimum lets the optimiser emit
             # buy/sell suggestions of a couple of cents, which are noise.
             min_trade_base=float(body.get("min_trade", 100.0) or 0.0),
-            # Per-facet tolerances: {"asset_class":0.02, "sector":0.10, ...}
-            # A bare float is still accepted and applied to every facet.
-            max_error=body.get("max_error") or 0.05,
+            # Per-facet tolerances, RELATIVE to each target (v0.115.0):
+            # {"asset_class":0.05, "sector":0.20, ...} reads "sector within
+            # 20% of each of its targets". A bare float is still accepted
+            # and applied to every facet.
+            max_error_rel=body.get("max_error_rel") or DEFAULT_TOL_REL,
             facet_weights=body.get("facet_weights") or None,
             # Fund quality, consulted only after the fit is inside every
             # tolerance. A preset of "" or "none" turns it off, which is

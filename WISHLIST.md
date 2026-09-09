@@ -1,6 +1,6 @@
 # WISHLIST.md — possible future enhancements
 
-*Started 2026-08-18, at v0.72.3. Last swept at v0.114.0.*
+*Started 2026-08-18, at v0.72.3. Last swept at v0.115.0.*
 
 Things worth doing that nobody has promised. This is deliberately **not**
 a defect list: a bug lives in the Known open issues section of the
@@ -71,15 +71,17 @@ the daily volume, more volume buys you nothing — which would make it a
 second floor test rather than a second percentile. Worth deciding on
 that reasoning rather than by symmetry with the returns component.
 
-### Tolerance and reported error per LEVEL, not just per facet
+### Tolerance set per LEVEL, not just per facet
 
-`max_error` is keyed by facet alone and `_facet_devs` groups residuals by
-facet alone, so the three levels of a sector target collapse into one
-worst-case number. You cannot ask for 2pp at super-sector and 8pp at
-sub-sector, and when a facet misses, the headline figure does not say
-which grain missed. The per-bucket `deviation` block already carries the
-level, so the information exists — it is the summary and the stopping
-test that do not use it.
+`max_error_rel` is keyed by facet alone, so the three levels of a sector
+target share one relative figure and you cannot ask for 5% at
+super-sector and 20% at sub-sector.
+
+Narrowed by v0.115.0, which closed the reporting half of this: allowances
+now bind per bucket, and `_facet_devs` names the bucket and level that
+decided each facet, so a miss says which grain missed. What remains is
+only the input — one relative number per facet, applied to every level of
+it.
 
 ---
 

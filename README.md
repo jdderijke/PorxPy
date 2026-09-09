@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.114.0. This is the fullest architecture write-up;
+*Current as of v0.115.0. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -26,7 +26,7 @@ order for a new user:
 | **[IMPORT_NEW_FUNDS_GUIDE.md](IMPORT_NEW_FUNDS_GUIDE.md)** | How do I add a fund the shipped set does not have, and get it fully described? | When you want your own funds in the cache. ISIN and ticker imports, holdings uploads, factsheets and their extraction, §11b's full account of how enrichment identifies and fills a holding, the Edit fund dialog, resolving unmatched values, and what every tile means. |
 | **README.md** (this file) | What is PorxPy, what does it do, and how is it built? | For the feature tour and the architecture — module roles, the cache layout, the request flow, external services, privacy. |
 | **[FACET_TREE.md](FACET_TREE.md)** | How do facets actually work? | When a breakdown reads oddly, or before changing anything that touches one. The four trees, why every level travels together, what `unknown` means against `n/a`, what is deliberately *not* a facet, and §17's verified defects. |
-| **[OPTIMIZER.md](OPTIMIZER.md)** | How does the solver decide? | When a design surprises you. The exposure matrix, why cash is a reservation rather than a column, greedy selection and swap refinement, how tolerances weight the objective, and §13's verified defects. |
+| **[OPTIMIZER.md](OPTIMIZER.md)** | How does the solver decide? | When a design surprises you. The exposure matrix, why cash is a reservation rather than a column, greedy selection and swap refinement, why a tolerance is a share of its target rather than a distance, how that same allowance weights the objective, and §13's verified defects. |
 | **[CHANGELOG.md](CHANGELOG.md)** · **[WISHLIST.md](WISHLIST.md)** | What changed, and what might change? | The changelog explains the cause behind each release, not just the symptom. The wishlist is deferred ideas — deliberately not a defect list; defects live in the owning document's *Known open issues*. |
 
 The two guides are the *user* path — how to work the app. The three
@@ -866,6 +866,6 @@ it does.
 
 ## Version
 
-Current release: **0.114.0** (2026-09-08)
+Current release: **0.115.0** (2026-09-09)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.
