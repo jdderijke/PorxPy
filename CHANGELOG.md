@@ -3,6 +3,46 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.116.0] - 2026-09-09
+
+### Changed — the optimiser names the funds it cannot use
+
+A run reported *"3 fund(s) have no country data — they can only be used
+for the untargeted part of country"* and stopped there. The remedy for
+that sentence is per fund: open the fund, give its country card a source,
+or upload holdings so a look-through exists. So the message described a
+task and withheld the only thing needed to start it — which three. The
+per-level notes under **Resulting exposure** had the same shape:
+"measured on 73 of 76 funds" is a statistic, not a task.
+
+Both now name the funds, and every ticker is a link to that fund's page.
+
+Two lists, because they answer the same question at different grains and
+conflating them would be wrong: `facet_gaps` is the funds with no source
+for the facet at all, while `level_report[facet][level].silent_funds` is
+the funds that say nothing at the one level a target happens to be set
+at. A fund can describe `country` and still be silent at `region`.
+
+They render through one function all the same. A list that is clickable
+in one place and plain text in another reads as two different kinds of
+statement, so `optFundList` is shared by the warnings and the level
+notes; it shows the first eight and carries the full set in the tooltip.
+`loadPeerFund` was renamed `loadFundByTicker` and generalised for the
+same reason — one navigator, so a fund named anywhere on screen behaves
+the same way when clicked.
+
+One case deliberately carries no list: when NO candidate answers a facet,
+"which funds?" is "all of them", and seventy tickers would bury the
+sentence that matters. The remedy there is a setting, not a fund.
+
+### Changed — API
+
+- `facet_warnings` entries are `{text, facet, funds}` objects rather than
+  bare strings. `text` still names as many funds as fit in prose for a
+  reader who has only the text; `funds` carries the complete list.
+- New `facet_gaps` block: `{facet: [{ticker, name}]}`.
+- `level_report[facet][level]` gains `silent_funds`, same shape.
+
 ## [0.115.0] - 2026-09-09
 
 ### Changed — optimiser tolerances are a share of the target, not a distance

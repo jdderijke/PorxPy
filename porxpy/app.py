@@ -1007,6 +1007,41 @@ def create_app() -> Flask:
                   f"proceeding on fit alone")
             return None
 
+    # How many funds a diagnostic sentence names before it gives up and
+    # counts the rest. Six fits on a line; past that the sentence stops
+    # being readable and the full list — which the response carries as
+    # data — is the better place to look.
+    _FUND_NAME_LIMIT = 6
+
+    def _fund_ref(c: dict) -> dict:
+        """One candidate, reduced to what a diagnostic needs to name it.
+
+        Ticker and name, nothing else. Every place that reports "these
+        funds cannot help" builds its list through here, so the shape the
+        browser receives is the same whichever question produced it —
+        a facet with no source at all, or a level nothing answers.
+        """
+        tk = (c.get("ticker") or "").upper()
+        return {"ticker": tk, "name": c.get("name") or tk}
+
+    def _fund_names(refs: list, limit: int = _FUND_NAME_LIMIT) -> str:
+        """``"AAA.AS, BBB.DE and 3 more"`` — funds named inside a sentence.
+
+        The warning strings are prose and cannot carry a list of forty
+        tickers, but they must not go back to naming none: a count alone
+        describes a problem whose only fix is per-fund and withholds the
+        fund. So name what fits and say how many were left, with the
+        complete list travelling separately in the response for the
+        surfaces that can render one.
+        """
+        tks = [r.get("ticker") or "" for r in refs if r.get("ticker")]
+        if not tks:
+            return "none named"
+        if len(tks) <= limit:
+            return (", ".join(tks[:-1]) + " and " + tks[-1]
+                    if len(tks) > 1 else tks[0])
+        return ", ".join(tks[:limit]) + f" and {len(tks) - limit} more"
+
     @app.route("/api/portfolios/<pid>/optimize", methods=["POST"])
     def api_portfolio_optimize(pid: str) -> Response:
         """Propose a portfolio design (or rebalance) matching the targets.
@@ -1258,7 +1293,19 @@ def create_app() -> Flask:
         # unreachable error and sends the user hunting for a fund that will
         # never help, when the real fix is to switch that card to the
         # holdings look-through.
-        facet_warnings = []
+        # v0.116.0: each warning is {text, facet, funds} rather than a
+        # bare string, so the funds it is about travel WITH it instead of
+        # being inlined into prose the browser can only escape and print.
+        # That is what lets every surface render the same list the same
+        # way — clickable, jumping to the fund whose data needs fixing —
+        # rather than one naming funds and another merely counting them.
+        facet_warnings: list[dict] = []
+
+        def _warn(text: str, facet: str = "", funds: list | None = None):
+            """Append one warning, with the funds it concerns."""
+            facet_warnings.append({"text": text, "facet": facet,
+                                   "funds": list(funds or [])})
+
         # Which source each facet's data came from, across the universe.
         # Surfaced because a mixed run is worth knowing about: issuer and
         # look-through data are not always on the same basis, so a fund can
@@ -1277,6 +1324,12 @@ def create_app() -> Flask:
             level_report[facet] = {}
             for level in per_level:
                 answering, weight, keys_seen = 0, 0.0, set()
+                # v0.116.0: NAME the funds that say nothing here, don't
+                # just count them. "measured on 73 of 76 funds" states a
+                # problem and withholds the only thing needed to act on
+                # it — which three. The list is what makes the note a
+                # task rather than a statistic.
+                silent: list[dict] = []
                 for c in candidates:
                     blk = (((c.get("exposures") or {}).get(facet) or {})
                            .get(level) or {})
@@ -1285,11 +1338,16 @@ def create_app() -> Flask:
                         answering += 1
                         weight += sum(real.values())
                         keys_seen |= set(real)
+                    else:
+                        silent.append(_fund_ref(c))
                 targeted = set(per_level.get(level) or {})
                 level_report[facet][level] = {
                     "candidates_answering": answering,
                     "candidates_total":     len(candidates),
                     "exposure_weight":      round(weight, 4),
+                    # Every fund with nothing to say at this level, so the
+                    # caller can list them instead of quoting a shortfall.
+                    "silent_funds":         silent,
                     # The targeted buckets NO candidate carries. This one
                     # names the problem outright: a target on a bucket
                     # nothing in the universe holds cannot be met by any
@@ -1298,12 +1356,24 @@ def create_app() -> Flask:
                 }
 
         source_mix: dict[str, dict[str, int]] = {}
+        # Per facet, the funds that answer it from NO source at all — a
+        # different and coarser question from level_report's `silent_funds`
+        # (a fund can describe a facet and still say nothing at the one
+        # level a target happens to be set at). Both are named rather than
+        # counted since v0.116.0, and both are collected here so the
+        # warning strings below and the browser's own notes read one list
+        # instead of each deriving its own.
+        facet_gaps: dict[str, list[dict]] = {}
         for facet in targets:
             mix: dict[str, int] = {}
+            gaps: list[dict] = []
             for c in candidates:
                 s = (c.get("sources") or {}).get(facet, "none")
                 mix[s] = mix.get(s, 0) + 1
+                if s == "none":
+                    gaps.append(_fund_ref(c))
             source_mix[facet] = mix
+            facet_gaps[facet] = gaps
 
             # v0.66.3: RESIDUAL weight does not count as exposure.
             #
@@ -1329,34 +1399,45 @@ def create_app() -> Flask:
             # focus_theme joined them and made the sweep obvious.)
             from porxpy.config import META_FACETS as _META
             if total <= 1e-9:
+                # Deliberately carries NO fund list, unlike the branch
+                # below: when nothing in the universe answers the facet,
+                # the answer to "which funds?" is "all of them", and
+                # printing seventy tickers would bury the one sentence
+                # that matters. The remedy here is a setting, not a fund.
                 if facet in _META:
-                    facet_warnings.append(
-                        f"No candidate fund is classified for {facet} — every "
-                        f"{facet} target will read 0% achieved. This is a "
-                        f"fund-level classification rather than a "
-                        f"look-through, so set it per fund in Edit fund on "
-                        f"the fund's page.")
+                    _warn(f"No candidate fund is classified for {facet} — every "
+                          f"{facet} target will read 0% achieved. This is a "
+                          f"fund-level classification rather than a "
+                          f"look-through, so set it per fund in Edit fund on "
+                          f"the fund's page.", facet)
                 else:
-                    facet_warnings.append(
-                        f"No {facet} exposure data on any candidate fund — every "
-                        f"{facet} target will read 0% achieved. The funds answer "
-                        f"this facet only as 'unknown'. Set each fund's {facet} "
-                        f"card to Holdings or Factsheet on its page, or upload "
-                        f"holdings so a look-through is available.")
+                    _warn(f"No {facet} exposure data on any candidate fund — every "
+                          f"{facet} target will read 0% achieved. The funds answer "
+                          f"this facet only as 'unknown'. Set each fund's {facet} "
+                          f"card to Holdings or Factsheet on its page, or upload "
+                          f"holdings so a look-through is available.", facet)
             elif mix.get("none"):
                 # These funds aren't excluded — they're treated as 100%
                 # "other" for this facet, so they can still serve the
                 # untargeted remainder. But they can never help hit a
                 # targeted bucket, which is worth saying out loud.
+                #
+                # And worth saying WHICH (v0.116.0). The count alone named
+                # a problem whose only remedy is per-fund — go to that
+                # fund and give it a source — while withholding the fund,
+                # so the sentence could be read and not acted on. The
+                # funds ride along in the warning; the text names as many
+                # as fit for a reader who has only the text.
+                gaps = facet_gaps.get(facet) or []
+                who  = _fund_names(gaps)
                 if facet in _META:
-                    facet_warnings.append(
-                        f"{mix['none']} fund(s) carry no {facet} "
-                        f"classification — they can only be used for the "
-                        f"untargeted part of {facet}.")
+                    _warn(f"{mix['none']} fund(s) carry no {facet} "
+                          f"classification ({who}) — they can only be used "
+                          f"for the untargeted part of {facet}.", facet, gaps)
                 else:
-                    facet_warnings.append(
-                        f"{mix['none']} fund(s) have no {facet} data — they can "
-                        f"only be used for the untargeted part of {facet}.")
+                    _warn(f"{mix['none']} fund(s) have no {facet} data ({who}) "
+                          f"— they can only be used for the untargeted part "
+                          f"of {facet}.", facet, gaps)
 
         # The reserve, stated in money, said in the response's own terms.
         # It is not a target the solver tries to hit — it is removed from
@@ -1365,18 +1446,17 @@ def create_app() -> Flask:
         # confirmation that the number they set was the number applied.
         if cash_reserve > 0:
             shortfall = cash_reserve - cash_total
+            # No facet and no funds: this one is about money, not data.
             if shortfall > 0.005:
-                facet_warnings.append(
-                    f"Cash reserve {cash_reserve:,.0f} {base_cur} is "
-                    f"{shortfall:,.0f} above the {cash_total:,.0f} you hold, "
-                    f"so the design sells that much to raise it before "
-                    f"investing the rest.")
+                _warn(f"Cash reserve {cash_reserve:,.0f} {base_cur} is "
+                      f"{shortfall:,.0f} above the {cash_total:,.0f} you hold, "
+                      f"so the design sells that much to raise it before "
+                      f"investing the rest.")
             elif shortfall < -0.005:
-                facet_warnings.append(
-                    f"Cash reserve {cash_reserve:,.0f} {base_cur} is "
-                    f"{-shortfall:,.0f} below the {cash_total:,.0f} you hold, "
-                    f"so the difference is invested and every target below "
-                    f"is a percentage of what remains.")
+                _warn(f"Cash reserve {cash_reserve:,.0f} {base_cur} is "
+                      f"{-shortfall:,.0f} below the {cash_total:,.0f} you hold, "
+                      f"so the difference is invested and every target below "
+                      f"is a percentage of what remains.")
 
         result = optimise_portfolio(
             candidates, targets, cash_total, cash_reserve,
@@ -1415,6 +1495,10 @@ def create_app() -> Flask:
         result["facet_warnings"]  = facet_warnings
         result["source_mix"]      = source_mix
         result["level_report"]    = level_report
+        # The funds behind those warnings, so the browser can list them
+        # (and link each one) rather than re-deriving the set from
+        # `source_mix` counts it cannot turn back into names.
+        result["facet_gaps"]      = facet_gaps
         return jsonify(result)
 
     @app.route("/api/portfolios/<pid>/trades", methods=["POST"])

@@ -5863,9 +5863,18 @@ async function runOptimizer(){
     // solver one — surface it separately so it isn't mistaken for
     // "unreachable targets", which needs a completely different fix.
     if ((d.facet_warnings || []).length){
-      status.innerHTML += d.facet_warnings.map(w =>
-        `<div style="margin-top:.35rem;color:var(--amber)">⚠ ${escapeHtml(w)}</div>`
-      ).join('');
+      // v0.116.0: a warning is {text, facet, funds}. The text names as
+      // many funds as fit in prose for anyone reading the raw response;
+      // on screen the same funds are rendered as links, since the fix for
+      // every one of these is made on the fund's own page.
+      status.innerHTML += d.facet_warnings.map(w => {
+        const who = optFundList(w.funds);
+        return `<div style="margin-top:.35rem;color:var(--amber)">⚠ `
+             + escapeHtml(w.text)
+             + (who ? `<div style="margin-top:.15rem;color:var(--muted);font-size:.7rem">`
+                    + `Affected: ${who}</div>` : '')
+             + `</div>`;
+      }).join('');
     }
   } catch(e){
     status.textContent = `Failed: ${e.message || e}`;
@@ -5873,6 +5882,32 @@ async function runOptimizer(){
     jobProgressStop();
     btn.disabled = false;
   }
+}
+
+// Render a list of {ticker, name} as clickable tickers (v0.116.0). Every
+// coverage note names the funds it is about — a note saying three funds
+// are unusable, without saying which, describes a per-fund fix and
+// withholds the fund. Each ticker jumps to that fund's page, because that
+// is where the fix is made.
+//
+// One renderer, deliberately: the run's warnings and the per-level notes
+// under the deviation tables answer the same question at two grains
+// ("this facet has no source" / "nothing answers at this level"), and a
+// list that is clickable in one place and plain text in the other reads
+// as two different kinds of statement. Long lists are truncated on screen
+// and carried in full in the tooltip, so a note stays a sentence.
+const OPT_FUNDS_SHOWN = 8;
+function optFundList(refs){
+  const list = (refs || []).filter(r => r && r.ticker);
+  if (!list.length) return '';
+  const chip = r =>
+    `<a href="#" onclick="event.preventDefault();loadFundByTicker('${escapeAttr(r.ticker)}')"
+        title="${escapeAttr(r.name || r.ticker)} — open this fund"
+        style="color:var(--accent);text-decoration:none">${escapeHtml(r.ticker)}</a>`;
+  const shown = list.slice(0, OPT_FUNDS_SHOWN).map(chip).join(', ');
+  const rest  = list.length - OPT_FUNDS_SHOWN;
+  return `<span title="${escapeAttr(list.map(r => r.ticker).join(', '))}">`
+       + shown + (rest > 0 ? ` and ${rest} more` : '') + `</span>`;
 }
 
 // "all / peer", matching the pre-loaded list so the same fund reads the
@@ -6085,11 +6120,11 @@ function renderOptimizerResult(d){
           Measured on ${r.candidates_answering} of ${r.candidates_total} funds.`);
       } else if (r.candidates_answering < r.candidates_total){
         lvlNotes.push(`<b>${escapeHtml(lbl)}</b>: measured on
-          ${r.candidates_answering} of ${r.candidates_total} funds; the rest
+          ${r.candidates_answering} of ${r.candidates_total} funds. The rest
           ${_TG_META_FACETS.includes(facet)
              ? 'carry no such classification'
              : 'report this facet as unknown'}
-          and can only serve the remainder.`);
+          and can only serve the remainder: ${optFundList(r.silent_funds)}.`);
       }
     }
   }
@@ -8232,7 +8267,7 @@ function fundPeersControlHtml(data){
   if (!members.length) return '';
   const items = members.map(m => _peerItemHtml(
     m,
-    m.self ? '' : `event.stopPropagation(); loadPeerFund('${escapeAttr(m.ticker)}')`,
+    m.self ? '' : `event.stopPropagation(); loadFundByTicker('${escapeAttr(m.ticker)}')`,
     m.self ? 'This fund' : '')).join('');
   const ranked = members.some(m => m.score_peer != null);
   const note = ranked ? '' :
@@ -8263,7 +8298,12 @@ function fundScoreRowExtraHtml(data){
 // Load a peer by ticker. Identity comes from the pre-loaded list when we
 // have it, so the fetch takes the same path a click in that list does
 // rather than re-resolving from the ticker alone.
-function loadPeerFund(ticker){
+// Open a fund's page from a ticker alone, resolving its identity out of
+// the pre-loaded list. Named for the peer popover it was written for;
+// renamed in v0.116.0 when the optimiser's coverage notes needed exactly
+// the same jump — one navigator, so a fund named anywhere on screen
+// behaves the same way when clicked.
+function loadFundByTicker(ticker){
   closeAllPrePops();
   const row = (cacheListData || []).find(c => c.ticker === ticker);
   loadCachedFund(ticker, row?.isin || '', row?.exchange || '', row?.currency || '');

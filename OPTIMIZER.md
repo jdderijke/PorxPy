@@ -1,6 +1,6 @@
 # The PorxPy Optimizer — how it works
 
-*Applies to `porxpy/optimizer.py` as of v0.115.0. The full audit — every
+*Applies to `porxpy/optimizer.py` as of v0.116.0. The full audit — every
 claim in the document re-checked against the module — was done at
 v0.91.0; since then the v0.96.0 peer-scoring change was folded into §7b
 and §13's one remaining open issue was re-confirmed by reading
@@ -659,6 +659,30 @@ target.
   tickers, the portfolio total, cash as a fraction and as an amount after
   the trades, and the single worst deviation across all facets (the
   headline figure; per-facet detail is in `facets`).
+
+### What the endpoint adds
+
+`optimise_portfolio` answers only the fitting question. The route around
+it (`app.api_portfolio_optimize`) layers on three diagnostics that need
+the candidate universe rather than the solve, and that exist because "0%
+achieved" has several causes needing different fixes:
+
+- **`source_mix`** — per facet, how many candidates described it from
+  each source. A mixed run is worth knowing about: issuer cards and
+  look-throughs are not always on the same basis.
+- **`level_report`** — per (facet, level), how many candidates answer,
+  with how much non-residual weight, which targeted buckets nothing in
+  the universe holds, and (v0.116.0) **`silent_funds`**, the funds that
+  say nothing at that level.
+- **`facet_warnings`** and **`facet_gaps`** — the prose version, and the
+  funds behind it. Since v0.116.0 a warning is `{text, facet, funds}`
+  rather than a bare string: it names the funds it is about instead of
+  counting them, because the remedy for every one of these is per fund —
+  go to that fund and give the facet a source — and a count states the
+  problem while withholding the only thing needed to act on it. The two
+  lists answer the same question at different grains (`facet_gaps` = no
+  source at all; `silent_funds` = nothing at this level), so the browser
+  renders both through one function and both are clickable.
 
 Nothing is applied. The trade list goes to the same `apply_trades`
 primitive the manual Buy/Sell dialog uses, atomically, only when you press

@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.115.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.116.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -134,7 +134,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.115.0 (built 2026-09-09)
+  PorxPy  v0.116.0 (built 2026-09-09)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -401,7 +401,17 @@ Three panels come back:
 If the result disappoints, the fix is usually one of: raise **Max
 funds**, loosen the tolerance on the facet you care least about, or add
 funds to the universe that can actually reach the bucket you targeted.
-The status line names the reason where it can.
+The status line names the reason where it can, down to the individual
+bucket that failed and the allowance it broke.
+
+**Funds the optimiser cannot use** are named, not just counted. A run
+that says *"3 fund(s) have no country data"* lists which three, and each
+ticker is a link to that fund's page — because the fix is per fund: give
+its country card a source, or upload holdings so a look-through exists.
+The same list appears under **Resulting exposure**, where a note says how
+many funds a level was measured on and which ones stayed silent. Until a
+fund can describe itself in a facet you target, the optimiser can only
+use it for the untargeted remainder, and it will rarely be chosen.
 
 ---
 
