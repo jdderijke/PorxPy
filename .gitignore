@@ -12,6 +12,15 @@ user_*/
 ZZ-archived/
 test files/
 
+# ----- Pre-loaded fund bundle --------------------------------
+# The shipped fund set is distributed as a GitHub Release asset, never
+# as a tracked file. It is a ~30 MB zip, and git cannot three-way-merge
+# a zip: a tracked copy broke `git pull` for anyone who had re-exported
+# over theirs, and every re-export added another 30 MB to the history of
+# every clone, for ever. The folder itself stays (see its README) as the
+# place to put the download; the zips never enter a commit.
+PreLoadedFunds/*.zip
+
 # ----- PorxPy runtime data (never commit user data) ----------
 portfolios.json
 settings.json

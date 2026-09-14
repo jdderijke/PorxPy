@@ -220,6 +220,18 @@ External services: Yahoo Finance (always), OpenFIGI (ISIN→ticker), justETF (op
   quietly makes every claim in the file untrustworthy without saying which ones
   went stale. Hand back the list of documents you checked, so the sweep is
   visible rather than assumed.
+- **The pre-loaded fund bundle is a release asset, never a tracked
+  file.** Re-exporting the shipped fund set means attaching the zip to
+  the GitHub release under the fixed name `porxpy_funds.zip`. The fixed
+  name is the whole point: it is what makes
+  `.../releases/latest/download/porxpy_funds.zip` a permanent link the
+  docs can hardcode, and the export date survives in the bundle's own
+  `manifest.json` and in the release tag, so nothing is lost by dropping
+  it from the filename. Never re-add `PreLoadedFunds/*.zip` to the
+  index: git cannot three-way-merge a 30 MB zip, so a tracked copy broke
+  `git pull` for every downstream clone whose owner had re-exported over
+  theirs, and each re-export added another 30 MB to the history of every
+  clone, permanently.
 - **Comments record decisions, including rejected ones.** `config.py` in particular explains why sibling facets were backed out, why there is no geographic super-region, why a key was renamed. When changing something these comments cover, update the rationale rather than deleting it — and match the density: this codebase documents *why*, not *what*.
 - **Docstrings are Google-style with an explicit "why this exists" paragraph**, on modules and non-trivial functions alike.
 - Backend files are large and single-purpose; add to the existing module that owns the concern rather than creating a new one.
@@ -240,9 +252,8 @@ stated, and a reader who cannot find `FACET_TREE.md` will not know to
 look for it.
 
 The two user-facing guides are `GETTING_STARTED.md` (install, import the
-shipped `PreLoadedFunds/porxpy_funds_<date>.zip` set (the export stamps
-the file with its date; the newest is the current one), and design a first
-portfolio: cash, targets, optimiser) and `IMPORT_NEW_FUNDS_GUIDE.md`
+fund set attached to the latest GitHub release as `porxpy_funds.zip`,
+and design a first portfolio: cash, targets, optimiser) and `IMPORT_NEW_FUNDS_GUIDE.md`
 (everything about getting one more fund in and fully described). They
 carry the same version stamp as the design docs, and the installation
 procedure lives in the first of them alone — README and the import guide

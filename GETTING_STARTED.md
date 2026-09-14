@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.118.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.118.1. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -134,7 +134,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.118.0 (built 2026-09-09)
+  PorxPy  v0.118.1 (built 2026-09-14)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -162,11 +162,23 @@ The **Portfolio** selector in the header chooses the active portfolio.
 
 ## 4. Import the pre-loaded fund set
 
-The repository ships a fund bundle in **`PreLoadedFunds/`**, named with
-the date it was exported — currently
-**`porxpy_funds_20260908.zip`**. The date is the version: a re-export
-arrives beside the old one under a new name, so take the newest file in
-that folder. It is a plain zip with a readable
+A curated fund bundle ships with every release. It is **not** in the
+repository — it is attached to the release as a download:
+
+**<https://github.com/jdderijke/PorxPy/releases/latest/download/porxpy_funds.zip>**
+
+That link always resolves to the newest bundle, so it is the one to
+bookmark; the [Releases page](https://github.com/jdderijke/PorxPy/releases)
+lists every earlier one beside the changelog entry that explains what
+moved. Save the file into **`PreLoadedFunds/`** — that folder exists
+for it, and git ignores every zip in it.
+
+The filename is fixed so that the link can be. The export date has not
+gone anywhere: it is inside the bundle, in `manifest.json`, next to the
+app version that produced it, and the import dialog shows you both
+before it writes anything.
+
+It is a plain zip with a readable
 `manifest.json`, and it contains what a fund *is* rather than what
 anyone holds: cached fund and listing data, holdings lists, issuer
 factsheets, corrected fields and the reference CSVs those funds were
@@ -175,11 +187,23 @@ those live in the other bundle type, and the two are deliberately kept
 separate so you can take someone else's fund research without taking
 their holdings.
 
+> **Upgrading a clone made at v0.118.0 or earlier?** The bundle used
+> to be a tracked file. Because git cannot merge a zip, anyone who had
+> re-exported over their copy hit *your local changes would be
+> overwritten by merge* on every `git pull`. From v0.118.1 it is
+> untracked and ignored, so that cannot recur — but the commit that
+> untracks it still has to land once, and it removes the old zip from
+> your working tree as it goes. If a pull refuses, run
+> `git checkout -- PreLoadedFunds/` — or move your own export out of
+> that folder, if the complaint names an untracked file — and pull
+> again. Nothing of yours is at risk: the funds you imported live in
+> `cache/` and `isin_map.json`, which git never touches.
+
 To load it:
 
 1. Go to **Settings → backup & restore**.
 2. Under **Import a bundle**, click **Choose file…** and pick the
-   newest `PreLoadedFunds/porxpy_funds_<date>.zip`.
+   `porxpy_funds.zip` you downloaded.
 3. PorxPy reads the bundle and opens the import dialog. **Nothing has
    been written yet.** The summary line tells you how many funds the
    bundle holds and how many of them you already have; on a fresh
@@ -493,9 +517,10 @@ treated very differently:
 
 | Export | Contains | Use it for |
 |---|---|---|
-| **Export funds** | The curated asset — holdings, factsheets, corrected fields, per-card source pins and the resource files. | Moving your fund research to another install, or handing it to someone else. This is how the `PreLoadedFunds/porxpy_funds_<date>.zip` bundles were
-made — the export names the file after the day it ran, which is what
-makes one bundle distinguishable from another. |
+| **Export funds** | The curated asset — holdings, factsheets, corrected fields, per-card source pins and the resource files. | Moving your fund research to another install, or handing it to someone else. This is how the `porxpy_funds.zip` attached to each release is made —
+the export names the file after the day it ran and records that date in
+`manifest.json`, and the release upload renames it to the fixed name
+that keeps the download link permanent. |
 | **Export portfolios** | Portfolios, targets, cash positions and settings. | Your own backup. Restores on top of whatever fund set is present. |
 
 Price history is off by default in the funds export, because it

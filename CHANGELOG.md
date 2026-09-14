@@ -3,6 +3,58 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.118.1] - 2026-09-14
+
+### Changed — the pre-loaded fund bundle is a release download, not a repo file
+
+`PreLoadedFunds/porxpy_funds_<date>.zip` was tracked in git. Git cannot
+three-way-merge a zip, so for anyone who had cloned the repository and
+then re-exported their own fund set over that file, every `git pull`
+failed with *your local changes to the following files would be
+overwritten by merge* — and the same refusal, worded as *untracked
+working tree file would be overwritten*, met anyone who had saved their
+own export into that folder under a name a later release also used.
+There is no fixing this with a merge driver or a `.gitattributes` entry:
+both failures happen in the working tree, before any merge is attempted.
+
+The second cost was quieter. The bundle is about 30 MB, it had been
+re-exported five times, and git keeps every version for ever in every
+clone: the repository was carrying roughly 136 MB of objects against
+430 KB of actual source.
+
+**The bundle is now a GitHub Release asset.** Each release carries it as
+`porxpy_funds.zip`, and
+<https://github.com/jdderijke/PorxPy/releases/latest/download/porxpy_funds.zip>
+always resolves to the newest one — a permanent link the documentation
+can hardcode. `PreLoadedFunds/*.zip` is gitignored, so nothing in that
+folder can collide with a pull again, and the user's own exports can sit
+beside the shipped one safely.
+
+The date leaves the filename, because a fixed name is what makes the
+`latest` link work. It has not been lost: `manifest.json` inside the
+bundle carries `exported_at` and the `app_version` that produced it, and
+the import dialog shows both before writing anything. The release tag
+names the version too.
+
+`PreLoadedFunds/` keeps a tracked `README.md`, so the folder still exists
+in a fresh clone and says where to get the file.
+
+**Upgrading an existing clone.** The commit that untracks the zip deletes
+it from the working tree on pull, which is harmless — imported funds live
+in `cache/` and `isin_map.json`, which git never touches. But a clone
+whose copy was modified will refuse that pull, one last time. The fix is
+`git checkout -- PreLoadedFunds/`, or moving a personal export out of the
+folder if the complaint names an untracked file, and then pulling again.
+GETTING_STARTED.md §4 carries this note for users.
+
+### Docs
+
+Version stamps and the bundle's location updated across `README.md`,
+`GETTING_STARTED.md`, `IMPORT_NEW_FUNDS_GUIDE.md`, `FACET_TREE.md`,
+`OPTIMIZER.md` and `WISHLIST.md`. `CLAUDE.md` gains the standing rule
+that the bundle is a release asset and `PreLoadedFunds/*.zip` must never
+return to the index.
+
 ## [0.118.0] - 2026-09-09
 
 ### Added — export and import a target set as CSV
