@@ -1315,6 +1315,22 @@ META_FACETS: tuple[str, ...] = ("market_cap", "style_box", "focus_theme")
 
 TARGET_FACETS: tuple[str, ...] = BREAKDOWN_FACETS + META_FACETS
 
+# How small a bucket "set baseline targets" will write (v0.119.0).
+#
+# The optimiser's per-bucket allowance floors at TOL_FLOOR = 0.5
+# percentage points (see optimizer.py), so a target below that cannot be
+# missed: every holding from zero upwards is already inside tolerance. A
+# world-equity index rolled down to sub-sector is mostly that band --
+# a long tail of buckets that constrain nothing and cost a solver row
+# each. The baseline import therefore stops there.
+#
+# It bounds what the IMPORT writes, never what the user may set. A
+# deliberate 0% target means "hold none of this" and IS enforced, and a
+# hand-typed 0.2% is the user's business. The asymmetry is the point:
+# a number the user chose carries an intent that a number generated in
+# bulk from a fund's tail does not.
+BASELINE_MIN_TARGET_PCT: float = 0.5
+
 
 def focus_theme_key(detail: str | None) -> str:
     """Canonical bucket key for a thematic focus.

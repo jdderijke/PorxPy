@@ -24,6 +24,7 @@ hit the local disk / cache.
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
@@ -3737,6 +3738,71 @@ def upsert_portfolio(portfolio: dict) -> None:
     save_portfolios(portfolios)
 
 
+# ── cloning ─────────────────────────────────────────────────────────────────
+# Which keys identify THIS portfolio rather than describe how it is built.
+# Everything else - funds, cash positions, the cash reserve, targets,
+# target pins, optimiser settings, base currency, cache config - is the
+# design, and a clone is asked for precisely to get the design.
+#
+# A DENYLIST, deliberately, rather than a list of fields to copy. A
+# portfolio dict grows fields over time (``cash_reserve``, ``targets``,
+# ``target_pins``, ``optimizer_settings`` each arrived in a different
+# release), and with an allowlist every future one would have to
+# remember to add itself here or be silently dropped from clones -
+# exactly the quiet parallel-set drift this codebase is most exposed to.
+# The denylist fails the safe way round: a new field is cloned unless
+# somebody decides otherwise, and deciding otherwise means adding it
+# here with a reason.
+PORTFOLIO_IDENTITY_FIELDS = ("id", "name", "created", "_normalisation")
+
+
+def clone_portfolio(src: dict, name: str, base_currency: str = "",
+                    cache_config: dict | None = None) -> dict:
+    """Build a new portfolio that copies everything about ``src`` but its name.
+
+    Why this exists: designing a variant of an existing portfolio - the
+    same funds and cash with one target moved, or the same targets
+    solved at a different tolerance - was otherwise a matter of
+    re-entering a whole design by hand, and a design re-entered by hand
+    is a design that differs from the one it was meant to be compared
+    against in ways nobody can see.
+
+    The clone is a full, independent copy: nothing is shared with the
+    source, so editing either one afterwards leaves the other alone.
+
+    Args:
+        src: The portfolio dict to copy (as returned by find_portfolio).
+        name: The new portfolio's name. The one thing never copied.
+        base_currency: Overrides the source's, when non-empty.
+        cache_config: Overrides the source's, when not None.
+
+    Returns:
+        A new portfolio dict with a fresh ``id`` and ``created`` stamp,
+        ready for :func:`upsert_portfolio`.
+    """
+    out = copy.deepcopy(src if isinstance(src, dict) else {})
+    for k in PORTFOLIO_IDENTITY_FIELDS:
+        out.pop(k, None)
+    out["id"] = str(uuid.uuid4())
+    out["name"] = name
+    out["created"] = now_iso()
+    if base_currency:
+        out["base_currency"] = base_currency
+    if cache_config is not None:
+        out["cache_config"] = cache_config
+    out.setdefault("base_currency", "USD")
+    out.setdefault("funds", [])
+
+    # Fresh ids for the cash positions. They are this portfolio's own
+    # records of its own pots, addressed by id when a trade settles
+    # against one, and two portfolios quoting the same id would make a
+    # mis-targeted write look like a valid one rather than a miss.
+    for pos in (out.get("cash_positions") or []):
+        if isinstance(pos, dict):
+            pos["id"] = new_row_id()
+    return out
+
+
 def delete_portfolio(pid: str) -> bool:
     """Remove a portfolio by id.
 
@@ -4021,8 +4087,9 @@ def portfolio_targets_get(pid: str) -> dict:
     return _coerce_targets(p.get("targets"))
 
 
-def portfolio_targets_put(pid: str, targets: dict) -> dict:
-    """Replace the targets dict for portfolio ``pid``.
+def portfolio_targets_put(pid: str, targets: dict,
+                          pins: dict | None = None) -> tuple[dict, dict]:
+    """Replace the targets dict (and its pins) for portfolio ``pid``.
 
     Replace semantics: the existing ``targets`` field on the portfolio
     is overwritten in full. To clear, pass an empty dict (or a dict
@@ -4032,10 +4099,13 @@ def portfolio_targets_put(pid: str, targets: dict) -> dict:
         pid: Portfolio UUID.
         targets: The new targets dict. Coerced via :func:`_coerce_targets`
             before persisting.
+        pins: The new pins map, coerced via :func:`_coerce_target_pins`.
+            ``None`` clears them — a caller that does not know about pins
+            is a caller whose payload cannot be trusted to preserve them,
+            so the editor always sends both together.
 
     Returns:
-        The normalised, persisted dict (same shape as
-        :func:`portfolio_targets_get`'s return).
+        ``(targets, pins)`` — both normalised as persisted.
 
     Raises:
         ValueError: If ``pid`` does not match any portfolio.
@@ -4044,6 +4114,7 @@ def portfolio_targets_put(pid: str, targets: dict) -> dict:
     for p in portfolios:
         if p.get("id") == pid:
             normalised = _coerce_targets(targets)
+            norm_pins  = _coerce_target_pins(pins, normalised)
             # Drop the field entirely when no facet has any target,
             # so portfolios.json stays clean for users who haven't
             # opted into the feature.
@@ -4052,9 +4123,79 @@ def portfolio_targets_put(pid: str, targets: dict) -> dict:
                 p["targets"] = normalised
             else:
                 p.pop("targets", None)
+            # Pins are dropped with the targets they hold, on the same
+            # rule: _coerce_target_pins has already discarded any pin
+            # whose target is gone, so an empty map here means there is
+            # genuinely nothing pinned.
+            if norm_pins:
+                p["target_pins"] = norm_pins
+            else:
+                p.pop("target_pins", None)
             save_portfolios(portfolios)
-            return normalised
+            return normalised, norm_pins
     raise ValueError(f"no portfolio with id {pid!r}")
+
+
+# ── target pins ─────────────────────────────────────────────────────────────
+# Which targets the user has nailed down, stored beside the targets as
+# ``target_pins`` on the portfolio entry:
+#
+#     {"sector": {"sector": {"technology": true}}, ...}
+#
+# A pin means "this number does not move when a sibling or its parent is
+# changed". It is consumed ENTIRELY by the editor: the tree editor reads
+# it to decide which buckets may absorb a drag, and neither
+# ``compute_target_deviations`` nor the optimiser knows it exists. That
+# split is the test that the pin lives at the right level — it constrains
+# how a design is EDITED, not what the design asks for.
+#
+# Stored as a parallel map rather than by promoting each target's value to
+# a dict. Promoting would have broken every existing reader of
+# ``{key: percent}``, the 0.118.0 target CSV, and bundle import, to hold
+# one boolean.
+
+
+def _coerce_target_pins(raw, targets: dict) -> dict:
+    """Coerce a pins map and drop any pin with no target behind it.
+
+    Args:
+        raw: User/disk-supplied ``{facet: {level: {key: truthy}}}``.
+        targets: The already-coerced targets the pins must refer to.
+
+    Returns:
+        ``{facet: {level: {key: True}}}``, holding only pins whose target
+        exists. Pruning is delegated to
+        :func:`porxpy.targets.prune_pins` so the CSV reader and this
+        storage path cannot disagree about what a stale pin is.
+    """
+    from porxpy.config import TARGET_FACETS
+    from porxpy.targets import prune_pins
+
+    cleaned: dict[str, dict[str, dict[str, bool]]] = {}
+    for facet, per_level in (raw or {}).items():
+        if facet not in TARGET_FACETS or not isinstance(per_level, dict):
+            continue
+        for level, block in per_level.items():
+            if not isinstance(block, dict):
+                continue
+            kept = {k.strip(): True for k, v in block.items()
+                    if isinstance(k, str) and k.strip() and v}
+            if kept:
+                cleaned.setdefault(facet, {})[level] = kept
+    return prune_pins(targets, cleaned)
+
+
+def portfolio_target_pins_get(pid: str) -> dict:
+    """Return the pins map for portfolio ``pid``.
+
+    Coerced against that portfolio's own targets, so a pin left behind by
+    a target the user removed never comes back.
+    """
+    p = find_portfolio(pid)
+    if not p:
+        return {}
+    return _coerce_target_pins(p.get("target_pins"),
+                               _coerce_targets(p.get("targets")))
 
 
 # ---------------------------------------------------------------------------

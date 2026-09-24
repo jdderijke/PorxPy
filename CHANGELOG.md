@@ -3,6 +3,359 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.120.0] - 2026-09-17
+
+### Added - a new portfolio can be cloned from an existing one
+
+**Portfolio → ⚙ Settings → + New** now opens with a **Start from**
+picker listing every existing portfolio. Pick one and the new portfolio
+is a full copy of it: funds and their share counts, cash positions, the
+cash reserve, targets, target pins and optimiser settings. The one thing
+never copied is the name, which is what you are there to type.
+
+Picking a source also fills in the two controls the dialog itself owns —
+base currency and cache configuration — so what is on screen describes
+what will be created rather than the app defaults. Change either one and
+your choice wins over the copy. A hint under the picker names what will
+be carried over, because nothing else on the dialog would tell a clone
+from a blank portfolio before you press Save.
+
+The copy is independent: editing either portfolio afterwards leaves the
+other alone, and the cloned cash positions are minted with fresh ids so
+a trade settling against one cannot reach the other's.
+
+Backend: `POST /api/portfolios` takes an optional `clone_from`
+(portfolio id); the copy itself is `utils.clone_portfolio`. What it
+copies is defined as a DENYLIST — everything except `id`, `name`,
+`created` and `_normalisation` — rather than a list of fields to carry.
+A portfolio dict has grown a new field in most recent releases
+(`cash_reserve`, `targets`, `target_pins`, `optimizer_settings`), and
+with an allowlist each of those would have had to remember to add itself
+or be silently dropped from clones.
+
+This closes the WISHLIST entry deferred at v0.118.0, and goes further
+than the sketch there did: that one proposed copying only the design
+into an empty portfolio, which turns out to be the less useful half — a
+variant you want to compare is a variant of the whole thing, holdings
+included.
+
+### Changed - the optimiser's resulting exposure is a tree
+
+The **resulting exposure** tables under a solver result now show the
+facet tree rather than a flat run of rows: each bucket sits inside the
+bucket that contains it, with a fold arrow, a `· N inside` count when
+folded, and **expand all** / **collapse** buttons per category. It opens
+fully unfolded — unlike the targets editor nothing here is being typed,
+so there is no long list to keep out of the way of, and folding by
+default would hide the finer misses that are the reason to read the
+panel.
+
+Flat, the panel put `technology 30.0% / 28.0%` beside `semiconductors
+10.0% / 12.0%` and left the reader to remember that the second is inside
+the first. That containment is exactly the arithmetic that decides
+whether a residual is worrying or already accounted for.
+
+The tree is drawn by the same builder the targets editor uses. The
+editor's `tgBuildTree` was generalised into `tgBuildTreeFrom(facet,
+perLevel, decorate)`: two panels draw the same topology over the same
+vocabulary — one the design being set, the other the design as achieved
+— so they now share one implementation of the parenting rule instead of
+each carrying a copy that could drift.
+
+Two supporting changes fell out of that. `tgLevelsOf` now falls back to
+the shared `RES_FACET_NODES` vocabulary before treating a facet as flat,
+because the optimiser panel can be drawn before the targets editor has
+ever been opened; and `runOptimizer` fetches the canonical vocabulary
+before rendering, since which bucket contains which is READ from the
+backend and never derived in the browser. If that fetch fails the tree
+degrades to the flat list it used to be rather than losing rows.
+
+No "rest of X" pseudo-rows here, deliberately, unlike the targets
+editor: this panel reports what was asked for and what was achieved, and
+a remainder row would have to invent a target nobody set.
+
+## [0.119.4] - 2026-09-14
+
+### Fixed - a full target set could not be saved at all
+
+Saving a baseline was rejected outright:
+
+    asset_class: equity is targeted at 99.5101%, but its targeted
+    children already commit 199.02% (regular stock 99.5101%,
+    shares and options 99.5101%)
+
+`regular stock` is inside `shares and options`, which is inside `equity`.
+`validate_target_levels` compared each parent against the sum of EVERY
+finer level at once, so a grandchild was counted on top of the child that
+already contained it. Two levels of a chain doubled the figure, three
+tripled it.
+
+Sparse target sets almost never tripped this, because they rarely carry a
+complete chain. A baseline carries one everywhere, so every grandparent
+in every facet failed, and the whole set was unsaveable.
+
+It now rolls up **one level at a time**, finest first, taking each
+bucket's commitment as the LARGER of its own target and what its own
+children commit - the identical rule `committed_pct` has always used for
+the displayed total, which is why that figure was right while the check
+was wrong. Each branch is counted once however many of its levels are
+targeted.
+
+The message improved with the arithmetic: it names only the immediate
+children, because listing every descendant implied they were being added
+together, which is exactly what is no longer done.
+
+Verified: the MSCI World baseline, 51 sector targets over three levels
+plus asset class, country and currency, validates clean; a genuinely
+over-committed set (semiconductors 15% and software 10% inside technology
+20%) is still caught.
+
+### Changed - "reset these" means one thing: back to how it was when the dialog opened
+
+v0.119.3 anchored the reset to "when the editor opened, OR when you last
+applied a baseline". That is two references wearing one label, and which
+one you got depended on what you happened to have done first. The ask was
+simpler than what was built: *all I want is for that part of the tree to
+go back to where it was before I started this session.*
+
+So there is now **one reference**, captured when the dialog opens and
+never moved again while it stays open. Applying a baseline no longer
+re-anchors it. Undo remains the control for stepping back through
+individual actions; reset is for abandoning a branch outright.
+
+It also now restores **membership**, not only values: a bucket you
+removed during the session comes back, and one you added goes away.
+"Back where it was" has to mean the whole branch, or the button only half
+works and the user is left finishing the job by hand.
+
+"That part of the tree" means **this node and everything under it**, so
+the node's own figure is restored too, not only its contents. Its
+siblings give or take the difference under the ordinary drag rule - the
+unclaimed remainder first, then the unpinned siblings proportionally -
+because a reset is a change to this node, and a change to a node is
+always paid for inside its parent.
+
+The single exemption is **pinned buckets**, which keep their value and
+are held out of a reset exactly as they are held out of a drag. The node
+itself is not exempt: pressing reset on a branch is the user's own hand,
+and a pin has never stood in the way of that.
+
+Verified in the browser harness: the node's own value and all its
+contents return to where they started, a removed bucket comes back, an
+added one disappears, a pinned one is untouched, the parent's total is
+conserved by the siblings absorbing the change, and the same control on
+the root row restores a whole category.
+
+## [0.119.3] - 2026-09-14
+
+### Added - "reset these" on every remainder row
+
+v0.119.2 made a drag reversible by recomputing each move from the state
+before the user started on that slider. It works - a sibling driven to
+zero does come back - but only if the slider is returned to its original
+number, and nothing on screen said a reference point existed at all. A
+gesture nobody can discover is not a feature, and it was reported
+straight back as "I can't get a slider to reset to its position".
+
+So the same capability is now a control. The greyed *rest of ...* row
+carries **reset these**, which puts everything inside that bucket back as
+it was when the editor opened, or when a baseline was last applied.
+
+The important part is what it does NOT touch:
+
+* **The bucket's own total does not change.** The children's saved shape
+  is scaled to fit whatever total the bucket has now, so resetting sector
+  detail cannot silently re-weight the whole category. That keeps the one
+  rule the editor is built on - a change inside a bucket never moves the
+  bucket.
+* **Pinned children keep their value.** They are held out of the reset
+  exactly as they are held out of a drag, which is what makes a pin mean
+  one thing everywhere.
+* The root's *unclaimed* row carries the same control for the whole
+  category.
+
+Verified in the browser harness: a child driven to near zero is restored
+exactly, its siblings with it, the parent total is unchanged, nothing
+outside the bucket moves, and a pinned child keeps the value it had.
+
+## [0.119.2] - 2026-09-14
+
+### Fixed - the slider thumb jumped when a sibling was pinned
+
+The range input's `max` was the node's own ceiling, which is
+`parent - sum(sibling floors)`. Pinning a sibling raises that sibling's
+floor, so every OTHER slider's track suddenly got shorter and its thumb
+leapt across it while the number underneath did not move at all.
+
+The track is now the PARENT's value, which only changes when the parent
+itself is dragged. The thumb's position therefore reads as the
+share-of-parent shown beside it, and illegal values remain impossible:
+the setter still clamps, and the thumb now snaps back to whatever was
+actually applied, so hitting a limit reads as a wall rather than as a
+broken control.
+
+### Fixed - siblings squeezed to zero never came back
+
+Dragging a slider up shrank its siblings proportionally; dragging it back
+down returned the room to the unclaimed remainder only, so a sibling that
+had been driven to 0 stayed at 0 and the move could not be undone by
+hand. Worse, proportional redistribution is multiplicative, so nothing
+could ever revive it: zero times anything is zero.
+
+Two changes together:
+
+* **Released room is now spread across the unpinned siblings AND the
+  remainder**, in proportion to what each already holds, rather than all
+  going to the remainder. This overrides the earlier principle of never
+  handing room to a sibling the user did not name - restorability won,
+  and it was the right call.
+* **Each slider now recomputes from the state before the user started on
+  it**, rather than from the result of their previous move. Dragging out
+  and back therefore lands exactly where it began, including siblings
+  that had reached 0. Touching a different control adopts the current
+  state as the new reference, and any structural change - a pin, an add,
+  a removal, undo, a new baseline - discards it, so a stale reference can
+  never resurrect a target that was deleted.
+
+Proven in the browser harness: a sibling driven to 0 by dragging
+technology to its parent's full value returns to its original 20% when
+technology is dragged back. 220 assertions, no failures.
+
+## [0.119.1] - 2026-09-14
+
+### Fixed - a baseline's finer levels looked as though they had not loaded
+
+Reading MSCI World as a baseline writes 51 sector targets across three
+levels - 3 super-sectors, 11 sectors, 37 sub-sectors - and the editor
+showed three rows. Everything was there and correctly nested; it was
+simply folded, and the only thing saying so was a small muted arrow that
+is easy to miss entirely. Reported as "why do they not show up as
+targets", which is exactly what it looked like.
+
+Three changes, all to discoverability rather than to the data:
+
+* A folded row now says what is inside it - `technology - 3 inside` - so
+  a row with hidden depth is legible without hunting for an arrow.
+* The arrow itself is larger, bold and in the accent colour.
+* Each category heading gains **expand all** / **collapse**, and applying
+  a baseline now unfolds the top level automatically, so the structure is
+  visible the moment it lands.
+
+### Fixed - rows jumped around while their own slider was moving
+
+Tree rows were sorted by value, descending. Dragging a slider therefore
+re-ordered the group it was in on release, so the row being edited
+climbed or fell through its own siblings and the control moved out from
+under the pointer. Children are now ordered alphabetically, which is
+stable under every edit. The small cost in scanning is worth it: a
+control that moves while it is being used is the one thing a slider must
+never do.
+
+## [0.119.0] - 2026-09-14
+
+### Added - baseline target sets, and a tree editor for them
+
+Set technology to 30% and nothing else, and the optimiser was only ever
+asked for "technology 30%, not-technology 70%". It holds no opinion at
+all about how that 70% splits, so a portfolio of 30% technology and 70%
+financial services satisfied the request exactly. The sentence a sparse
+target set could not say is **"and the rest at market weight"**, and
+without it the unclaimed remainder is a blank cheque.
+
+A fund's own breakdown is that missing sentence. **Targets -> Start from
+a fund -> Set baseline targets** reads one into every bucket of asset
+class, sector, country and currency, so market weight becomes the
+starting point and a tilt is one slider. It is a preview: nothing is
+written until Save, the same contract the bundle importer keeps.
+
+The metadata facets are deliberately excluded. `market_cap`, `style_box`
+and `focus_theme` are one-hot per fund, so a baseline would write "large
+100%" - a constraint nobody asked for and one that cannot be tilted,
+because there is nothing to tilt it against.
+
+### Changed - the targets editor is a tree of sliders
+
+Targets are still stored as a percentage of the fund side. Nothing about
+what a target MEANS changed, and neither `optimizer.py` nor
+`compute_target_deviations` was touched. What changed is the editing.
+
+The editor opens folded to the coarsest level. Drilling into a bucket
+unfolds what is inside it, every row carries a slider, and beside each
+one are both readings: its share of the portfolio, and its share of the
+bucket that contains it. One rule governs every level:
+
+> A slider redistributes inside its PARENT. Unpinned siblings absorb the
+> change proportionally, each sibling's own children scale with it, and
+> nothing above the node moves.
+
+Three things follow from that single rule rather than being separate
+features. A child can never exceed its parent - the slider's maximum IS
+the parent's value, reached when every sibling is at its floor, so the
+overflow case is unreachable rather than handled. A parent always equals
+the sum of its children, so the save-time parent/child check can no
+longer fail on anything the editor produced; coherence is structural.
+And "% of parent" is a readout derived for display, never stored, so
+there is no migration and no new unit.
+
+A greyed **rest of...** row shows what a bucket does not hand to any
+child - the quantity the optimiser's OTHER bucket stands for, made
+visible. Growing a slider spends that remainder before it shrinks a
+sibling, and shrinking returns to it rather than handing the room to a
+sibling: in both directions, never invent an assertion the user did not
+make. That makes up-then-down not always exactly reversible, which is
+what the new **Undo** is for - proportional sliders are not invertible in
+general, and the alternative rule has the worse flaw that a sibling
+squeezed to zero can never grow back.
+
+**Pins.** Click a row's marker and its number stops moving when a sibling
+or its parent changes, and everything inside it is protected with it.
+A pin does not put the number beyond your own hand: the pinned row's own
+slider still works, so a pin is a protection rather than a mode. Pins
+persist per portfolio as `target_pins`, travel in the target CSV as
+`kind=pin` rows, and ride the portfolio bundle automatically. Neither the
+optimiser nor the deviation report knows they exist, which is the test
+that they sit at the right level: a pin constrains how a design is
+EDITED, not what it asks for.
+
+### Fixed - a deliberate 0% target was being thrown away in three places
+
+`portfolios.json` has always said that a stored zero is a real target -
+"I want exactly 0% energy" - and that only an ABSENT key means
+untargeted. Three writers disagreed with it:
+
+* The editor stored an emptied box as `0`, so clearing a field silently
+  asked for zero exposure instead of removing the target.
+* `targets_to_csv` skipped any target at or below zero on export.
+* `targets_from_csv` discarded them again on import.
+
+Between them, "hold none of this" became "no opinion" on every round
+trip. Clearing a box now removes the target outright and its share
+returns to the unclaimed remainder; a typed `0` is kept and enforced.
+
+### Fixed - a geared fund produced a 206% target
+
+A baseline read from a fund whose asset-allocation card sums to 2.07
+wrote a 206% target. The card is not wrong: a fund that has borrowed
+against its holdings genuinely has gross exposure above its net assets.
+
+It is divided down for one narrow reason - the portfolio side already
+normalises it away. `rollup_portfolio_fundlevel` computes each weight as
+`val / bucket_total` on purpose, so the ACTUAL a target is measured
+against is always a 100% distribution and a 207% target could never be
+met by anything. A target and its actual have to live in the same space.
+The baseline's notes name the gearing rather than calling the card
+broken, and the correction is one-directional: a card summing to LESS
+than 100% is left alone, because that shortfall is real unclaimed room
+and inflating it would dress a half-classified fund as a fully
+classified one.
+
+### Docs
+
+Version stamps across all Markdown files. `FACET_TREE.md` gains a section
+on the tree editor, `OPTIMIZER.md` one on what an unclaimed remainder
+means to the solver, and `CLAUDE.md` the storage shape of `target_pins`
+and the rule that pins stay out of the optimiser.
+
 ## [0.118.1] - 2026-09-14
 
 ### Changed — the pre-loaded fund bundle is a release download, not a repo file

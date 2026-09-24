@@ -1,6 +1,6 @@
 # FACET_TREE.md — the four facet trees
 
-*Current as of v0.118.1. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.120.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Sections 1–5 describe how the facet trees behave **today**, across all
@@ -814,6 +814,78 @@ Items 1–3 are the minimum for a releasable 0.70.0.
   first left nothing installable for the whole release.
 
 ---
+
+## 16b. Editing the tree (v0.119.0)
+
+The Targets editor presents a facet as the tree this document describes,
+rather than as one flat list per level. Buckets nest by containment, and
+a target that has no targeted parent hangs off the root -- which is what
+such a target already meant: a sub-sector target with no sector target
+commits its branch straight against the portfolio.
+
+Targets remain a percentage **of the fund side**. The editor adds a
+second reading beside each one, its share of the bucket that contains it,
+computed as `value / parent.value` for display and never stored.
+
+The parent/child consistency rule is checked by rolling up one level at
+a time, each bucket committing the larger of its own target and what its
+children commit. Summing every finer level at once would count a
+grandchild on top of the child that contains it - which is what made a
+fully populated target set unsaveable until v0.119.4.
+
+One rule governs a drag at every level: it **redistributes inside its
+parent**. Unpinned siblings absorb the change proportionally, each
+sibling's own children scale with it, and nothing above the node moves.
+A child therefore cannot exceed its parent -- the slider's maximum IS the
+parent's value -- and a parent always equals the sum of its children, so
+the parent/child consistency rule in section 16 can no longer be violated
+by anything the editor produces.
+
+The remainder a bucket does not hand to any child is shown as a greyed
+`rest of ...` row. It is derived as `parent - sum(children)` on every
+build rather than carried, so repeated proportional scaling cannot drift
+the invariant. Growing a slider spends that remainder before it shrinks a
+sibling; shrinking returns to it. Both directions follow the same
+principle this codebase applies to unresolved values generally: never
+invent an assertion the user did not make.
+
+A **pin** fixes a bucket against sibling and parent moves, and protects
+everything inside it by consequence -- if a parent's total cannot move,
+neither can its children, which scale with it. A pinned row's own slider
+still works, so a pin is a protection rather than a mode. Pins are stored
+per portfolio as `target_pins`, parallel to the targets rather than
+promoting each target's value to a dict, and they are consumed entirely
+by the editor: neither the optimiser nor the deviation report reads them.
+
+## 16c. Reading the tree back (v0.120.0)
+
+The optimiser's **resulting exposure** panel draws the same tree over
+the same vocabulary, from the same builder: `tgBuildTreeFrom(facet,
+perLevel, decorate)`, of which the editor's `tgBuildTree` is now one
+caller. The two panels ask the tree for the same thing -- which bucket
+contains which -- and differ only in what hangs off each node: a slider
+and a pin in the editor, a target/achieved/deviation triple in the
+optimiser. A second copy of the parenting rule was the alternative, and
+a facet tree that nests one way in the editor and another in the report
+is a defect nothing on screen would announce.
+
+Two asymmetries are deliberate and are marked as such in the code:
+
+- The optimiser panel draws **no `rest of ...` row**. The remainder is a
+  fact about a design being SET -- how much of a bucket is still
+  unclaimed -- and this panel reports a design already solved. A
+  remainder row here would have to invent a target nobody stated.
+- It opens **fully unfolded**, where the editor opens folded to the
+  coarsest level. Nothing here is being typed, so there is no long list
+  to keep out of the reader's way, and folding by default would hide the
+  finer misses that are the reason to open the panel.
+
+The containment itself is still READ, never derived in the browser:
+every canonical entry arrives carrying its `path`, its key at each level
+of the tree, and the panel only looks that up. `runOptimizer` therefore
+fetches the canonical vocabulary before rendering rather than relying on
+the Targets editor having been opened first; if that fetch fails the
+tree degrades to the flat list it replaced rather than losing rows.
 
 ## 17. Known open issues
 

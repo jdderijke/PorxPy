@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.118.1. This is the fullest architecture write-up;
+*Current as of v0.120.0. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -109,6 +109,14 @@ you have already loaded, cannot overdraw your cash, and shows the residual
 error per facet so you can see exactly where the design still misses and
 decide whether to relax a target or go find another fund.
 
+That residual is reported as the **facet tree** (v0.120.0), not a flat
+list: each bucket sits inside the bucket that contains it, with a fold
+arrow per branch and **expand all** / **collapse** per category. It opens
+fully unfolded. Flat, the panel put `technology 30.0% / 28.0%` beside
+`semiconductors 10.0% / 12.0%` and left you to remember that the second
+is inside the first — and that containment is exactly what decides
+whether a residual is worrying or already accounted for.
+
 Any fund can be opted out with the **incl** checkbox in the pre-loaded
 list. A holding you have opted out of is left alone — but its exposure
 still counts toward your targets, so the optimiser designs around it
@@ -128,6 +136,22 @@ prices, and the combined result is recomputed before anything is
 applied.
 
 ### Compare against your own targets
+
+Targets are edited as a tree (v0.119.0): a facet opens folded to its
+coarsest level, a row with finer targets inside it says how many, and
+each row carries a slider plus both readings — its share of the
+portfolio and its share of the bucket that contains it. Moving a slider
+redistributes inside its parent, so a bucket can never outgrow the one
+that holds it and the set stays coherent by construction. A greyed
+*rest of…* row shows what a bucket has not handed to any child.
+
+**Set baseline targets** reads a fund's own breakdown into every bucket.
+It exists because a sparse target set cannot say *and the rest at market
+weight*: target technology at 30% alone and the optimiser is only asked
+for "30% technology, 70% not-technology", which 70% financial services
+satisfies exactly. Starting from a broad fund makes market weight the
+default and a tilt one slider. **Pin** a row to stop it moving when a
+sibling or its parent does.
 
 You set target allocations per facet (e.g. "40% North America, 25%
 Europe, 20% Asia, 15% emerging markets"). PorxPy compares your
@@ -357,6 +381,15 @@ anything about them having changed.
   and holdings from Yahoo Finance.
 - Group funds into one or more portfolios, with shares (or units) held
   per fund, plus cash positions.
+- **Clone a portfolio** when you create one (v0.120.0). The **+ New**
+  dialog's *Start from* picker copies an existing portfolio whole —
+  funds and share counts, cash positions, the cash reserve, targets,
+  target pins and optimiser settings — leaving you only the name to
+  type. Picking a source also fills in the dialog's own base-currency
+  and cache controls, and your change to either still wins. The copy is
+  independent: editing one afterwards leaves the other alone. It is how
+  you try a variant of a design without re-entering it by hand and
+  wondering afterwards which differences were deliberate.
 - See the same company once across every fund that holds it, on
   **Portfolio → Holdings**. The **Funds** column says how many of your
   funds hold each merged position and opens to name them, so a row you
@@ -870,6 +903,6 @@ it does.
 
 ## Version
 
-Current release: **0.118.1** (2026-09-14)
+Current release: **0.120.0** (2026-09-17)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

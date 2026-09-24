@@ -44,6 +44,35 @@ Concretely, before finishing a change, sweep the parallel set it belongs to:
   exists on one facet only, so `sources_for_facet()` decides which cards
   offer it; a card's `available` map is the different question of whether
   this fund has a source it could have.
+- Change **targets** → they are `{facet: {level: {key: percent}}}` and a
+  stored `0` is a REAL target meaning "hold none of this"; only an absent
+  key means untargeted. Every writer must preserve that distinction —
+  the editor, `targets_to_csv`, `targets_from_csv` and the storage
+  coercion each dropped zeros independently before v0.119.0. Pins live
+  beside them in a parallel `target_pins` map of the same shape, are
+  pruned against the targets they hold (`prune_pins`), and are read ONLY
+  by the editor: a pin says how a design may be edited, not what it asks
+  for, so neither `optimizer.py` nor `compute_target_deviations` may grow
+  a dependency on one.
+- Change the shape of a **facet tree on screen** → there is ONE builder,
+  `tgBuildTreeFrom(facet, perLevel, decorate)`, and two callers: the
+  Targets editor (`tgBuildTree`, values are the targets being set) and
+  the optimiser's resulting-exposure panel (`_optExposureTree`, values
+  are the targets achieved). A change to how buckets nest belongs in the
+  builder. The two panels differ deliberately in two ways only, each
+  commented at the site: the optimiser draws no `rest of …` row, and it
+  opens fully unfolded. Containment is READ from each canonical entry's
+  `path`, never derived in the browser, so any new caller must make sure
+  the vocabulary is fetched (`_tgFetchCanonical`) before it renders.
+- Add a field to the **portfolio record** → three things carry it
+  automatically and one may need telling. `clone_portfolio` copies
+  everything except `PORTFOLIO_IDENTITY_FIELDS` (a denylist on purpose,
+  so a new field is cloned unless someone decides otherwise — say why in
+  a comment if it must not be), the portfolio bundle writes
+  `portfolios.json` verbatim, and `delete_portfolio` takes the whole
+  record with it. What does NOT follow automatically is a reader: check
+  whether the portfolio view, the optimiser or the frontend's
+  `portfolios` list needs to know about it.
 - Change a **per-card override** → the two that describe a card travel
   together: `breakdown_source.<facet>` (whose numbers) and
   `breakdown_complete.<facet>` (read them as covering the whole fund).

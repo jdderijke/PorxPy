@@ -161,6 +161,7 @@ from porxpy.utils import (
     normalise_facets,
     normalise_fund_structure,
     now_iso,
+    portfolio_target_pins_get,
     portfolio_targets_get,
     portfolio_targets_put,
     price_in_base,
@@ -917,12 +918,18 @@ def create_app() -> Flask:
 
     @app.route("/api/portfolios", methods=["POST"])
     def api_portfolios_create() -> Response:
-        """Create a new portfolio.
+        """Create a new portfolio, optionally as a clone of an existing one.
 
         Body:
             name (str, required)
             base_currency (str, default "USD")
             cache_config (dict, optional — see normalise_cache_config)
+            clone_from (str, optional) — id of a portfolio to copy. The
+                clone carries everything but the name: funds, cash
+                positions, the cash reserve, targets, target pins and
+                optimiser settings. Base currency and cache config come
+                from the source too unless the body states them, so the
+                dialog's own two controls still win over the copy.
         """
         body = request.get_json(force=True, silent=True) or {}
         name          = (body.get("name") or "").strip()
@@ -931,14 +938,30 @@ def create_app() -> Flask:
         if not name:
             return jsonify({"error": "name is required"}), 400
 
-        portfolio = {
-            "id":            str(uuid.uuid4()),
-            "name":          name,
-            "base_currency": base_currency,
-            "created":       now_iso(),
-            "cache_config":  cache_cfg,
-            "funds":         [],
-        }
+        clone_from = (body.get("clone_from") or "").strip()
+        if clone_from:
+            from porxpy.utils import clone_portfolio
+            src = find_portfolio(clone_from)
+            if not src:
+                return jsonify({"error": f"no portfolio with id "
+                                         f"{clone_from!r} to clone"}), 404
+            # "Absent" and "stated" are different instructions for these
+            # two: a body that names neither is asking for the source's,
+            # which is not the same as asking for the app defaults the
+            # coercions above produced.
+            portfolio = clone_portfolio(
+                src, name,
+                base_currency if "base_currency" in body else "",
+                cache_cfg if "cache_config" in body else None)
+        else:
+            portfolio = {
+                "id":            str(uuid.uuid4()),
+                "name":          name,
+                "base_currency": base_currency,
+                "created":       now_iso(),
+                "cache_config":  cache_cfg,
+                "funds":         [],
+            }
         upsert_portfolio(portfolio)
         return jsonify(portfolio), 201
 
@@ -1806,8 +1829,9 @@ def create_app() -> Flask:
         # The cash reserve travels with the targets: it is set in the same
         # dialog and saved by the same button, and returning it separately
         # would let the screen show a stale one beside fresh targets.
-        from porxpy.utils import cash_reserve_get
+        from porxpy.utils import cash_reserve_get, portfolio_target_pins_get
         return jsonify({"targets":      portfolio_targets_get(pid),
+                        "target_pins":  portfolio_target_pins_get(pid),
                         "cash_reserve": cash_reserve_get(pid)})
 
     @app.route("/api/portfolios/<pid>/targets", methods=["PUT"])
@@ -1841,7 +1865,10 @@ def create_app() -> Flask:
                             "problems": problems}), 409
 
         try:
-            persisted = portfolio_targets_put(pid, raw if isinstance(raw, dict) else {})
+            persisted, pins = portfolio_targets_put(
+                pid, raw if isinstance(raw, dict) else {},
+                body.get("target_pins") if isinstance(
+                    body.get("target_pins"), dict) else {})
             # Saved in the same call as the targets, since the two are
             # edited together and a partial save would leave the screen
             # describing a portfolio that does not exist. Absent from the
@@ -1854,7 +1881,8 @@ def create_app() -> Flask:
                 reserve = cash_reserve_get(pid)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 404
-        return jsonify({"targets": persisted, "cash_reserve": reserve})
+        return jsonify({"targets": persisted, "target_pins": pins,
+                        "cash_reserve": reserve})
 
     @app.route("/api/portfolios/<pid>/targets/csv", methods=["GET"])
     def api_portfolio_targets_csv_get(pid: str) -> Response:
@@ -1870,7 +1898,8 @@ def create_app() -> Flask:
             another in the browser's download folder.
         """
         from porxpy.targets import targets_to_csv
-        from porxpy.utils import optimizer_settings_get
+        from porxpy.utils import (optimizer_settings_get,
+                                  portfolio_target_pins_get)
 
         p = find_portfolio(pid)
         if not p:
@@ -1879,7 +1908,8 @@ def create_app() -> Flask:
         opt = optimizer_settings_get(pid) or {}
         text = targets_to_csv(portfolio_targets_get(pid) or {},
                               opt.get("max_error_rel") or {},
-                              opt)
+                              opt,
+                              portfolio_target_pins_get(pid) or {})
 
         safe = "".join(c if c.isalnum() or c in "._- " else "_"
                        for c in (p.get("name") or "portfolio")).strip() or "portfolio"
@@ -1933,7 +1963,7 @@ def create_app() -> Flask:
         except UnicodeDecodeError:
             text = raw.decode("latin-1", errors="replace")
 
-        targets, tolerances, settings, problems = targets_from_csv(text)
+        targets, pins, tolerances, settings, problems = targets_from_csv(text)
 
         # The same whole-set coherence check the manual save runs, so a
         # file cannot install a set the editor would have refused.
@@ -1951,7 +1981,7 @@ def create_app() -> Flask:
         dry = (request.args.get("dry_run") or "").lower() in ("1", "true", "yes")
         applied = False
         if not problems and not dry:
-            portfolio_targets_put(pid, coerced)
+            portfolio_targets_put(pid, coerced, pins)
             # One write for both halves of the Optimizer panel. Merge
             # semantics throughout: a file naming no tolerances and no
             # scalars changes neither, which is what lets a
@@ -1972,7 +2002,85 @@ def create_app() -> Flask:
             "settings":   settings,
             "problems":   problems,
             "summary":    summary,
+            "pins":       pins,
         }), (200 if not problems else 409)
+
+    @app.route("/api/portfolios/<pid>/targets/baseline", methods=["POST"])
+    def api_portfolio_targets_baseline(pid: str) -> Response:
+        """Build a target set from one fund's breakdown. Writes NOTHING.
+
+        The answer to "set technology to 30% and the optimiser hands me
+        70% financial services". A sparse target set cannot say *and the
+        rest at market weight*, because the optimiser's OTHER bucket has
+        no opinion about how the untargeted remainder splits. A fund's own
+        breakdown is exactly that missing sentence, so this reads one and
+        hands it back as a complete target set to tilt from.
+
+        Deliberately a preview, not a write. The set lands in the editor
+        for the user to look at and Save — the same "nothing has been
+        written yet" contract the bundle-import dialog keeps, and the
+        reason this endpoint needs no undo of its own.
+
+        No network: the fund's cards are rebuilt from its cache entry the
+        way every other breakdown route does it, so a baseline is instant
+        and cannot fail because Yahoo is slow.
+
+        Body (JSON):
+            ``{"ticker": "IWDA.AS"}`` — the fund to read. ``min_pct``
+            optionally overrides
+            :data:`~porxpy.config.BASELINE_MIN_TARGET_PCT`.
+
+        Returns:
+            ``{ticker, isin, name, targets, notes}`` — ``targets`` in the
+            stored shape, ``notes`` naming every facet that yielded
+            nothing and why, because a silently missing facet is
+            indistinguishable from one the user chose not to target.
+        """
+        from porxpy.config import BASELINE_MIN_TARGET_PCT
+        from porxpy.targets import build_baseline_targets
+
+        if not find_portfolio(pid):
+            return jsonify({"error": f"no portfolio with id {pid!r}"}), 404
+
+        body   = request.get_json(force=True, silent=True) or {}
+        ticker = (body.get("ticker") or "").strip()
+        if not ticker:
+            return jsonify({"error": "ticker is required"}), 400
+
+        isin = listing_identity_lookup_isin(ticker)
+        if not isin:
+            return jsonify({"error": f"no identity recorded for {ticker!r}; "
+                                     "open the fund once first"}), 404
+
+        try:
+            min_pct = float(body.get("min_pct", BASELINE_MIN_TARGET_PCT))
+        except (TypeError, ValueError):
+            min_pct = BASELINE_MIN_TARGET_PCT
+
+        rows      = holdings_get(isin)[0].get("rows") or []
+        sect_blob = cache_read(isin, "sectors")
+        fund_breakdowns = build_fund_breakdowns(
+            rollup_holdings(rows) if rows else {},
+            (sect_blob.get("sectors") or {}).get("value") or [],
+            (sect_blob.get("asset_allocation") or {}).get("value") or [],
+            _bd_sources(isin), uploaded_breakdowns_get(isin),
+            _bd_presence(isin, rows),
+            _bd_completed(isin))
+
+        targets, notes = build_baseline_targets(fund_breakdowns,
+                                                min_pct=min_pct)
+        if not targets:
+            notes.insert(0, "This fund has no breakdown data at all yet — "
+                            "nothing could be read from it.")
+
+        prof = (cache_read(isin, "profile").get("profile") or {}).get("value") or {}
+        return jsonify({
+            "ticker":  ticker,
+            "isin":    isin,
+            "name":    prof.get("longName") or prof.get("shortName") or ticker,
+            "targets": targets,
+            "notes":   notes,
+        })
 
     @app.route("/api/targets/meta/<facet>", methods=["GET"])
     def api_targets_meta(facet: str) -> Response:
@@ -2630,6 +2738,11 @@ def create_app() -> Flask:
             # ``targets`` is the editable {facet: {key: percent}} dict.
             "targets":               targets,
             "target_deviations":     target_deviations,
+            # Which of those targets are pinned. Travels with the view so
+            # the editor opens holding the same pins the last save stored
+            # — a pin read one request later would let the editor's first
+            # drag redistribute a bucket the user had nailed down.
+            "target_pins":           portfolio_target_pins_get(pid),
         })
 
     @app.route("/api/unmatched_facets")

@@ -1,6 +1,6 @@
 # The PorxPy Optimizer — how it works
 
-*Applies to `porxpy/optimizer.py` as of v0.118.1. The full audit — every
+*Applies to `porxpy/optimizer.py` as of v0.120.0. The full audit — every
 claim in the document re-checked against the module — was done at
 v0.91.0; since then the v0.96.0 peer-scoring change was folded into §7b
 and §13's one remaining open issue was re-confirmed by reading
@@ -644,6 +644,13 @@ target.
   tolerance. `met` is `ratio <= 1`, not `max_dev <= tolerance`: allowances
   differ per bucket now, so the biggest miss and the worst miss are no
   longer the same row. `relative` echoes the setting the run used.
+  Since v0.120.0 the browser renders these three as the **facet tree**
+  rather than a flat run of rows — each bucket inside the bucket that
+  contains it, foldable, open by default — using the same tree builder
+  the Targets editor uses. Nothing in the payload changed: the
+  containment comes from each bucket's `path` in the canonical
+  vocabulary, which the frontend reads and never derives. See
+  FACET_TREE.md §16c.
 - **`target_met`** — every facet's worst bucket within its own allowance.
 - **`reason`** — when a target is missed, which BUCKET, by how much, and
   against what allowance, plus whether more funds would help or the
@@ -794,13 +801,49 @@ trap is narrower but the rule is unchanged.
 
 ---
 
+## 12b. An unclaimed remainder is a blank cheque (v0.119.0)
+
+`_add_target_rows` gives each `(facet, level)` group a synthetic `OTHER`
+bucket whose target is `max(0, 1 - sum(targets))` and whose exposure per
+candidate is "everything not in a targeted bucket". That is the correct
+model of a sparse target set, and it has a consequence worth stating
+plainly: **the solver has no opinion whatsoever about how that remainder
+splits.**
+
+Target technology at 30% and nothing else, and the request reads
+"technology 30%, not-technology 70%". A portfolio of 30% technology and
+70% financial services satisfies it exactly, and the optimiser is right
+to return it.
+
+The fix is not in this module. A target set that gives every bucket a
+number leaves `OTHER` at roughly zero, and the remainder stops being
+free. That is what **Set baseline targets** produces -- a fund's own
+breakdown read into every bucket -- after which a tilt is a slider and
+the untilted buckets hold market weight rather than whatever the solver
+reaches first.
+
+Two consequences for anyone reading solver output:
+
+* `target_committed_pct` per facet is the direct measure of how much of
+  that facet is actually constrained. The editor shows `100 - committed`
+  as unclaimed, and it is the number that predicts this surprise.
+* A fully populated tree adds rows but not conflicts. When the tree is
+  coherent -- and the editor now makes it coherent by construction -- the
+  coarser levels are satisfied the moment the finer ones are, so extra
+  levels are redundant constraints rather than competing ones. What they
+  do cost is solver rows, which is why the baseline import stops at
+  `BASELINE_MIN_TARGET_PCT`: below `TOL_FLOOR` a target cannot be missed,
+  so those rows constrain nothing and are not worth their cost.
+
 ## 13. Known open issues
 
 Defects specific to the optimiser, as opposed to the deliberate
 boundaries in §12. Each is something that should be fixed rather than
 something someone chose.
 
-One remains, re-confirmed at v0.115.0: `_add_target_rows` still computes
+One remains, re-confirmed at v0.120.0 (`porxpy/optimizer.py:380`, still
+`norm = fw / np.sqrt(len(keys) + 1)` inside the per-block loop):
+`_add_target_rows` still computes
 its `norm = facet_weight / sqrt(len(keys) + 1)` inside a body called once
 per `(facet, level)` block, so the full facet weight is applied to every
 level of a facet that is targeted at more than one. The v0.115.0 move to

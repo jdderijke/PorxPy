@@ -39,7 +39,8 @@ Design summary (per the design discussion captured in
 from __future__ import annotations
 
 from porxpy.breakdowns import facet_items
-from porxpy.config import FACET_LEVELS, TARGET_FACETS
+from porxpy.config import (BASELINE_MIN_TARGET_PCT, BREAKDOWN_FACETS,
+                           FACET_LEVELS, TARGET_FACETS)
 
 
 def _to_fraction(pct: float) -> float:
@@ -311,30 +312,266 @@ def validate_target_levels(targets: dict) -> list[str]:
         if len(levels) < 2 or not isinstance(per_level, dict):
             continue
 
-        # Finest first, so every level below a given one is a potential
-        # child level.
-        for depth, parent_level in enumerate(levels):
-            parent_targets = per_level.get(parent_level) or {}
-            if not parent_targets:
-                continue
-            for parent_key, parent_pct in parent_targets.items():
-                committed = 0.0
-                contributors: list[str] = []
-                for child_level in levels[:depth]:
-                    for child_key, child_pct in (per_level.get(child_level)
-                                                 or {}).items():
-                        if _key_at_level(facet, child_key,
-                                         parent_level) == parent_key:
-                            committed += float(child_pct)
-                            contributors.append(f"{child_key} {child_pct:g}%")
-                if contributors and committed > float(parent_pct) + 1e-9:
+        # Rolled up ONE LEVEL AT A TIME, finest first, exactly as
+        # committed_pct does it — and for the same reason.
+        #
+        # This used to compare a parent against the sum of every finer
+        # level at once, which counts a grandchild on top of the child
+        # that already contains it. Sparse target sets almost never
+        # tripped it; a set covering every level trips it everywhere, and
+        # v0.119.0's baseline import produces exactly such a set. It
+        # reported asset-class equity at 99.5% as over-committed by its
+        # "children" regular stock 99.5% AND shares and options 99.5%,
+        # when the first of those is inside the second.
+        #
+        # A bucket's effective commitment is the LARGER of its own target
+        # and what its own children commit, so each branch counts once
+        # however many levels of it are targeted.
+        carried: dict[str, float] = {}
+        for level in levels:
+            here: dict[str, float] = {}
+            here_from: dict[str, list[str]] = {}
+            for child_key, val in carried.items():
+                parent = _key_at_level(facet, child_key, level) or child_key
+                here[parent] = here.get(parent, 0.0) + val
+                here_from.setdefault(parent, []).append(
+                    f"{child_key} {val:g}%")
+            for key, pct in (per_level.get(level) or {}).items():
+                try:
+                    own = float(pct or 0.0)
+                except (TypeError, ValueError):
+                    own = 0.0
+                child_sum = here.get(key, 0.0)
+                if child_sum > own + 1e-9:
+                    # Named with the IMMEDIATE children only. Listing every
+                    # descendant made the message unreadable and implied
+                    # they were all being added together, which is the very
+                    # arithmetic this check no longer does.
                     problems.append(
-                        f"{facet}: {parent_key} is targeted at "
-                        f"{float(parent_pct):g}%, but its targeted children "
-                        f"already commit {committed:g}% "
-                        f"({', '.join(sorted(contributors))}). A parent "
-                        f"cannot be smaller than the sum of its children.")
+                        f"{facet}: {key} is targeted at {own:g}%, but the "
+                        f"buckets inside it already commit "
+                        f"{child_sum:g}% ({', '.join(sorted(here_from.get(key, [])))}). "
+                        f"A parent cannot be smaller than what it contains.")
+                here[key] = max(child_sum, own)
+            carried = here
+
     return problems
+
+
+# ---------------------------------------------------------------------------
+# Baseline target sets (v0.119.0)
+# ---------------------------------------------------------------------------
+
+# Buckets that exist in a breakdown but can never carry a target.
+#
+# `unknown` is a closable data gap and `n/a` says the question does not
+# apply — the distinction this codebase keeps everywhere. A target on
+# either is unsatisfiable by construction, so a baseline drops them
+# rather than writing one and letting the optimiser fail it for ever.
+UNTARGETABLE_BUCKETS: frozenset[str] = frozenset({"unknown", "n/a"})
+
+
+def build_baseline_targets(fund_breakdowns: dict, *,
+                          min_pct: float = BASELINE_MIN_TARGET_PCT,
+                          facets: tuple[str, ...] = BREAKDOWN_FACETS
+                          ) -> tuple[dict, list[str]]:
+    """Turn one fund's breakdown cards into a whole target set.
+
+    Why this exists
+    ---------------
+    A sparse target set cannot say "and the rest at market weight". Set
+    technology to 30% and nothing else, and the optimiser is asked for
+    "technology 30%, not-technology 70%" — it holds no opinion at all
+    about how that 70% splits, so 30% technology and 70% financial
+    services satisfies it exactly. That missing sentence is the problem,
+    and the only way to say it is to give every bucket a number.
+
+    A fund already IS such a set of numbers. Reading a broad index fund's
+    breakdown into the targets makes market weight the starting point,
+    after which a tilt is one slider: raise technology and the others
+    give ground proportionally, instead of the remainder being a blank
+    cheque.
+
+    What it deliberately does not do
+    --------------------------------
+    * **The metadata facets are excluded.** ``market_cap``, ``style_box``
+      and ``focus_theme`` are one-hot per fund, so a baseline would write
+      "large 100%" — a constraint nobody asked for, and one that cannot
+      be tilted because there is nothing to tilt it against. They stay
+      hand-set. Stated here because it is exactly the kind of asymmetry
+      that otherwise reads as a facet somebody forgot.
+    * **``unknown`` and ``n/a`` are dropped, not renormalised away.**
+      Dropping leaves the facet committing less than 100%, and that
+      unclaimed slice is precisely what the optimiser's OTHER bucket is
+      free to fill. Renormalising would dress a half-classified fund up
+      as a fully classified one.
+    * **Buckets under ``min_pct`` are dropped.** See
+      :data:`~porxpy.config.BASELINE_MIN_TARGET_PCT`.
+    * **A geared fund is expressed as shares of its gross exposure.** A
+      fund that has borrowed against its holdings reports more than 100%
+      of its net assets, which is a fact about the fund and not a broken
+      card. It is divided down here only because
+      :func:`porxpy.breakdowns.rollup_portfolio_fundlevel` already
+      normalises every card to a 100% distribution, so a target above
+      100% could never be met by any portfolio. The note names the
+      gearing so the number is not silently lost.
+
+    Dropping a child never breaks the tree. A parent keeps its own
+    figure, so whatever its children no longer account for simply stays
+    inside the parent as unclaimed room — the same reading
+    :func:`validate_target_levels` already gives a parent whose targeted
+    children sum to less than it does.
+
+    Args:
+        fund_breakdowns: The fund's resolved breakdown cards, i.e.
+            ``load_fund_data(...)["fund_breakdowns"]`` — the output of
+            :func:`porxpy.breakdowns.build_fund_breakdowns`. Read through
+            :func:`porxpy.breakdowns.facet_items` at every level the
+            facet has, so each card's own configured source is honoured
+            and the numbers are the ones that fund's X-ray shows.
+        min_pct: Smallest bucket to write, in percent.
+        facets: Which facets to read. Defaults to the four distribution
+            facets; the argument exists so a caller can narrow the set,
+            not so a metadata facet can be smuggled into it.
+
+    Returns:
+        ``(targets, notes)`` — targets in the stored shape
+        ``{facet: {level: {key: percent}}}``, and human-readable notes
+        naming what was skipped and why. The notes are why this returns
+        a pair: a fund with no currency breakdown has to SAY so, because
+        a silently absent facet looks identical to one the user chose not
+        to target.
+    """
+    out: dict[str, dict[str, dict[str, float]]] = {}
+    notes: list[str] = []
+
+    for facet in facets:
+        block = (fund_breakdowns or {}).get(facet) or {}
+        per_level: dict[str, dict[str, float]] = {}
+        tiny = 0
+        rescaled: list[str] = []
+        geared: dict[str, float] = {}
+        for level in (FACET_LEVELS.get(facet) or (facet,)):
+            items = [it for it in facet_items(block, level)
+                     if isinstance(it, dict)]
+
+            # A level summing past 1 is GEARING, not a broken card. A fund
+            # that has borrowed against its holdings genuinely has gross
+            # exposure above its net assets, and the 2.07 that found this
+            # is a real fund in this cache rather than a unit bug. The
+            # number is data and must never be read as an error.
+            #
+            # It is still divided out HERE, for one narrow reason: the
+            # portfolio side has already normalised it away.
+            # rollup_portfolio_fundlevel computes each item's weight as
+            # `val / bucket_total` on purpose — "the card should still
+            # read as a 100% distribution" — so the ACTUAL that a target
+            # is measured against is always a 100% distribution. A 207%
+            # target could therefore never be met by anything, and the
+            # optimiser would spend every run failing it. A target and its
+            # actual have to live in the same space, and this is what puts
+            # them there. The note says so in the fund's own terms, naming
+            # the gearing, rather than calling the card wrong.
+            #
+            # One-directional, and the two directions are different
+            # phenomena rather than mirror images. A level summing to LESS
+            # than 1 is the ordinary case — `unknown` was dropped and the
+            # shortfall is real unclaimed room — so scaling it up would
+            # dress a half-classified fund as a fully classified one.
+            #
+            # Threshold at 1% over rather than at any overshoot: a card
+            # summing to 1.003 is rounding, the inflation it causes is
+            # under the optimiser's own tolerance floor, and saying
+            # "geared" about a fund that is not would be worse than the
+            # 0.3pp it corrected.
+            total = 0.0
+            for it in items:
+                try:
+                    total += float(it.get("weight") or 0.0)
+                except (TypeError, ValueError):
+                    pass
+            scale = (1.0 / total) if total > 1.01 else 1.0
+            if scale != 1.0:
+                rescaled.append(level)
+                geared[level] = total
+
+            lvl: dict[str, float] = {}
+            for it in items:
+                key = (it.get("key") or "").strip()
+                if not key or key in UNTARGETABLE_BUCKETS:
+                    continue
+                try:
+                    pct = float(it.get("weight") or 0.0) * scale * 100.0
+                except (TypeError, ValueError):
+                    continue
+                if pct <= 0:
+                    continue
+                if pct < min_pct:
+                    tiny += 1
+                    continue
+                # 4dp: the editor stores what the user drags to, and a
+                # baseline arriving at full float precision shows as
+                # 14.000000000000002 the first time anything sums it.
+                lvl[key] = round(pct, 4)
+            if lvl:
+                per_level[level] = lvl
+        if rescaled:
+            gross = ", ".join(f"{lv} {geared[lv] * 100:.0f}%" for lv in rescaled)
+            notes.append(
+                f"{facet}: this fund's exposure adds up to more than its net "
+                f"assets ({gross}) — it is geared. Targets here are written "
+                f"as shares of that exposure, because the portfolio X-ray "
+                f"normalises every fund's card to 100% too, so a target "
+                f"above 100% could never be met.")
+        if per_level:
+            out[facet] = per_level
+            if tiny:
+                notes.append(
+                    f"{facet}: {tiny} bucket{'' if tiny == 1 else 's'} under "
+                    f"{min_pct:g}% left untargeted — below that the "
+                    f"optimiser's own tolerance already covers them.")
+        else:
+            notes.append(
+                f"{facet}: this fund has no usable breakdown, so the facet "
+                f"was left unset rather than targeted at zero.")
+
+    return out, notes
+
+
+def prune_pins(targets: dict, pins: dict) -> dict:
+    """Drop pins that no longer name a target.
+
+    A pin is a constraint ON a target — "this number does not move when a
+    sibling does". Once the target is gone the pin has nothing to hold,
+    and a stored pin with no target would silently re-pin a bucket the
+    user added back later, which reads as the editor refusing to move a
+    slider for no visible reason.
+
+    Pure function, called from the storage coercion and from the CSV
+    reader, so both writers agree without either knowing about the other.
+
+    Args:
+        targets: ``{facet: {level: {key: percent}}}``.
+        pins: ``{facet: {level: {key: True}}}``, possibly stale.
+
+    Returns:
+        A new pins dict holding only pins whose target exists. Empty
+        levels and facets are dropped, so an all-stale map comes back as
+        ``{}`` rather than a shell of empty dicts.
+    """
+    out: dict[str, dict[str, dict[str, bool]]] = {}
+    for facet, per_level in (pins or {}).items():
+        if not isinstance(per_level, dict):
+            continue
+        t_facet = (targets or {}).get(facet) or {}
+        for level, block in per_level.items():
+            if not isinstance(block, dict):
+                continue
+            t_level = t_facet.get(level) or {}
+            kept = {k: True for k in block if block[k] and k in t_level}
+            if kept:
+                out.setdefault(facet, {})[level] = kept
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -419,11 +656,17 @@ def _pretty_key(key: str) -> str:
 
 
 def targets_to_csv(targets: dict, tolerances: dict | None = None,
-                   settings: dict | None = None) -> str:
+                   settings: dict | None = None,
+                   pins: dict | None = None) -> str:
     """Render a target set, its tolerances and the Optimizer scalars.
 
     Args:
         targets: ``{facet: {level: {key: percent}}}`` as stored.
+        pins: ``{facet: {level: {key: True}}}`` — which targets are
+            pinned. Written as ``kind=pin`` rows with a value of 1.
+            Pins travel with the targets for the same reason tolerances
+            do: a pin is a statement about a specific target, so a file
+            carrying one without the other would describe half a design.
         tolerances: ``{facet: fraction}`` — the optimiser's per-facet
             relative tolerance. Written as a PERCENT, matching what the
             Optimizer panel shows, so the file and the screen agree.
@@ -460,10 +703,31 @@ def targets_to_csv(targets: dict, tolerances: dict | None = None,
                     pct = float(block[key])
                 except (TypeError, ValueError):
                     continue
-                if pct <= 0:
-                    continue      # sparse: an absent target is not a zero one
+                # A stored 0 IS a target — "hold none of this" — and the
+                # optimiser enforces it to within TOL_FLOOR. Only the
+                # ABSENCE of a key means untargeted. This used to drop
+                # zeros, which silently turned "none of this" into "no
+                # opinion" on every export/import round trip (v0.119.0).
+                if pct < 0:
+                    continue
                 w.writerow(["target", facet, level, key,
                             _pretty_key(key), f"{pct:g}"])
+
+    # Pins after all the targets, so a hand-edited file reads as "here is
+    # the design, and here is what I have nailed down in it".
+    for facet in sorted(pins or {}):
+        per_level = (pins or {}).get(facet) or {}
+        if not isinstance(per_level, dict):
+            continue
+        order = list(FACET_LEVELS.get(facet) or (facet,))
+        for level in sorted(per_level,
+                            key=lambda l: (order.index(l) if l in order
+                                           else 99, l)):
+            block = per_level.get(level) or {}
+            for key in sorted(block):
+                if not block[key]:
+                    continue
+                w.writerow(["pin", facet, level, key, _pretty_key(key), "1"])
 
     for facet in sorted(tolerances or {}):
         try:
@@ -489,7 +753,10 @@ def targets_to_csv(targets: dict, tolerances: dict | None = None,
         w.writerow(["setting", "", "", name, _pretty_key(name), f"{v:g}"])
 
     c = TARGETS_CSV_COMMENT
-    buf.write(f"{c} value: target    = % of the fund side\n")
+    buf.write(f"{c} value: target    = % of the fund side (0 = hold none;\n")
+    buf.write(f"{c}                    no row at all = no target)\n")
+    buf.write(f"{c}        pin       = 1 (this target does not move when a\n")
+    buf.write(f"{c}                    sibling or its parent is changed)\n")
     buf.write(f"{c}        tolerance = % of each target\n")
     buf.write(f"{c}        setting   = max_funds a count, min_weight a %,\n")
     buf.write(f"{c}                    min_trade an amount in base currency\n")
@@ -497,7 +764,7 @@ def targets_to_csv(targets: dict, tolerances: dict | None = None,
     return buf.getvalue()
 
 
-def targets_from_csv(text: str) -> tuple[dict, dict, dict, list[str]]:
+def targets_from_csv(text: str) -> tuple[dict, dict, dict, dict, list[str]]:
     """Parse CSV text back into targets, tolerances and Optimizer scalars.
 
     Every problem is collected rather than raised, so the caller can
@@ -510,7 +777,7 @@ def targets_from_csv(text: str) -> tuple[dict, dict, dict, list[str]]:
         text: The file's contents.
 
     Returns:
-        ``(targets, tolerances, settings, problems)`` — targets as
+        ``(targets, pins, tolerances, settings, problems)`` — targets as
         ``{facet: {level: {key: percent}}}``, tolerances as
         ``{facet: fraction}``, settings as ``{name: number}`` in the
         units the optimiser stores (``min_weight`` back to a fraction),
@@ -525,13 +792,16 @@ def targets_from_csv(text: str) -> tuple[dict, dict, dict, list[str]]:
     targets: dict[str, dict[str, dict[str, float]]] = {}
     tolerances: dict[str, float] = {}
     settings: dict[str, float] = {}
+    pins: dict[str, dict[str, dict[str, bool]]] = {}
     problems: list[str] = []
-    seen: set[tuple[str, str, str]] = set()
+    # Keyed by KIND as well, so a bucket may carry both a target row
+    # and a pin row without the second reading as a duplicate.
+    seen: set[tuple[str, str, str, str]] = set()
 
     lines = [ln for ln in (text or "").splitlines()
              if ln.strip() and not ln.lstrip().startswith(TARGETS_CSV_COMMENT)]
     if not lines:
-        return {}, {}, {}, ["the file has no rows"]
+        return {}, {}, {}, {}, ["the file has no rows"]
 
     reader = csv.DictReader(io.StringIO("\n".join(lines)))
     # `value_pct` is accepted as an alias for `value`: files exported by
@@ -545,7 +815,7 @@ def targets_from_csv(text: str) -> tuple[dict, dict, dict, list[str]]:
     if not value_col:
         missing.append("value")
     if missing:
-        return {}, {}, {}, [
+        return {}, {}, {}, {}, [
             f"missing column(s): {', '.join(missing)}. Expected a header row "
             f"of: {', '.join(TARGETS_CSV_FIELDS)}"]
 
@@ -556,10 +826,10 @@ def targets_from_csv(text: str) -> tuple[dict, dict, dict, list[str]]:
         key   = (row.get("key")   or "").strip()
         rawv  = (row.get(value_col) or "").strip()
 
-        if kind not in ("target", "tolerance", "setting"):
+        if kind not in ("target", "pin", "tolerance", "setting"):
             shown = kind or "(blank)"
-            problems.append(f"row {n}: kind must be 'target', 'tolerance' or "
-                            f"'setting', not {shown}")
+            problems.append(f"row {n}: kind must be 'target', 'pin', "
+                            f"'tolerance' or 'setting', not {shown}")
             continue
         # A setting is not per facet, so it is checked against its own
         # vocabulary and skips the facet gate entirely.
@@ -603,7 +873,8 @@ def targets_from_csv(text: str) -> tuple[dict, dict, dict, list[str]]:
             tolerances[facet] = val / 100.0
             continue
 
-        # kind == "target"
+        # kind == "target" or "pin". Both name one bucket, so they share
+        # every check about whether that bucket can exist at all.
         levels = FACET_LEVELS.get(facet) or (facet,)
         if not level:
             # A flat facet's only level is its own name, so an omitted
@@ -628,12 +899,28 @@ def targets_from_csv(text: str) -> tuple[dict, dict, dict, list[str]]:
             problems.append(
                 f"row {n}: {key!r} cannot carry a target on {facet}")
             continue
-        if (facet, level, key) in seen:
+        if (kind, facet, level, key) in seen:
             problems.append(
-                f"row {n}: duplicate target for {facet}/{level}/{key}")
+                f"row {n}: duplicate {kind} for {facet}/{level}/{key}")
             continue
-        seen.add((facet, level, key))
-        if val > 0:
-            targets.setdefault(facet, {}).setdefault(level, {})[key] = val
+        seen.add((kind, facet, level, key))
 
-    return targets, tolerances, settings, problems
+        if kind == "pin":
+            # Any truthy value pins. 0 is accepted and means "not pinned",
+            # so a spreadsheet user can toggle a column rather than delete
+            # rows — and an unpinned row saying so is more legible in a
+            # diff than a row that vanished.
+            if val:
+                pins.setdefault(facet, {}).setdefault(level, {})[key] = True
+            continue
+
+        # A 0 here is a real target meaning "hold none of this", so it is
+        # written through. Only an absent ROW means untargeted. This used
+        # to be `if val > 0`, which discarded every deliberate zero on
+        # import (v0.119.0).
+        targets.setdefault(facet, {}).setdefault(level, {})[key] = val
+
+    # A pin naming a bucket with no target row holds nothing. Dropped
+    # rather than reported: a hand-edited file that deletes a target and
+    # forgets its pin obviously means to drop both.
+    return targets, prune_pins(targets, pins), tolerances, settings, problems

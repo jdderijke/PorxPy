@@ -909,7 +909,8 @@
   .tge-section{margin-bottom:1.1rem;padding-bottom:.6rem;
     border-bottom:1px dashed var(--border);}
   .tge-section:last-child{border-bottom:0;}
-  .tge-head{display:flex;align-items:baseline;justify-content:space-between;
+  .tge-head .sum{margin-left:auto;}
+  .tge-head{display:flex;align-items:baseline;gap:.15rem;
     margin-bottom:.45rem;}
   .tge-head .lbl{font-family:var(--mono);font-size:.74rem;color:var(--text);
     font-weight:600;letter-spacing:.04em;text-transform:uppercase;}
@@ -926,6 +927,88 @@
   .tge-row .rm:hover{color:var(--red);}
   .tge-pct-suffix{position:absolute;right:30px;line-height:1.6;color:var(--muted);
     font-family:var(--mono);font-size:.7rem;pointer-events:none;}
+  /* Tree rows (v0.119.0). One grid shared by target rows and the greyed
+     "rest of X" row, so a remainder lines up with the buckets it is the
+     remainder OF — two grids drifted apart by a pixel read as a bug. */
+  .tge-trow,.tge-rest{display:grid;
+    grid-template-columns:16px 1fr 110px 62px 118px 22px 20px;
+    gap:.35rem;align-items:center;margin-bottom:.18rem;
+    padding-left:calc(var(--d,0) * 13px);}
+  .tge-rest{grid-template-columns:16px 1fr 110px 62px 118px;}
+  .tge-rest .lbl{display:flex;align-items:center;gap:.4rem;overflow:visible;}
+  .tge-rest .rtxt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    min-width:0;}
+  .tge-rest .rst{background:transparent;border:1px solid var(--border2);
+    border-radius:4px;color:var(--muted);cursor:pointer;
+    font-family:var(--mono);font-size:.55rem;padding:0 4px;
+    white-space:nowrap;font-style:normal;flex:0 0 auto;}
+  .tge-rest .rst:hover{color:var(--text);border-color:var(--accent);}
+  .tge-trow .lbl,.tge-rest .lbl{font-family:var(--mono);font-size:.71rem;
+    color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .tge-trow.pinned .lbl{color:var(--accent);}
+  .tge-rest{opacity:.62;}
+  .tge-rest .lbl{font-style:italic;color:var(--muted);}
+  .tge-rest .val{grid-column:4;font-family:var(--mono);font-size:.7rem;
+    color:var(--muted);text-align:right;}
+  .tge-trow input[type=range]{width:100%;accent-color:var(--accent);
+    height:14px;cursor:pointer;}
+  .tge-trow input[type=range]:disabled{cursor:default;opacity:.45;}
+  .tge-trow input[type=number]{font-family:var(--mono);font-size:.71rem;
+    padding:.2rem .3rem;background:var(--surface2);color:var(--text);
+    border:1px solid var(--border);border-radius:4px;text-align:right;width:100%;}
+  .tge-trow .ofp,.tge-rest .ofp{font-family:var(--mono);font-size:.62rem;
+    color:var(--muted);overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap;}
+  .tge-trow .tw,.tge-rest .tw{background:transparent;border:0;
+    color:var(--accent);cursor:pointer;font-size:1rem;line-height:1;
+    padding:0;text-align:left;font-weight:700;}
+  .tge-trow .tw:hover{color:var(--text);}
+  .tge-trow .inside{font-family:var(--mono);font-size:.58rem;
+    color:var(--muted);opacity:.85;}
+  /* Shared by BOTH facet-tree panels: the targets editor's sections and
+     the optimiser's resulting-exposure tables. One class, so the two
+     controls that do the identical job cannot end up looking different
+     from each other. */
+  .tge-xall{background:transparent;border:1px solid var(--border2);
+    border-radius:4px;color:var(--muted);cursor:pointer;
+    font-family:var(--mono);font-size:.58rem;padding:1px 5px;
+    margin-left:.4rem;}
+  .tge-xall:hover{color:var(--text);border-color:var(--accent);}
+  /* Resulting-exposure tree (v0.120.0). The rows stay a <table> so the
+     four number columns keep their alignment; only the first cell is
+     indented, which is what carries the containment. */
+  .oex-head{display:flex;align-items:baseline;gap:.15rem;margin:0 0 .3rem;}
+  .oex-trow > td:first-child{
+    padding-left:calc(6px + var(--d,0) * 13px);white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis;}
+  .oex-trow .tw{background:transparent;border:0;color:var(--accent);
+    cursor:pointer;font-size:.9rem;line-height:1;padding:0;
+    font-weight:700;display:inline-block;width:14px;text-align:left;}
+  .oex-trow .tw:hover{color:var(--text);}
+  .oex-trow span.tw{cursor:default;}
+  .oex-trow .inside{font-family:var(--mono);font-size:.58rem;
+    color:var(--muted);opacity:.85;}
+  .oex-trow .lvl{color:var(--muted);font-size:.9em;}
+  .tge-trow .pin{background:transparent;border:0;color:var(--muted);
+    cursor:pointer;font-size:.78rem;line-height:1;padding:0;}
+  .tge-trow .pin.on{color:var(--accent);}
+  .tge-trow .pin:hover{color:var(--text);}
+  .tge-trow .rm{background:transparent;border:0;color:var(--muted);
+    cursor:pointer;font-family:var(--mono);font-size:.8rem;line-height:1;
+    padding:0;}
+  .tge-trow .rm:hover{color:var(--red);}
+  .tge-hint{font-family:var(--mono);font-size:.62rem;color:var(--amber);
+    min-height:.9rem;opacity:0;transition:opacity .18s;margin:0 0 .15rem;}
+  .tge-baseline{display:flex;gap:.45rem;align-items:center;flex-wrap:wrap;
+    border:1px solid var(--border2);border-radius:6px;padding:8px 10px;
+    margin:0 0 .9rem;}
+  .tge-baseline select{font-family:var(--mono);font-size:.7rem;flex:1;
+    min-width:160px;padding:.25rem .3rem;background:var(--surface2);
+    color:var(--text);border:1px solid var(--border);border-radius:4px;}
+  .tge-baseline .lbl{font-family:var(--mono);font-size:.68rem;
+    color:var(--text);}
+  .tge-basenotes{font-family:var(--mono);font-size:.62rem;color:var(--muted);
+    line-height:1.5;margin:.35rem 0 0;width:100%;}
   .tge-add{display:flex;gap:.4rem;align-items:center;margin-top:.4rem;}
   .tge-add select{font-family:var(--mono);font-size:.7rem;
     padding:.25rem .4rem;background:var(--surface2);color:var(--text);
@@ -2549,6 +2632,15 @@
     <h2 id="pfModalTitle">New portfolio</h2>
     <div class="mhint">Name, base currency, and per-category caching behaviour.</div>
 
+    <!-- Clone (v0.120.0). New portfolios only: an existing portfolio has
+         a design already, and "clone into this one" would be a
+         destructive overwrite wearing the same control. -->
+    <div class="field" id="pfCloneRow" style="margin-bottom:.6rem">
+      <label class="mfl">Start from</label>
+      <select id="pfCloneFrom" onchange="onPfCloneChange()"></select>
+      <div class="mhint" id="pfCloneNote" style="margin-top:.25rem"></div>
+    </div>
+
     <div class="fgrp">
       <div class="field">
         <label class="mfl">Name</label>
@@ -3323,10 +3415,26 @@
     <div class="modal-b">
       <p style="font-family:var(--mono);font-size:.7rem;color:var(--muted);
                 line-height:1.5;margin:0 0 .9rem">
-        Set target percentages for the buckets you care about. Buckets
-        you don't add are "untargeted" — the portfolio's actual exposure
-        in those buckets is summarised separately. Targets don't have to
-        reach 100%; whatever is left over is just untargeted.
+        Every target is a percentage <b>of the fund side</b>, and each row
+        also shows what it is as a share of the bucket that contains it.
+        Drag a slider and its <b>siblings give ground proportionally</b> —
+        the unclaimed remainder first, then the buckets you set — so a
+        bucket can never grow past its parent and the tree always stays
+        consistent. Drill into a row to shape what is inside it; the greyed
+        <i>rest of…</i> line is the part nothing inside it claims.
+      </p>
+      <p style="font-family:var(--mono);font-size:.7rem;color:var(--muted);
+                line-height:1.5;margin:0 0 .9rem">
+        <b>Unclaimed room is a blank cheque.</b> Target technology 30% and
+        nothing else, and the optimiser is only asked for "30% technology,
+        70% not-technology" — 70% financial services satisfies that
+        exactly. <b>Set baseline targets</b> reads a broad fund's own
+        breakdown into every bucket, so market weight is the starting point
+        and a tilt is one slider. <b>Pin</b> (○ → ◉) a number to stop it
+        moving when a sibling or its parent does; everything inside a
+        pinned bucket is protected with it. Clearing a box removes the
+        target; typing <b>0</b> is the different instruction "hold none of
+        this", and it is enforced.
       </p>
       <p style="font-family:var(--mono);font-size:.66rem;color:var(--muted);
                 line-height:1.5;margin:0 0 .9rem">
@@ -3357,6 +3465,21 @@
         <input type="number" min="0" step="any" id="tgCashReserve"
                placeholder="0" oninput="onTgReserveChange()">
         <div class="tge-reserve-note" id="tgReserveNote"></div>
+      </div>
+
+      <!-- Baseline target set (v0.119.0). The answer to "I set technology
+           to 30% and the optimiser handed me 70% financial services": a
+           sparse target set cannot say "and the rest at market weight",
+           so the remainder is a blank cheque. A fund's own breakdown IS
+           that missing sentence. -->
+      <div class="tge-baseline">
+        <span class="lbl">Start from a fund</span>
+        <select id="tgBaselineFund"></select>
+        <button class="btn btn-s" id="tgBaselineBtn"
+                onclick="applyTgBaseline()">Set baseline targets</button>
+        <button class="btn btn-s" id="tgUndoBtn" onclick="tgUndoStep()"
+                title="Step back through this session's edits">Undo</button>
+        <div class="tge-basenotes" id="tgBaselineNotes"></div>
       </div>
 
       <!-- Facet sections, each with a "+ Add" picker and the
@@ -5840,6 +5963,13 @@ async function runOptimizer(){
     // column with it and neither should depend on running first.
     optRunScoreModel = { key:   d.score_preset || '',
                          label: d.score_preset_label || '' };
+    // The resulting-exposure tree needs each bucket's `path` — which
+    // bucket contains which — and that is READ from the backend, never
+    // derived here. It arrives with the canonical vocabulary the targets
+    // editor fetches, so fetch it now rather than relying on the editor
+    // having been opened first. Cached after the first call, and the
+    // tree degrades to a flat list if it fails.
+    await Promise.all(Object.keys(d.deviation || {}).map(_tgFetchCanonical));
     renderOptimizerResult(d);
     renderOptimizerAlternatives(d);
     result.style.display = '';
@@ -6136,19 +6266,148 @@ function renderOptimizerResult(d){
     : `<tr><td colspan="8" style="color:var(--muted);padding:1rem">
          Already on target — no trades needed.</td></tr>`;
 
-  // Achieved vs target, per facet. This is what makes the result
-  // trustworthy rather than a black box: you can see exactly where it
-  // still misses, and decide whether that's the solver or your targets.
-  //
-  // v0.65.3: labelled with tgKeyLabel, the same function the Targets
-  // tab uses. The two surfaces previously disagreed — "Asia Developed"
-  // in the editor, "asiaDeveloped" here — which reads as two different
-  // buckets rather than one bucket named twice.
-  // v0.65.0: deviation is {facet: {level: {key: delta}}}. Flattened into
-  // one table per facet with the level named on each row — the optimiser
-  // result is a single proposal, so splitting it into a table per level
-  // would fragment one answer, unlike the Targets tab where the levels
-  // ARE the thing being compared.
+  // Achieved vs target is drawn separately, because it re-renders on
+  // its own when a branch is folded or unfolded. It opens fully
+  // unfolded: unlike the targets editor nothing here is being typed, so
+  // there is no long list to keep out of the way of, and a folded tree
+  // would hide the finer misses that are the whole reason to read it.
+  _optResetExposureExpansion(d);
+  _renderOptExposure();
+}
+
+// ── Resulting exposure: the facet tree ───────────────────────────────
+// Which branches are unfolded. Node ids are tgNodeId's, so the two tree
+// panels agree on what names a node even though they hold their own
+// expansion state — the targets editor's fold state is about a dialog
+// the user is editing, this one about a proposal they are reading.
+let _optExpanded = new Set();
+
+// The TARGET percent of every bucket the result reports, {level:{key:pct}}.
+// Targets are not sent back with the proposal, and need not be: achieved
+// minus deviation is the target by definition. Percent rather than
+// fraction, because that is the unit tgBuildTreeFrom's arithmetic (and
+// the targets editor feeding it) works in.
+function _optExposurePerLevel(d, facet){
+  const out = {};
+  for (const [level, dev] of Object.entries((d.deviation || {})[facet] || {})){
+    for (const [k, delta] of Object.entries(dev || {})){
+      const got = (((d.achieved || {})[facet] || {})[level] || {})[k] || 0;
+      (out[level] = out[level] || {})[k] = (got - delta) * 100;
+    }
+  }
+  return out;
+}
+
+// The same builder the targets editor uses, over the same vocabulary —
+// see tgBuildTreeFrom. Each node additionally carries what this panel
+// reports about it.
+function _optExposureTree(d, facet){
+  return tgBuildTreeFrom(facet, _optExposurePerLevel(d, facet), n => {
+    n.got   = (((d.achieved  || {})[facet] || {})[n.level] || {})[n.key] || 0;
+    n.delta = (((d.deviation || {})[facet] || {})[n.level] || {})[n.key] || 0;
+    n.allow = (((d.tolerance || {})[facet] || {})[n.level] || {})[n.key];
+  });
+}
+
+function _optExposureWalk(d, facet, fn){
+  const walk = (n) => { for (const c of n.children){ fn(c); walk(c); } };
+  walk(_optExposureTree(d, facet));
+}
+
+function _optResetExposureExpansion(d){
+  _optExpanded = new Set();
+  for (const facet of Object.keys(d.deviation || {})){
+    _optExposureWalk(d, facet, n => {
+      if (n.children.length) _optExpanded.add(tgNodeId(facet, n.level, n.key));
+    });
+  }
+}
+
+function optExposureExpandAll(facet, on){
+  if (!optProposal) return;
+  _optExposureWalk(optProposal, facet, n => {
+    if (!n.children.length) return;
+    const id = tgNodeId(facet, n.level, n.key);
+    if (on) _optExpanded.add(id); else _optExpanded.delete(id);
+  });
+  _renderOptExposure();
+}
+
+// The key is read off the row rather than interpolated into the handler:
+// focus_theme keys are free text typed by the user, so one containing a
+// quote would otherwise break the call it was written into.
+function optToggleExposureEl(el){
+  const r = el.closest('tr');
+  if (!r) return;
+  const id = tgNodeId(r.dataset.facet, r.dataset.level, r.dataset.key);
+  if (_optExpanded.has(id)) _optExpanded.delete(id); else _optExpanded.add(id);
+  _renderOptExposure();
+}
+
+// One row of the tree. A table row, not a div: the four number columns
+// have to line up down the whole facet, and only the first cell is
+// indented — that indent is what carries the containment.
+function _optExposureRowHtml(n, depth, open, multi){
+  const kids = n.children.length;
+  // A folded row says how many buckets are inside it. Without that the
+  // tree looks like the finer buckets were never measured — the arrow
+  // alone is too easy to miss. Same reasoning, same wording, as the
+  // targets editor's rows.
+  const chev = kids
+    ? `<button class="tw" onclick="optToggleExposureEl(this)"
+               title="${open ? 'Fold' : 'Unfold the ' + kids + ' buckets inside this'}"
+               >${open ? '▾' : '▸'}</button>`
+    : `<span class="tw"></span>`;
+  const inside = (!open && kids)
+    ? ` <span class="inside">· ${kids} inside</span>` : '';
+  // The level is still named when the facet reports at more than one.
+  // Containment shows which bucket sits inside which, but not the grain
+  // a figure was measured at, and japan the country and japan the region
+  // are different exposures that would otherwise read as one name twice.
+  const lvlName = LEVEL_LABELS_LONG[n.level] || n.level;
+  const lvl = multi ? ` <span class="lvl">(${escapeHtml(lvlName)})</span>` : '';
+  const tgt = n.got - n.delta;
+  const off = n.allow != null && Math.abs(n.delta) > n.allow + 1e-9;
+  return `<tr class="oex-trow" style="--d:${depth}"
+      data-facet="${escapeAttr(n.facet)}" data-level="${escapeAttr(n.level)}"
+      data-key="${escapeAttr(n.key)}">
+    <td title="${escapeAttr(n.key + '  ·  ' + lvlName)}">${chev}${
+      escapeHtml(n.label)}${lvl}${inside}</td>
+    <td class="r tk">${(tgt*100).toFixed(1)}%</td>
+    <td class="r tk">${(n.got*100).toFixed(1)}%</td>
+    <td class="r tk ${off ? (n.delta>0?'pos':'neg') : ''}">${
+      n.delta>0?'+':''}${(n.delta*100).toFixed(1)}%</td>
+    <td class="r tk" style="color:var(--muted)">${
+      n.allow == null ? '—' : '±' + (n.allow*100).toFixed(1)}</td>
+  </tr>`;
+}
+
+// Achieved vs target, per facet. This is what makes the result
+// trustworthy rather than a black box: you can see exactly where it
+// still misses, and decide whether that's the solver or your targets.
+//
+// v0.65.3: labelled with tgKeyLabel, the same function the Targets
+// tab uses. The two surfaces previously disagreed — "Asia Developed"
+// in the editor, "asiaDeveloped" here — which reads as two different
+// buckets rather than one bucket named twice.
+// v0.65.0: deviation is {facet: {level: {key: delta}}}. One table per
+// facet, all its levels in it — the optimiser result is a single
+// proposal, so splitting it into a table per level would fragment one
+// answer, unlike the Targets tab where the levels ARE the thing being
+// compared.
+// v0.120.0: and that one table is now the containment TREE rather than
+// a flat run of rows. The buckets a design is judged against are the
+// buckets the Targets editor set, and they nest the same way, so this
+// panel draws the same topology from the same builder. Flat, it put
+// "technology 30/28" beside "semiconductors 10/12" and left the reader
+// to remember the second is inside the first — which is exactly the
+// arithmetic that decides whether a residual is readable.
+function _renderOptExposure(){
+  const d    = optProposal;
+  const host = document.getElementById('optAchieved');
+  if (!d || !host) return;
+  const cur  = d.base_currency;
+
   // Why a target could not be measured, when that is the answer. A
   // bucket no candidate holds, or a level nothing answers, produces 0%
   // achieved for reasons no amount of solver tuning would change —
@@ -6187,40 +6446,37 @@ function renderOptimizerResult(d){
     }
   }
 
+  // v0.115.0: every bucket carries its own allowance, sent by the
+  // backend rather than recomputed here — the relative rule and its
+  // floor live in one place, so the table and the solver cannot disagree
+  // about whether a row passed. A row is flagged when it is outside ITS
+  // OWN allowance, not against a fixed 2pp: that fixed figure was why a
+  // 5% target achieving 0.6% read as unremarkable.
   const blocks = [];
   for (const [facet, perLevel] of Object.entries(d.deviation || {})){
-    const flat = [];
-    for (const [level, dev] of Object.entries(perLevel || {})){
-      for (const [k, delta] of Object.entries(dev || {})){
-        flat.push([level, k, delta]);
-      }
-    }
-    const rows = flat.map(([level, k, delta]) => {
-      const got = (((d.achieved || {})[facet] || {})[level] || {})[k] || 0;
-      const tgt = got - delta;
-      // v0.115.0: every bucket carries its own allowance, sent by the
-      // backend rather than recomputed here — the relative rule and its
-      // floor live in one place, so the table and the solver cannot
-      // disagree about whether a row passed. A row is flagged when it is
-      // outside ITS OWN allowance, not against a fixed 2pp: that fixed
-      // figure was why a 5% target achieving 0.6% read as unremarkable.
-      const allow = (((d.tolerance || {})[facet] || {})[level] || {})[k];
-      const off = allow != null && Math.abs(delta) > allow + 1e-9;
-      const multi = Object.keys(perLevel || {}).length > 1;
-      return `<tr>
-        <td>${escapeHtml(tgKeyLabel(facet, k))}${multi
-          ? ` <span style="color:var(--muted);font-size:.9em">(${escapeHtml(
-              LEVEL_LABELS_LONG[level] || level)})</span>` : ''}</td>
-        <td class="r tk">${(tgt*100).toFixed(1)}%</td>
-        <td class="r tk">${(got*100).toFixed(1)}%</td>
-        <td class="r tk ${off ? (delta>0?'pos':'neg') : ''}">${delta>0?'+':''}${(delta*100).toFixed(1)}%</td>
-        <td class="r tk" style="color:var(--muted)">${
-          allow == null ? '—' : '±' + (allow*100).toFixed(1)}</td>
-      </tr>`;
-    }).join('');
+    const multi = Object.keys(perLevel || {}).length > 1;
+    const root  = _optExposureTree(d, facet);
+    const rows  = [];
+    const emit = (n, depth) => {
+      const open = _optExpanded.has(tgNodeId(facet, n.level, n.key));
+      rows.push(_optExposureRowHtml(n, depth, open, multi));
+      if (open) for (const c of n.children) emit(c, depth + 1);
+    };
+    for (const n of root.children) emit(n, 0);
+    // No greyed "rest of X" pseudo-row here, deliberately — unlike the
+    // targets editor, where the unclaimed remainder is the number that
+    // answers "and what happens to the other 70%". This panel reports
+    // only what was asked for and what was achieved, and a remainder row
+    // would have to invent a target nobody set.
     blocks.push(`
       <div style="margin-bottom:.9rem">
-        <div class="ct" style="font-size:.7rem">${escapeHtml(facetLabel(facet))}</div>
+        <div class="oex-head">
+          <div class="ct" style="font-size:.7rem">${escapeHtml(facetLabel(facet))}</div>
+          <button class="tge-xall" onclick="optExposureExpandAll('${escapeAttr(facet)}', true)"
+                  title="Unfold every level of this category">expand all</button>
+          <button class="tge-xall" onclick="optExposureExpandAll('${escapeAttr(facet)}', false)"
+                  title="Fold back to the top level">collapse</button>
+        </div>
         <table class="dtable">
           <colgroup><col><col style="width:100px"><col style="width:100px">
                     <col style="width:90px"><col style="width:90px"></colgroup>
@@ -6230,7 +6486,7 @@ function renderOptimizerResult(d){
             <th class="nosort r">Achieved</th>
             <th class="nosort r">Δ</th>
             <th class="nosort r" title="This bucket's own allowance, in percentage points: the tolerance you set for the category, taken as a share of this target (never less than 0.5).">Allowed</th>
-          </tr></thead><tbody>${rows}</tbody>
+          </tr></thead><tbody>${rows.join('')}</tbody>
         </table>
       </div>`);
   }
@@ -6245,7 +6501,7 @@ function renderOptimizerResult(d){
          ${lvlNotes.join('<br><br>')}
        </div>`
     : '';
-  document.getElementById('optAchieved').innerHTML = notesHtml + blocks.join('');
+  host.innerHTML = notesHtml + blocks.join('');
 }
 
 async function applyOptimizerTrades(){
@@ -14221,9 +14477,49 @@ function openNewPortfolioModal(){
   document.getElementById('pfModalTitle').textContent = 'New portfolio';
   document.getElementById('pfName').value = '';
   document.getElementById('pfCurrency').value = 'EUR';
+  // Clone picker: offered only when there is something to clone.
+  const row = document.getElementById('pfCloneRow');
+  const sel = document.getElementById('pfCloneFrom');
+  row.style.display = portfolios.length ? '' : 'none';
+  sel.innerHTML = `<option value="">— empty portfolio —</option>`
+    + portfolios.map(p =>
+        `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name)}</option>`).join('');
+  sel.value = '';
+  onPfCloneChange();
   renderCacheConfigList(config.default_cache_cfg);
   showModal('pfModal');
   setTimeout(()=>document.getElementById('pfName').focus(), 50);
+}
+
+// Picking a source fills in the two controls the dialog itself owns, so
+// what is on screen describes what will actually be created. Everything
+// else the clone carries is named in the hint rather than shown, because
+// none of it is editable here — saying so is the only way the user can
+// tell a clone from a blank portfolio before pressing Save.
+function onPfCloneChange(){
+  const sel  = document.getElementById('pfCloneFrom');
+  const note = document.getElementById('pfCloneNote');
+  const src  = portfolios.find(p => p.id === (sel ? sel.value : ''));
+  if (!src){
+    note.textContent = 'An empty portfolio — no funds, cash or targets.';
+    return;
+  }
+  document.getElementById('pfCurrency').value = src.base_currency || 'EUR';
+  renderCacheConfigList(src.cache_config || config.default_cache_cfg);
+  const bits = [];
+  const nf = (src.funds || []).length;
+  const nc = (src.cash_positions || []).length;
+  if (nf) bits.push(`${nf} fund${nf === 1 ? '' : 's'}`);
+  if (nc) bits.push(`${nc} cash position${nc === 1 ? '' : 's'}`);
+  const tgFacets = Object.keys(src.targets || {})
+    .filter(f => Object.keys((src.targets || {})[f] || {}).length);
+  if (tgFacets.length) bits.push(`targets on ${tgFacets.length} categor`
+    + (tgFacets.length === 1 ? 'y' : 'ies'));
+  if (src.optimizer_settings) bits.push('optimiser settings');
+  note.textContent = bits.length
+    ? `Copies ${bits.join(', ')}. The copy is independent — editing either `
+      + `one afterwards leaves the other alone.`
+    : 'That portfolio is empty, so this is the same as starting blank.';
 }
 
 function openEditPortfolioModal(){
@@ -14232,6 +14528,7 @@ function openEditPortfolioModal(){
   if (!p) return;
   pfModalMode = 'edit';
   pfModalEditingId = p.id;
+  document.getElementById('pfCloneRow').style.display = 'none';
   document.getElementById('pfModalTitle').textContent = `Edit portfolio: ${p.name}`;
   document.getElementById('pfName').value = p.name;
   document.getElementById('pfCurrency').value = p.base_currency || 'EUR';
@@ -14300,9 +14597,11 @@ async function savePortfolioModal(){
         body: JSON.stringify({name, base_currency, cache_config}),
       });
     } else {
+      const cloneSel  = document.getElementById('pfCloneFrom');
+      const clone_from = (cloneSel && cloneSel.value) || undefined;
       r = await fetch(`${API}/portfolios`, {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({name, base_currency, cache_config}),
+        body: JSON.stringify({name, base_currency, cache_config, clone_from}),
       });
     }
     data = await r.json();
@@ -19926,6 +20225,68 @@ let _tgEditorState = null;
 // Available canonical values per facet, lazy-fetched + cached across opens.
 let _tgCanonical = Object.fromEntries(_TG_ALL_FACETS.map(f => [f, null]));
 
+// ── The tree editor (v0.119.0) ───────────────────────────────────────
+// Targets are still stored as a percentage OF THE PORTFOLIO, exactly as
+// before; nothing about what a target MEANS has changed, and the
+// optimiser and the deviation report were not touched. What changed is
+// how the numbers are edited.
+//
+// The editing rule, applied identically at every level:
+//
+//     A slider redistributes inside its PARENT. Unpinned siblings absorb
+//     the change proportionally, and each sibling's own children scale
+//     with it. Nothing above the node ever moves.
+//
+// Three things fall out of that, which is why it is one rule and not
+// three features:
+//
+//  * A child can never exceed its parent. The slider's maximum IS the
+//    parent's value, reached when every sibling is at its floor. The
+//    overflow case is unreachable rather than handled.
+//  * A parent always equals the sum of its children, so the save-time
+//    parent/child check (validate_target_levels) can no longer fail on
+//    anything the editor produced. Coherence is structural.
+//  * "% of parent" is value / parent.value — a READOUT, derived for
+//    display. It is never stored, so no migration and no new units.
+//
+// `rest` is the greyed pseudo-sibling: value − Σ children. It is what
+// the optimiser's OTHER bucket represents, made visible, and it is
+// always derived, never stored — recomputed as parent − Σ children so
+// rounding cannot break the invariant by accumulating.
+//
+// Growing a slider spends `rest` before it shrinks a sibling, and
+// shrinking returns to `rest` rather than handing the room to a sibling.
+// Both directions follow one principle: never invent an assertion the
+// user did not make. `rest` is the "no opinion" pool, so it is spent
+// first and refilled first. That makes up-then-down not always exactly
+// reversible, which is what the undo stack is for — proportional
+// sliders are not invertible in general, and the alternative rule
+// (proportional both ways) has the worse flaw that a sibling squeezed
+// to 0 can never grow back, since 0 × anything is 0.
+let _tgPins = {};            // {facet: {level: {key: true}}}
+let _tgExpanded = new Set(); // node ids currently unfolded
+let _tgUndo = [];            // snapshots of {targets, pins}
+const _TG_UNDO_MAX = 40;
+// Baseline fund picker state: the notes from the last baseline applied,
+// shown until the next render replaces them.
+let _tgBaselineNotes = [];
+
+// The state a "reset these" returns to, per facet.
+//
+// ONE reference, captured when the editor opens, and never moved again
+// for as long as it stays open. "Put this part of the tree back where it
+// was before I started" is the whole meaning, and a reference that
+// silently re-anchored itself — on applying a baseline, say — would make
+// the same button mean two different things depending on what the user
+// had done first. Undo is the control for stepping back through
+// individual actions; this one is for abandoning a branch entirely.
+let _tgRefState = {};
+
+function tgCaptureRef(facet){
+  if (facet) _tgRefState[facet] = JSON.stringify(_tgEditorState[facet] || {});
+  else for (const f of _TG_ALL_FACETS) tgCaptureRef(f);
+}
+
 // ── Targets as a CSV file (v0.118.0) ─────────────────────────────────
 // Designing a coherent target set is slow work that used to live in
 // exactly one place — the portfolio it was typed into — with no way to
@@ -20425,6 +20786,30 @@ async function openTargetsEditor(){
     }
   }
 
+  // Pins travel with the targets — same dialog, same Save. Deep-copied
+  // for the same reason the targets are: the editor must be free to
+  // change its mind without mutating the loaded view.
+  const storedPins = (currentPortfolioView.target_pins || {});
+  _tgPins = {};
+  for (const f of _TG_ALL_FACETS) {
+    const b = storedPins[f] || {};
+    for (const lvl of Object.keys(b)) {
+      if (b[lvl] && typeof b[lvl] === 'object') {
+        (_tgPins[f] = _tgPins[f] || {})[lvl] = {...b[lvl]};
+      }
+    }
+  }
+  // A fresh open is a fresh history. Carrying undo across opens would
+  // let Undo reach back past a Save, which is not an edit the user can
+  // still see on screen.
+  _tgUndo = [];
+  _tgBaselineNotes = [];
+  tgInvalidateDragBase();
+  _tgRefState = {};
+  // Opens folded to the coarsest level, which is the point of the tree:
+  // the whole facet in three or four rows, then drill in.
+  _tgExpanded = new Set();
+
   _tgReserve = Number(currentPortfolioView.cash_reserve || 0);
   const _resEl = document.getElementById('tgCashReserve');
   if (_resEl) _resEl.value = _tgReserve > 0 ? _tgReserve : '';
@@ -20452,6 +20837,8 @@ async function openTargetsEditor(){
   // Lazy-fetch canonical values for every facet (regions for country)
   // the first time the editor is opened, then cache them.
   await Promise.all(_TG_ALL_FACETS.map(_tgFetchCanonical));
+  tgCaptureRef();
+  tgFillBaselineFunds();
   _renderTgEditorBody();
 }
 
@@ -20569,12 +20956,22 @@ function tgCommittedLabel(facet, pct){
 }
 
 // The levels a facet's vocabulary actually offers, finest first.
+//
+// Falls back to RES_FACET_NODES (the same levelled vocabulary the
+// holdings tables and the facet picker read) before giving up and
+// treating the facet as flat. The fallback matters since v0.120.0,
+// because the tree engine now serves the optimiser's resulting-exposure
+// panel too, and that panel can be drawn before the targets editor has
+// ever been opened to fetch _tgCanonical.
 function tgLevelsOf(facet){
   const seen = [];
   for (const c of (_tgCanonical[facet] || [])) {
     if (!seen.includes(c.level)) seen.push(c.level);
   }
-  return seen.length ? seen : [facet];
+  if (seen.length) return seen;
+  const blk = (RES_FACET_NODES || {})[facet] || {};
+  if (Array.isArray(blk.levels) && blk.levels.length) return blk.levels.slice();
+  return [facet];
 }
 
 function closeTargetsEditor(){
@@ -20582,6 +20979,552 @@ function closeTargetsEditor(){
   // for every dialog, so this function no longer carries its own copy.
   hideModal('targetsEditorModal');
   _tgEditorState = null;
+}
+
+// ── Tree engine ──────────────────────────────────────────────────────
+// See the block comment on _tgPins for the rule these implement. Every
+// function here is pure over (state, pins) except the two that write
+// _tgEditorState back, which are named for it.
+
+function tgNodeId(facet, level, key){ return `${facet}||${level}||${key}`; }
+
+function tgPinned(facet, level, key){
+  return !!(((_tgPins[facet] || {})[level] || {})[key]);
+}
+
+// The key at each level for every canonical node, READ from the backend
+// rather than derived here. Same rule the committed figure follows: the
+// frontend may choose which level to show, never work out which bucket
+// contains which.
+function tgPathOf(facet){
+  const m = new Map();
+  for (const c of (_tgCanonical[facet] || [])){
+    m.set(`${c.level}||${c.key}`, c.path || {});
+  }
+  return m;
+}
+
+// Build the containment tree over an arbitrary set of buckets of one facet.
+//
+// A node hangs off its nearest ancestor PRESENT IN THE SET. A finer
+// bucket whose parent is absent therefore hangs off the root — which is
+// exactly what such a target already means today: a sub-sector target
+// with no sector target commits its branch straight against the
+// portfolio. The same rule absorbs orphans, keys whose `path` names no
+// ancestor at all.
+//
+// Generalised in v0.120.0. Two panels draw this same topology over this
+// same vocabulary — the targets editor (the design being set) and the
+// optimiser's resulting exposure (the design as achieved) — so they
+// share one builder rather than each carrying its own copy of the
+// parenting rule. The caller supplies the values, and `decorate` hangs
+// whatever else its own panel needs off each node; the node fields the
+// tree arithmetic itself uses (`value`, `rest`, `pinned`, `children`)
+// mean the same thing to both.
+//
+// Args:
+//   facet:    the facet whose vocabulary gives the containment.
+//   perLevel: {level: {key: percent}} — the buckets to place.
+//   decorate: optional (node) => void, called once per node.
+function tgBuildTreeFrom(facet, perLevel, decorate){
+  perLevel = perLevel || {};
+  const levels = tgLevelsOf(facet).slice();
+  // A level the caller speaks that the vocabulary does not is appended
+  // at the coarse end rather than dropped. Dropping it would silently
+  // lose rows the caller asked to draw — and the vocabulary can legally
+  // be unloaded (see tgLevelsOf), in which case EVERY row would go.
+  for (const lvl of Object.keys(perLevel)){
+    if (!levels.includes(lvl)) levels.push(lvl);
+  }
+  const pathOf   = tgPathOf(facet);
+  const nodes = new Map();
+  const order = [];
+  for (const lvl of levels){
+    for (const [key, pct] of Object.entries(perLevel[lvl] || {})){
+      const n = {facet, level: lvl, key,
+                 label:   tgKeyLabel(facet, key),
+                 value:   parseFloat(pct) || 0,
+                 pinned:  false,
+                 children: [], parent: null, rest: 0,
+                 lvlIdx:  levels.indexOf(lvl)};
+      if (decorate) decorate(n);
+      nodes.set(`${lvl}||${key}`, n);
+      order.push(n);
+    }
+  }
+  const root = {facet, level: null, key: null, label: 'portfolio',
+                value: 100, pinned: false, children: [],
+                parent: null, rest: 0, isRoot: true, lvlIdx: levels.length};
+
+  for (const n of order){
+    let parent = root;
+    const path = pathOf.get(`${n.level}||${n.key}`) || {};
+    for (let i = n.lvlIdx + 1; i < levels.length; i++){
+      const anc = path[levels[i]];
+      if (anc && nodes.has(`${levels[i]}||${anc}`)){
+        parent = nodes.get(`${levels[i]}||${anc}`);
+        break;
+      }
+    }
+    n.parent = parent;
+    parent.children.push(n);
+  }
+
+  // `rest` bottom-up, and always as parent − Σ children rather than a
+  // running total, so repeated proportional scaling cannot drift the
+  // invariant. Clamped at 0: a target set saved by the OLD flat editor
+  // can have children summing past their parent, and the save-time check
+  // still names that — the tree shows it as no remaining room rather
+  // than pretending it is fine.
+  const fix = (n) => {
+    n.children.forEach(fix);
+    // Alphabetical, and deliberately NOT by value. Sorting by value
+    // makes a row climb or fall through its own group as its slider
+    // moves, so the control jumps out from under the pointer mid-drag —
+    // the one thing a slider must never do. A stable order costs a
+    // little scanning and is worth it.
+    n.children.sort((a, b) => a.label.localeCompare(b.label));
+    n.rest = Math.max(0, n.value - n.children.reduce((a, c) => a + c.value, 0));
+  };
+  fix(root);
+  return root;
+}
+
+// The targets editor's tree: the buckets being edited, carrying their pins.
+function tgBuildTree(facet){
+  return tgBuildTreeFrom(facet, _tgEditorState[facet] || {},
+                         n => { n.pinned = tgPinned(n.facet, n.level, n.key); });
+}
+
+// How small this node can get: the sum of the topmost pinned buckets
+// inside it. `rest` contributes nothing — it is always squeezable.
+//
+// `own` = false ignores the node's OWN pin. A pin protects a number from
+// being moved by a SIBLING or a parent, which is what the user asked for;
+// it does not put the number beyond the user's own hand. So the node
+// being dragged is measured without its own pin, while every other node
+// in the calculation keeps theirs. Disabling the control instead would
+// mean unpinning to make any change — and a pin is then a mode rather
+// than a protection.
+function tgFloorOf(n, own){
+  if (n.pinned && own !== false) return n.value;
+  return n.children.reduce((a, c) => a + tgFloorOf(c), 0);
+}
+
+// How large it can get: its parent's value, less what every sibling must
+// keep. Which is why a child can never exceed its parent.
+function tgCeilOf(n, own){
+  if (n.pinned && own !== false) return n.value;
+  const p = n.parent;
+  if (!p) return n.value;
+  let sibFloors = 0;
+  for (const c of p.children) if (c !== n) sibFloors += tgFloorOf(c);
+  return Math.max(tgFloorOf(n, own), p.value - sibFloors);
+}
+
+// Constrained proportional distribution: share `room` across `items` in
+// proportion to their current values, never below any item's floor.
+// Iterative clamping — each pass fixes at least one item at its floor,
+// so it terminates.
+//
+// ONE function, two callers: the siblings absorbing a drag, and a
+// subtree reshaping to fit its parent's new total. Those are the same
+// operation, and two copies of it would be two places the arithmetic
+// could drift apart.
+//
+// `spill` is the index that takes any amount the proportional split
+// cannot place (every free item sitting at 0). Pass -1 for "nowhere",
+// which is what the sibling case wants; the subtree case passes `rest`.
+function tgDistribute(room, items, spill){
+  const out     = items.map(i => i.value);
+  const clamped = items.map(() => false);
+  const sp = (spill === undefined || spill === null) ? items.length - 1 : spill;
+
+  for (let pass = 0; pass <= items.length + 1; pass++){
+    let fixed = 0, freeSum = 0, freeCount = 0;
+    items.forEach((it, i) => {
+      if (clamped[i]) fixed += out[i];
+      else { freeSum += it.value; freeCount++; }
+    });
+    if (!freeCount) return out;
+    const avail = Math.max(0, room - fixed);
+
+    if (freeSum <= 1e-12){
+      items.forEach((it, i) => { if (!clamped[i]) out[i] = (it.floor || 0); });
+      if (sp >= 0 && sp < items.length && !clamped[sp]){
+        let others = 0;
+        items.forEach((it, i) => {
+          if (!clamped[i] && i !== sp) others += out[i];
+        });
+        out[sp] = Math.max(items[sp].floor || 0, avail - others);
+      }
+      return out;
+    }
+
+    const scale = avail / freeSum;
+    let hit = false;
+    items.forEach((it, i) => {
+      if (clamped[i]) return;
+      const tent = it.value * scale;
+      if (tent < (it.floor || 0) - 1e-12){
+        out[i] = (it.floor || 0); clamped[i] = true; hit = true;
+      } else {
+        out[i] = tent;
+      }
+    });
+    if (!hit) return out;
+  }
+  return out;
+}
+
+// Give a node a new value and reshape its subtree to fit. Pinned
+// children keep their number; the unpinned ones and `rest` scale
+// together, which is what preserves the shape the user had.
+function tgApplyValue(n, v){
+  n.value = Math.max(0, v);
+  const pinnedSum = n.children.reduce((a, c) => a + (c.pinned ? c.value : 0), 0);
+  const flex = n.children.filter(c => !c.pinned);
+  const room = Math.max(0, n.value - pinnedSum);
+  if (!flex.length){ n.rest = room; return; }
+  const items = flex.map(c => ({value: c.value, floor: tgFloorOf(c)}));
+  items.push({value: n.rest, floor: 0});     // spill target, last by design
+  const vals = tgDistribute(room, items);
+  flex.forEach((c, i) => tgApplyValue(c, vals[i]));
+  n.rest = Math.max(0, vals[vals.length - 1]);
+}
+
+// The one entry point for "the user moved this slider".
+//
+// Returns {moved, blockers}. When it did not move, `blockers` names what
+// is holding it, so a slider that refuses explains itself rather than
+// looking broken.
+function tgSetNodeValue(n, want){
+  const p = n.parent;
+  if (!p) return {moved: false, blockers: []};
+
+  const lo = tgFloorOf(n, false), hi = tgCeilOf(n, false);
+  const v  = Math.min(hi, Math.max(lo, want));
+
+  if (Math.abs(v - n.value) < 1e-9){
+    const blockers = [];
+    if (want > n.value){
+      for (const c of p.children){
+        if (c !== n && c.pinned) blockers.push(`${c.label} is pinned`);
+      }
+      if (!blockers.length) blockers.push('there is nothing left to take');
+    } else {
+      for (const c of n.children){
+        if (tgFloorOf(c) > 0) blockers.push(`${c.label} is pinned inside it`);
+      }
+      if (!blockers.length) blockers.push('it is already at zero');
+    }
+    return {moved: false, blockers};
+  }
+
+  const delta = v - n.value;
+  if (delta > 0){
+    // Spend the unasserted remainder before overriding a sibling the
+    // user actually set.
+    const fromRest = Math.min(p.rest, delta);
+    p.rest -= fromRest;
+    const take = delta - fromRest;
+    if (take > 1e-12){
+      const sibs  = p.children.filter(c => c !== n && !c.pinned);
+      const total = sibs.reduce((a, c) => a + c.value, 0);
+      const items = sibs.map(c => ({value: c.value, floor: tgFloorOf(c)}));
+      const vals  = tgDistribute(Math.max(0, total - take), items, -1);
+      sibs.forEach((c, i) => tgApplyValue(c, vals[i]));
+    }
+  } else {
+    // Released room is spread across the unpinned siblings AND the
+    // remainder, in proportion to what each already holds.
+    //
+    // It used to go entirely to `rest`, on the principle of never
+    // inventing an assertion the user had not made. That principle lost
+    // to a practical one: proportional shrinking drives small siblings to
+    // zero, and returning everything to `rest` left them there — the
+    // user could not undo by hand what a drag had done. Spreading the
+    // release makes the gesture symmetric, and combined with the
+    // per-slider base state below it makes dragging back exactly restore
+    // what dragging out changed.
+    const sibs  = p.children.filter(c => c !== n && !c.pinned);
+    const items = sibs.map(c => ({value: c.value, floor: tgFloorOf(c)}));
+    items.push({value: p.rest, floor: 0});
+    const have  = items.reduce((a, i) => a + i.value, 0);
+    const vals  = tgDistribute(have + (-delta), items, items.length - 1);
+    sibs.forEach((c, i) => tgApplyValue(c, vals[i]));
+    p.rest = Math.max(0, vals[vals.length - 1]);
+  }
+
+  tgApplyValue(n, v);
+  p.rest = Math.max(0, p.value - p.children.reduce((a, c) => a + c.value, 0));
+  return {moved: true, blockers: []};
+}
+
+// Write a tree back into the stored shape. 4dp, because the stored value
+// is what the user dragged to and full float precision shows up as
+// 14.000000000000002 the first time anything sums it.
+function tgTreeToState(facet, root){
+  const per = {};
+  const walk = (n) => {
+    for (const c of n.children){
+      (per[c.level] = per[c.level] || {})[c.key] =
+        Math.round(c.value * 10000) / 10000;
+      walk(c);
+    }
+  };
+  walk(root);
+  _tgEditorState[facet] = per;
+}
+
+// ── Undo ─────────────────────────────────────────────────────────────
+// Proportional sliders are not invertible in general: drag up then down
+// and the siblings that paid for the rise do not necessarily get it
+// back. Rather than contort the redistribution rule into something
+// reversible (which has the worse flaw that a sibling squeezed to 0 can
+// never grow back), the editor keeps a history.
+// Any change that is not a drag of the SAME slider invalidates the
+// reference state. Replaying a base captured before a removal would
+// resurrect the removed target; before an add, discard it.
+function tgInvalidateDragBase(){ _tgDragBase = null; }
+
+function tgSnapshot(){
+  _tgUndo.push(JSON.stringify({t: _tgEditorState, p: _tgPins}));
+  if (_tgUndo.length > _TG_UNDO_MAX) _tgUndo.shift();
+}
+
+function tgUndoStep(){
+  const s = _tgUndo.pop();
+  if (!s) return;
+  const d = JSON.parse(s);
+  _tgEditorState = d.t;
+  _tgPins = d.p;
+  _tgBaselineNotes = [];
+  tgInvalidateDragBase();
+  _renderTgEditorBody();
+}
+
+function tgTogglePin(facet, level, key){
+  tgSnapshot();
+  tgInvalidateDragBase();
+  if (tgPinned(facet, level, key)){
+    delete _tgPins[facet][level][key];
+    if (!Object.keys(_tgPins[facet][level]).length) delete _tgPins[facet][level];
+    if (!Object.keys(_tgPins[facet]).length) delete _tgPins[facet];
+  } else {
+    _tgPins[facet] = _tgPins[facet] || {};
+    _tgPins[facet][level] = _tgPins[facet][level] || {};
+    _tgPins[facet][level][key] = true;
+  }
+  _renderTgEditorBody();
+}
+
+// Unfold (or fold) a whole facet. `maxDepth` limits how far — used after
+// a baseline, where unfolding all three levels at once would open several
+// hundred rows and unfolding none looks like nothing was loaded.
+function tgExpandAll(facet, on, maxDepth){
+  const root = tgBuildTree(facet);
+  const walk = (n, d) => {
+    for (const c of n.children){
+      if (c.children.length && (maxDepth == null || d < maxDepth)){
+        if (on) _tgExpanded.add(tgNodeId(facet, c.level, c.key));
+        else    _tgExpanded.delete(tgNodeId(facet, c.level, c.key));
+      } else if (!on){
+        _tgExpanded.delete(tgNodeId(facet, c.level, c.key));
+      }
+      walk(c, d + 1);
+    }
+  };
+  walk(root, 0);
+  _renderTgEditorBody();
+}
+
+// Put a bucket's contents back the way they were when the editor opened.
+//
+// Restores MEMBERSHIP as well as values: a bucket removed during this
+// session comes back, one added during it goes away. "Back where it was"
+// has to mean the whole branch, or the button only half works and the
+// user has to finish the job by hand.
+//
+// Two things it deliberately leaves alone:
+//
+// The branch means THIS NODE AND EVERYTHING UNDER IT, so the node's own
+// figure is restored too, not just its contents. Its siblings give or
+// take the difference under the ordinary drag rule — the unclaimed
+// remainder first, then the unpinned siblings proportionally — because a
+// reset is a change to this node, and a change to a node is always paid
+// for inside its parent.
+//
+// The one thing it leaves alone is **pinned buckets**, which keep their
+// value and are held out of a reset exactly as they are held out of a
+// drag, so a pin means one thing everywhere. The node itself is not
+// exempt: pressing reset on a branch is the user's own hand, and a pin
+// has never stood in the way of that.
+function tgResetChildren(facet, level, key){
+  const ref = _tgRefState[facet];
+  if (ref == null) return;
+  const descOf = (n) => {
+    const out = [];
+    (function w(m){ for (const c of m.children){ out.push(c); w(c); } })(n);
+    return out;
+  };
+
+  const cur  = tgBuildTree(facet);
+  const node = level ? tgFindNode(cur, level, key) : cur;
+  if (!node) return;
+
+  // The same branch as it was, read out of the reference state.
+  const saved = _tgEditorState[facet];
+  _tgEditorState[facet] = JSON.parse(ref);
+  const refTree = tgBuildTree(facet);
+  const refNode = level ? tgFindNode(refTree, level, key) : refTree;
+  const refVals = (refNode ? descOf(refNode) : [])
+                    .map(c => ({level: c.level, key: c.key, value: c.value}));
+  const refOwn = refNode ? refNode.value : null;
+  _tgEditorState[facet] = saved;
+
+  if (!descOf(node).length && !refVals.length && refOwn == null) return;
+  tgSnapshot();
+  tgInvalidateDragBase();
+
+  // 1. The node's own figure first, paid for by its siblings. This has to
+  //    happen BEFORE the contents are written back: restoring the total
+  //    afterwards would rescale the contents to fit whatever remainder the
+  //    branch happened to be carrying, which is how an earlier version of
+  //    this landed the children at three-quarters of their old values.
+  if (!node.isRoot && refOwn != null){
+    tgSetNodeValue(node, refOwn);
+    tgTreeToState(facet, cur);
+  }
+
+  // 2. Then the contents, membership and all, leaving pinned buckets be.
+  const t1 = tgBuildTree(facet);
+  const n1 = level ? tgFindNode(t1, level, key) : t1;
+  const blocks = (_tgEditorState[facet] = _tgEditorState[facet] || {});
+  for (const c of (n1 ? descOf(n1) : [])){
+    if (c.pinned) continue;
+    const blk = blocks[c.level];
+    if (!blk) continue;
+    delete blk[c.key];
+    if (!Object.keys(blk).length) delete blocks[c.level];
+  }
+  for (const rv of refVals){
+    if (tgPinned(facet, rv.level, rv.key)) continue;
+    (blocks[rv.level] = blocks[rv.level] || {})[rv.key] = rv.value;
+  }
+
+  // 3. Settle. With the total and the contents both at their reference
+  //    figures this scales by exactly 1; it earns its keep only when a
+  //    pinned bucket inside the branch is holding a different value, and
+  //    the rest has to make room around it.
+  const t2 = tgBuildTree(facet);
+  const n2 = level ? tgFindNode(t2, level, key) : t2;
+  if (n2) tgApplyValue(n2, n2.value);
+  tgTreeToState(facet, t2);
+  _renderTgEditorBody();
+}
+
+function tgResetChildrenEl(el){
+  const r = el.closest('.tge-rest');
+  if (r) tgResetChildren(r.dataset.facet, r.dataset.level || null,
+                         r.dataset.key || null);
+}
+
+function tgToggleExpand(id){
+  if (_tgExpanded.has(id)) _tgExpanded.delete(id);
+  else _tgExpanded.add(id);
+  _renderTgEditorBody();
+}
+
+// ── Baseline target set ──────────────────────────────────────────────
+// Fill the fund picker from the cache list the Pre-Loaded panel already
+// loads. Only funds with a usable ISIN are offered, because the baseline
+// is read off the FUND file (holdings and breakdowns live per ISIN, not
+// per listing) — a listing with no identity recorded has nothing to read.
+async function tgFillBaselineFunds(){
+  const sel = document.getElementById('tgBaselineFund');
+  if (!sel) return;
+  if (!cacheListData || !cacheListData.length){
+    try {
+      const r = await fetch(`${API}/cache/list`);
+      const d = await r.json();
+      cacheListData = d.cached || [];
+    } catch(e){ cacheListData = cacheListData || []; }
+  }
+  const rows = (cacheListData || [])
+    .filter(r => (r.isin || '').trim())
+    .sort((a, b) => (a.name || a.ticker || '')
+                      .localeCompare(b.name || b.ticker || ''));
+  sel.innerHTML = `<option value="">— pick a fund —</option>` + rows.map(r =>
+    `<option value="${escapeAttr(r.ticker)}">${
+      escapeHtml((r.name || r.ticker) + '  ·  ' + r.ticker)}</option>`).join('');
+}
+
+async function applyTgBaseline(){
+  const sel = document.getElementById('tgBaselineFund');
+  const btn = document.getElementById('tgBaselineBtn');
+  const ticker = sel && sel.value;
+  if (!ticker) return;
+
+  // Replacing an existing set is destructive enough to ask about — and
+  // Undo covers it either way, which is what the confirmation says.
+  const hasAny = _TG_ALL_FACETS.some(f => Object.keys(_tgEditorState[f] || {})
+      .some(l => Object.keys(_tgEditorState[f][l] || {}).length));
+  if (hasAny && !confirm(
+        'Replace the targets on asset class, sector, country and currency '
+      + 'with this fund’s breakdown?\n\nThe metadata facets (market cap, '
+      + 'equity style, thematic focus) are left alone — a fund has one '
+      + 'value for each, so there is nothing to spread. Undo steps back if '
+      + 'this is not what you wanted.')) return;
+
+  setBtnBusy(btn, 'Reading…');
+  try {
+    const r = await fetch(
+      `${API}/portfolios/${encodeURIComponent(activePid)}/targets/baseline`,
+      {method: 'POST', headers: {'Content-Type': 'application/json'},
+       body: JSON.stringify({ticker})});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+
+    tgSnapshot();
+    tgInvalidateDragBase();
+    // Only the facets the baseline speaks for are replaced. The metadata
+    // facets keep whatever the user set, because a one-hot classification
+    // has no distribution to copy.
+    for (const f of Object.keys(d.targets || {})) _tgEditorState[f] = d.targets[f];
+    for (const f of Object.keys(d.targets || {})) {
+      // Pins on a facet that was just overwritten hold numbers that are
+      // gone. Dropping them is the same rule the backend's prune_pins
+      // applies on save.
+      delete _tgPins[f];
+    }
+    // Unfold the top level so the structure is visible immediately. A
+    // baseline typically fills three levels, and leaving it all folded
+    // made it look as though only the coarsest had loaded.
+    _tgExpanded = new Set();
+    for (const f of Object.keys(d.targets || {})){
+      const rt = tgBuildTree(f);
+      for (const c of rt.children){
+        if (c.children.length) _tgExpanded.add(tgNodeId(f, c.level, c.key));
+      }
+    }
+    _tgBaselineNotes = [`Baseline: ${d.name || ticker}.`]
+                        .concat(d.notes || []);
+    _renderTgEditorBody();
+  } catch(e){
+    _tgBaselineNotes = [`Could not read that fund: ${e.message}`];
+    _renderTgEditorBody();
+  } finally {
+    clearBtnBusy(btn);
+  }
+}
+
+function tgRenderBaselineNotes(){
+  const el = document.getElementById('tgBaselineNotes');
+  if (el) el.innerHTML = (_tgBaselineNotes || [])
+    .map(s => `<div>${escapeHtml(s)}</div>`).join('');
+  const u = document.getElementById('tgUndoBtn');
+  if (u) u.disabled = !_tgUndo.length;
 }
 
 // Build the editor body from _tgEditorState + _tgCanonical.
@@ -20617,48 +21560,52 @@ function _renderTgEditorBody(){
     const sumStyle = (sum > 100.0001) ? ' style="color:var(--amber)"' : '';
     const sec = document.createElement('div');
     sec.className = 'tge-section';
+    sec.dataset.facet = facet;
     sec.innerHTML = `
       <div class="tge-head">
         <div class="lbl">${escapeHtml(facetLabel(facet))}</div>
+        <button class="tge-xall" onclick="tgExpandAll('${facet}', true)"
+                title="Unfold every level of this category">expand all</button>
+        <button class="tge-xall" onclick="tgExpandAll('${facet}', false)"
+                title="Fold back to the top level">collapse</button>
         <div class="sum"${sumStyle} title="${escapeAttr(TG_COMMITTED_HINT)}">${
           escapeHtml(tgCommittedLabel(facet, sum))}</div>
       </div>
+      <div class="tge-hint"></div>
       <div class="tge-rows" data-facet="${facet}"></div>
       <div class="tge-add" data-facet="${facet}"></div>
     `;
     root.appendChild(sec);
 
-    // Rows grouped by level, coarsest LAST so the reading order matches
-    // the tree: the specific commitments first, then what contains them.
+    // Rows as a containment TREE, folded to the coarsest level. Drilling
+    // into a bucket unfolds what is inside it, and a greyed "rest of X"
+    // row shows what nothing inside it claims — the same quantity the
+    // optimiser's OTHER bucket stands for, made visible.
     const rows = sec.querySelector('.tge-rows');
-    for (const lvl of levels) {
-      const block = perLevel[lvl] || {};
-      const keys  = Object.keys(block).sort();
-      if (!keys.length) continue;
-      if (levels.length > 1) {
-        const lh = document.createElement('div');
-        lh.className = 'tge-level-head';
-        lh.style.cssText = 'font-family:var(--mono);font-size:.6rem;' +
-          'text-transform:uppercase;color:var(--muted);margin:6px 0 2px';
-        lh.textContent = LEVEL_LABELS_LONG[lvl] || lvl;
-        rows.appendChild(lh);
-      }
-      for (const key of keys) {
-        const pct = block[key];
-        const label = tgKeyLabel(facet, key);
-        const row = document.createElement('div');
-        row.className = 'tge-row';
-        row.innerHTML = `
-          <div class="lbl" title="${escapeHtml(key)}">${escapeHtml(label)}</div>
-          <input type="number" min="0" max="100" step="0.1" value="${pct}"
-                 data-facet="${facet}" data-level="${escapeHtml(lvl)}"
-                 data-key="${escapeHtml(key)}"
-                 oninput="onTgEditorRowChange(this)">
-          <button class="rm" title="Remove target"
-                  onclick="removeTgEditorRow('${facet}', '${escapeHtml(lvl)}', '${escapeHtml(key).replace(/'/g,"\\'")}')">✕</button>
-        `;
-        rows.appendChild(row);
-      }
+    // `troot`, not `root`: the outer scope already binds `root` to the
+    // editor body element, and a second `const root` in this block would
+    // put it in the temporal dead zone for the appendChild calls above.
+    const troot = tgBuildTree(facet);
+    if (!troot.children.length){
+      rows.innerHTML =
+        `<div style="font-family:var(--mono);font-size:.66rem;color:var(--muted);`
+        + `font-style:italic;padding:2px 0">No targets here yet.</div>`;
+    } else {
+      const emit = (n, depth) => {
+        const id   = tgNodeId(facet, n.level, n.key);
+        const open = _tgExpanded.has(id);
+        rows.insertAdjacentHTML('beforeend', tgRowHtml(n, depth, open));
+        if (open && n.children.length){
+          for (const c of n.children) emit(c, depth + 1);
+          rows.insertAdjacentHTML('beforeend', tgRestHtml(n, depth + 1));
+        }
+      };
+      for (const n of troot.children) emit(n, 0);
+      // The facet's own unclaimed room, always last. This is the number
+      // that answers "set technology to 30% and what happens to the other
+      // 70%" — while it is large, the optimiser may do anything it likes
+      // with that much of the facet.
+      rows.insertAdjacentHTML('beforeend', tgRestHtml(troot, 0));
     }
 
     // Add picker.
@@ -20734,31 +21681,295 @@ function _renderTgEditorBody(){
         </span>`;
     }
   }
+  tgRenderBaselineNotes();
 }
 
-// Called from the per-row number input — update state, re-render
-// only the sum (no full rebuild, to keep the input focused).
-function onTgEditorRowChange(input){
-  const facet = input.getAttribute('data-facet');
-  const level = input.getAttribute('data-level');
-  const key   = input.getAttribute('data-key');
-  const v     = parseFloat(input.value);
-  if (!_tgEditorState[facet]) _tgEditorState[facet] = {};
-  if (!_tgEditorState[facet][level]) _tgEditorState[facet][level] = {};
-  _tgEditorState[facet][level][key] = (isNaN(v) || v < 0) ? 0 : v;
-  // Just refresh that section's committed line; keep the focus intact.
-  // Through the same helper the full render uses — the figure went wrong
-  // in two places before because the arithmetic existed in two places.
-  const perLevel = _tgEditorState[facet] || {};
-  const sum = tgCommittedPct(facet, perLevel);
-  const sec = input.closest('.tge-section');
-  if (sec) {
-    const sumEl = sec.querySelector('.sum');
-    if (sumEl) {
-      sumEl.textContent = tgCommittedLabel(facet, sum);
-      sumEl.style.color = (sum > 100.0001) ? 'var(--amber)' : '';
+// ── Row markup ───────────────────────────────────────────────────────
+// Every control carries its identity in data attributes on the row, and
+// the handlers read it back off the DOM. Nothing interpolates a bucket
+// key into a JavaScript string: focus_theme keys are free text typed by
+// the user, so a key containing a quote would otherwise break the
+// handler it was written into.
+function tgRowHtml(n, depth, open){
+  const kids = n.children.length;
+  // A folded row says how many buckets are inside it. Without that the
+  // tree looks like the finer targets were never loaded — the arrow
+  // alone is too easy to miss, which is exactly what happened.
+  const chev = kids
+    ? `<button class="tw" onclick="tgToggleExpandEl(this)"
+               title="${open ? 'Fold' : 'Unfold the ' + kids + ' buckets inside this'}"
+               >${open ? '▾' : '▸'}</button>`
+    : `<span class="tw"></span>`;
+  const inside = (!open && kids)
+    ? ` <span class="inside">· ${kids} inside</span>` : '';
+  // The track's length is the PARENT's value, not this node's ceiling.
+  // A ceiling moves whenever a sibling is pinned or another sibling
+  // changes, so the thumb jumped across the track while the number under
+  // it stayed identical. The parent's value only moves when the parent
+  // itself is dragged, so the track is stable — and the thumb's position
+  // then reads as the share-of-parent shown beside it. Illegal values are
+  // still impossible: tgSetNodeValue clamps, and onTgSlide snaps the
+  // thumb back to what was actually applied.
+  const maxv = n.parent ? Math.max(n.parent.value, n.value) : 100;
+  const ofp  = n.parent && n.parent.value > 0
+    ? `${(n.value / n.parent.value * 100).toFixed(1)}% of `
+      + `${escapeHtml(n.parent.isRoot ? 'portfolio' : n.parent.label)}`
+    : '';
+  const lvlName = LEVEL_LABELS_LONG[n.level] || n.level;
+  return `
+  <div class="tge-trow${n.pinned ? ' pinned' : ''}"
+       data-facet="${escapeAttr(n.facet)}" data-level="${escapeAttr(n.level)}"
+       data-key="${escapeAttr(n.key)}" style="--d:${depth}">
+    ${chev}
+    <div class="lbl" title="${escapeAttr(n.key + '  ·  ' + lvlName)}">${
+      escapeHtml(n.label)}${inside}</div>
+    <input type="range" min="0" max="${maxv.toFixed(4)}"
+           step="0.1" value="${n.value.toFixed(4)}"
+           onpointerdown="tgSnapshot()" oninput="onTgSlide(this)"
+           onchange="_renderTgEditorBody()">
+    <input type="number" min="0" max="100" step="0.1"
+           value="${+n.value.toFixed(4)}"
+           title="Percent of the fund side. Clear the box to remove the target altogether — a target of 0 is a different instruction, and means hold none of this."
+           onchange="onTgNumber(this)">
+    <span class="ofp">${ofp}</span>
+    <button class="pin${n.pinned ? ' on' : ''}" onclick="tgTogglePinEl(this)"
+            title="${n.pinned
+              ? 'Pinned: this number does not move when a sibling or its parent changes. Click to release.'
+              : 'Pin this number so changing a sibling or its parent leaves it, and everything inside it, alone.'}"
+            >${n.pinned ? '◉' : '○'}</button>
+    <button class="rm" onclick="tgRemoveEl(this)"
+            title="Remove this target (its share returns to the unclaimed remainder)">✕</button>
+  </div>`;
+}
+
+// The greyed pseudo-sibling. Not editable, because it is not a target:
+// it is what the node's own figure does not hand to any child, and the
+// only way to change it is to change something that is a target.
+function tgRestHtml(owner, depth){
+  const label = owner.isRoot
+    ? 'unclaimed — the optimiser fills this freely'
+    : `rest of ${owner.label}`;
+  // At the root the share OF the portfolio is the value itself, so the
+  // second column would only repeat the first.
+  const ofp = (owner.value > 0 && !owner.isRoot)
+    ? `${(owner.rest / owner.value * 100).toFixed(1)}% of ${
+        escapeHtml(owner.label)}`
+    : '';
+  return `
+  <div class="tge-rest" data-facet="${escapeAttr(owner.facet)}"
+       data-level="${escapeAttr(owner.level || '')}"
+       data-key="${escapeAttr(owner.key || '')}" style="--d:${depth}">
+    <span class="tw"></span>
+    <div class="lbl"><span class="rtxt">${escapeHtml(label)}</span><button class="rst"
+            onclick="tgResetChildrenEl(this)"
+            title="Put everything inside ${escapeAttr(owner.isRoot ? 'this category' : owner.label)} and ${escapeAttr(owner.isRoot ? 'the category itself' : owner.label + ' itself')} back exactly as they were when you opened this dialog — buckets you removed return, buckets you added go away, and its siblings give or take the difference. Pinned buckets keep their value."
+            >↺ reset these</button></div>
+    <span class="val">${owner.rest.toFixed(1)}%</span>
+    <span class="ofp">${ofp}</span>
+  </div>`;
+}
+
+function tgRowCtx(el){
+  const r = el.closest('.tge-trow');
+  return r ? {facet: r.dataset.facet, level: r.dataset.level,
+              key: r.dataset.key} : null;
+}
+
+function tgFindNode(root, level, key){
+  let found = null;
+  const walk = (n) => {
+    for (const c of n.children){
+      if (c.level === level && c.key === key){ found = c; return; }
+      walk(c);
+      if (found) return;
+    }
+  };
+  walk(root);
+  return found;
+}
+
+// The one place a value change is applied: build the tree, move the node,
+// write the tree back. Every caller — slider, number box, baseline — goes
+// through it, so the redistribution rule cannot be implemented twice.
+// The state a slider's own gesture is measured from.
+//
+// Proportional redistribution is multiplicative, so a sibling squeezed to
+// 0 can never grow back: 0 x anything is 0. No release rule fixes that on
+// its own. What does fix it is recomputing each move from the state
+// BEFORE the user started on this particular slider, rather than from the
+// result of their last move. Dragging out and back then lands exactly
+// where it started, because both are computed from the same base.
+//
+// Scoped per node: touching a different control adopts the current state
+// as the new base, so the reference is always "before I started on this".
+let _tgDragBase = null;   // {id, facet, state: JSON of _tgEditorState[facet]}
+
+function tgDragBaseFor(facet, level, key){
+  const id = tgNodeId(facet, level, key);
+  if (!_tgDragBase || _tgDragBase.id !== id){
+    _tgDragBase = {id, facet, state: JSON.stringify(_tgEditorState[facet] || {})};
+  }
+  return _tgDragBase;
+}
+
+function tgApplyDrag(facet, level, key, want){
+  const base = tgDragBaseFor(facet, level, key);
+  _tgEditorState[facet] = JSON.parse(base.state);
+  const root = tgBuildTree(facet);
+  const n = tgFindNode(root, level, key);
+  if (!n) return null;
+  const res = tgSetNodeValue(n, want);
+  tgTreeToState(facet, root);
+  return res;
+}
+
+function onTgSlide(el){
+  const c = tgRowCtx(el);
+  if (!c) return;
+  const want = parseFloat(el.value);
+  const res = tgApplyDrag(c.facet, c.level, c.key, want);
+  // Snap the thumb to what was actually applied. Without this a clamped
+  // drag leaves the thumb past the wall while the number stops, which
+  // reads as the control being broken rather than as a limit.
+  const got = ((_tgEditorState[c.facet] || {})[c.level] || {})[c.key];
+  if (got != null && Math.abs(got - want) > 0.05) el.value = got;
+  // Patched in place rather than rebuilt: an innerHTML rebuild mid-drag
+  // replaces the very element being dragged, and the drag dies with it.
+  tgSyncNumbers(c.facet, res);
+}
+
+function onTgNumber(el){
+  const c = tgRowCtx(el);
+  if (!c) return;
+  const raw = (el.value || '').trim();
+  tgSnapshot();
+  if (raw === ''){
+    // Blank means NO TARGET. A typed 0 is a different instruction — "hold
+    // none of this" — which the optimiser enforces to within its own
+    // tolerance floor. Before v0.119.0 an emptied box was stored as 0,
+    // so clearing a field silently asked for zero exposure.
+    tgRemoveTarget(c.facet, c.level, c.key);
+    _renderTgEditorBody();
+    return;
+  }
+  const v = parseFloat(raw);
+  tgApplyDrag(c.facet, c.level, c.key, isNaN(v) ? 0 : Math.max(0, v));
+  _renderTgEditorBody();
+}
+
+function tgToggleExpandEl(el){
+  const c = tgRowCtx(el);
+  if (c) tgToggleExpand(tgNodeId(c.facet, c.level, c.key));
+}
+
+function tgTogglePinEl(el){
+  const c = tgRowCtx(el);
+  if (c) tgTogglePin(c.facet, c.level, c.key);
+}
+
+function tgRemoveEl(el){
+  const c = tgRowCtx(el);
+  if (!c) return;
+  tgSnapshot();
+  tgRemoveTarget(c.facet, c.level, c.key);
+  _renderTgEditorBody();
+}
+
+// Update the numbers on screen without rebuilding the rows. Reads the
+// tree back from state so what is displayed is what would be saved.
+function tgSyncNumbers(facet, res){
+  const root = tgBuildTree(facet);
+  const byId = new Map();
+  const walk = (n) => {
+    for (const c of n.children){
+      byId.set(tgNodeId(facet, c.level, c.key), c);
+      walk(c);
+    }
+  };
+  walk(root);
+
+  document.querySelectorAll(
+      `#targetsEditorBody .tge-trow[data-facet="${facet}"]`).forEach(r => {
+    const n = byId.get(tgNodeId(facet, r.dataset.level, r.dataset.key));
+    if (!n) return;
+    const num = r.querySelector('input[type=number]');
+    if (num && document.activeElement !== num) num.value = +n.value.toFixed(2);
+    const rng = r.querySelector('input[type=range]');
+    if (rng && document.activeElement !== rng) rng.value = n.value.toFixed(4);
+    const ofp = r.querySelector('.ofp');
+    if (ofp) ofp.textContent = (n.parent && n.parent.value > 0)
+      ? `${(n.value / n.parent.value * 100).toFixed(1)}% of `
+        + `${n.parent.isRoot ? 'portfolio' : n.parent.label}`
+      : '';
+  });
+
+  document.querySelectorAll(
+      `#targetsEditorBody .tge-rest[data-facet="${facet}"]`).forEach(r => {
+    const owner = r.dataset.key
+      ? byId.get(tgNodeId(facet, r.dataset.level, r.dataset.key))
+      : root;
+    if (!owner) return;
+    const v = r.querySelector('.val');
+    if (v) v.textContent = `${owner.rest.toFixed(1)}%`;
+    const ofp = r.querySelector('.ofp');
+    if (ofp) ofp.textContent = (owner.value > 0 && !owner.isRoot)
+      ? `${(owner.rest / owner.value * 100).toFixed(1)}% of ${owner.label}`
+      : '';
+  });
+
+  tgUpdateSectionSum(facet);
+  if (res && !res.moved && (res.blockers || []).length){
+    tgFlashHint(facet, `Held by ${res.blockers.slice(0, 3).join(', ')}.`);
+  }
+}
+
+// The committed / unconstrained figure for one facet's heading. Through
+// one helper, because the same number went wrong in two places before
+// when the arithmetic existed in two places.
+function tgUpdateSectionSum(facet){
+  const sum = tgCommittedPct(facet, _tgEditorState[facet] || {});
+  const sec = document.querySelector(
+    `#targetsEditorBody .tge-section[data-facet="${facet}"]`);
+  if (!sec) return;
+  const sumEl = sec.querySelector('.sum');
+  if (sumEl){
+    sumEl.textContent = tgCommittedLabel(facet, sum);
+    sumEl.style.color = (sum > 100.0001) ? 'var(--amber)' : '';
+  }
+}
+
+function tgFlashHint(facet, msg){
+  const sec = document.querySelector(
+    `#targetsEditorBody .tge-section[data-facet="${facet}"]`);
+  if (!sec) return;
+  const el = sec.querySelector('.tge-hint');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.opacity = '1';
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.style.opacity = '0'; }, 2600);
+}
+
+// Remove a target outright. Its share is NOT handed to a sibling — it
+// returns to the unclaimed remainder, on the same principle the drag
+// rule follows: never invent an assertion the user did not make.
+// Removing is a different act from setting 0, which asserts "hold none".
+function tgRemoveTarget(facet, level, key){
+  if (_tgEditorState[facet] && _tgEditorState[facet][level]) {
+    delete _tgEditorState[facet][level][key];
+    if (!Object.keys(_tgEditorState[facet][level]).length) {
+      delete _tgEditorState[facet][level];
     }
   }
+  // The pin goes with it. A pin with no target holds nothing, and leaving
+  // it would silently re-pin the bucket if the user added it back.
+  if (_tgPins[facet] && _tgPins[facet][level]) {
+    delete _tgPins[facet][level][key];
+    if (!Object.keys(_tgPins[facet][level]).length) delete _tgPins[facet][level];
+    if (!Object.keys(_tgPins[facet]).length) delete _tgPins[facet];
+  }
+  _tgExpanded.delete(tgNodeId(facet, level, key));
+  tgInvalidateDragBase();
 }
 
 function addTgEditorRow(facet){
@@ -20781,10 +21992,26 @@ function addTgEditorRow(facet){
     level = nid.slice(0, nid.indexOf(FT_SEP));
   }
   if (!level || !key) return;
+  tgSnapshot();
+  tgInvalidateDragBase();
   if (!_tgEditorState[facet]) _tgEditorState[facet] = {};
   if (!_tgEditorState[facet][level]) _tgEditorState[facet][level] = {};
   if (_tgEditorState[facet][level][key] === undefined) {
+    // Added at 0, which costs nothing: the invariant still holds because
+    // the parent's unclaimed remainder is unchanged. The first drag then
+    // funds it out of that remainder before it touches a sibling — which
+    // is what makes adding a bucket the baseline did not contain a
+    // one-gesture operation rather than an arithmetic puzzle.
     _tgEditorState[facet][level][key] = 0;
+  }
+  // Unfold everything above it, or a bucket added three levels down
+  // appears to do nothing at all.
+  const pathOf = tgPathOf(facet);
+  const lvls = tgLevelsOf(facet);
+  const path = pathOf.get(`${level}||${key}`) || {};
+  for (let i = lvls.indexOf(level) + 1; i < lvls.length; i++){
+    const anc = path[lvls[i]];
+    if (anc) _tgExpanded.add(tgNodeId(facet, lvls[i], anc));
   }
   _renderTgEditorBody();
   // Focus the freshly-added row's input so the user can type a percent
@@ -20799,13 +22026,12 @@ function addTgEditorRow(facet){
   }, 0);
 }
 
+// Kept as the named entry point, now a thin wrapper: removal has to drop
+// the pin with the target and forget the row's expansion state, and those
+// belong in one place rather than in every caller (v0.119.0).
 function removeTgEditorRow(facet, level, key){
-  if (_tgEditorState[facet] && _tgEditorState[facet][level]) {
-    delete _tgEditorState[facet][level][key];
-    if (!Object.keys(_tgEditorState[facet][level]).length) {
-      delete _tgEditorState[facet][level];
-    }
-  }
+  tgSnapshot();
+  tgRemoveTarget(facet, level, key);
   _renderTgEditorBody();
 }
 
@@ -20895,6 +22121,7 @@ async function saveTargetsEditor(){
     const r = await fetch(`${API}/portfolios/${activePid}/targets`, {
       method: 'PUT', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({targets: _tgEditorState,
+                            target_pins: _tgPins,
                             cash_reserve: _tgReserve}),
     });
     const d = await r.json();

@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.118.1. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.120.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -134,7 +134,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.118.1 (built 2026-09-14)
+  PorxPy  v0.120.0 (built 2026-09-17)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -249,8 +249,9 @@ In the header, press **+ New** beside the Portfolio selector.
 | Field | What to put |
 |---|---|
 | **Name** | Anything — "Long-term core". |
-| **Base currency** | The currency everything is reported and optimised in. Fund prices in other currencies are converted at the current FX rate. |
-| **Cache configuration** | Leave the defaults. It controls which categories are stored on disk and how long before they are considered stale; the shipped values are sensible, and you can change them later from **⚙ Settings** on the portfolio. |
+| **Start from** | *— empty portfolio —* the first time. Once you have one, this picker clones it: the copy carries its funds and share counts, cash positions, cash reserve, targets, target pins and optimiser settings, and only the name is yours to type. Use it to try a variant of a design without re-entering it. The two portfolios are independent afterwards. |
+| **Base currency** | The currency everything is reported and optimised in. Fund prices in other currencies are converted at the current FX rate. Cloning fills this in from the source; change it and your choice wins. |
+| **Cache configuration** | Leave the defaults. It controls which categories are stored on disk and how long before they are considered stale; the shipped values are sensible, and you can change them later from **⚙ Settings** on the portfolio. Cloning fills this in from the source too. |
 
 Press **Save**. The portfolio becomes active and the Portfolio tab opens
 on its sub-tabs, in three groups:
@@ -329,6 +330,37 @@ in the budget.
 Leave it at 0 for a first run, or set aside a buffer if you want one.
 
 ### The facet targets
+
+The quickest way to a coherent set is **Start from a fund → Set baseline
+targets**, at the top of the dialog. Pick a broad index fund and its own
+breakdown is read into every bucket of asset class, sector, country and
+currency. Nothing is written until you press Save.
+
+This is worth doing even if you mean to change most of it, because of
+what an untargeted bucket means. Targets you do not set are not neutral
+— they are unclaimed, and the optimiser may fill them however it likes.
+Ask for 30% technology and nothing else and you can be handed 70%
+financial services, because "the rest" was never specified. Starting
+from a fund specifies it, and the greyed *unclaimed* row at the bottom of
+each category tells you how much is still free.
+
+If a bucket ends up somewhere you did not intend, the greyed *rest of…*
+row inside it carries **reset these**, which puts that bucket and
+everything inside it back exactly as it was when you opened the dialog —
+buckets you removed come back, buckets you added go away, and its
+siblings give or take the difference. Pinned buckets keep their value.
+
+A row that has finer targets inside it says so — *technology · 3 inside*
+— and the arrow beside it unfolds them. **expand all** in the category
+heading opens every level at once.
+
+From there, drag a slider and its siblings give ground proportionally:
+the unclaimed remainder first, then the buckets you set. Drill into a row
+with the arrow to shape what is inside it. Clearing a box removes a
+target altogether; typing **0** is the different instruction "hold none
+of this", and it is enforced. The circle at the end of a row **pins** it,
+so changing a sibling or its parent leaves it — and everything inside it
+— alone. **Undo** steps back through the session's edits.
 
 Below that, one section per facet, in two groups:
 
@@ -439,8 +471,13 @@ Three panels come back:
   trade-off is worth it varies per portfolio, and the tool does not
   guess.
 - **Resulting exposure** — what the design actually achieves against
-  each target. Large residuals usually mean the targets are not
-  reachable with the funds available, not that the solver failed.
+  each target, shown as the facet tree: each bucket sits inside the
+  bucket that contains it, so a miss on `semiconductors` can be read
+  against the `technology` target it lives in rather than beside it. It
+  opens fully unfolded; the arrow on a branch folds it, and **expand
+  all** / **collapse** do a whole category at once. Large residuals
+  usually mean the targets are not reachable with the funds available,
+  not that the solver failed.
 
 If the result disappoints, the fix is usually one of: raise **Max
 funds**, loosen the tolerance on the facet you care least about, or add

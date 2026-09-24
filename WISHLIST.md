@@ -1,6 +1,6 @@
 # WISHLIST.md — possible future enhancements
 
-*Started 2026-08-18, at v0.72.3. Last swept at v0.118.1.*
+*Started 2026-08-18, at v0.72.3. Last swept at v0.120.0.*
 
 Things worth doing that nobody has promised. This is deliberately **not**
 a defect list: a bug lives in the Known open issues section of the
@@ -135,15 +135,21 @@ sind keine Downloads vorhanden") and never call the literature API at
 all. There is nothing to discover: DWS does not publish these documents
 to its web app. Kept as a record so nobody spends the afternoon again.
 
-### Clone a portfolio's design into a new one
+### ~~Clone a portfolio's design into a new one~~ — shipped in v0.120.0
 
-Considered alongside the CSV export added in v0.118.0 and deferred in
-favour of it: a Clone button would copy settings, targets and tolerances
-into a new empty portfolio in one action, with no funds and no cash
-positions. It is fewer clicks for the common case, but it cannot keep
-several target sets side by side, cannot be diffed, and cannot be edited
-outside the app — which is what the file was actually wanted for. Worth
-adding if the round-trip through a file becomes the annoying part.
+Deferred at v0.118.0 in favour of the target-set CSV, on the reasoning
+that a file can be kept side by side, diffed and edited outside the app
+and a clone button cannot. Both turned out to be wanted, for different
+jobs, and the round trip through a file did become the annoying part of
+the common one.
+
+Shipped as the **Start from** picker in the **+ New** portfolio dialog.
+It goes further than the sketch above: that proposed copying only the
+design into an otherwise empty portfolio, and the useful thing is a copy
+of the whole portfolio — funds and share counts and cash included —
+because a variant you want to compare is a variant of what you actually
+hold. The CSV keeps its own job: portable, diffable, editable outside
+the app.
 
 ### Document discovery for the other three fund houses
 
