@@ -1583,6 +1583,30 @@ OVERRIDABLE_FIELDS: dict[str, dict] = {
         "type": "number", "min": 0.0, "max": 1000.0, "unit": "%",
         "label": "Portfolio turnover", "target": "profile.turnoverPct",
     },
+    # Valuation and risk (v0.121.0). These are RATIOS — neither a percent
+    # nor a currency amount — and ``"unit": "ratio"`` is what says so.
+    # Two places read it and would otherwise get it wrong: the extraction
+    # prompt, which must not ask a model to state a P/E in "millions" and
+    # then reject the answer for not doing so, and the Edit dialog's
+    # number input, which has to step in hundredths as it does for a
+    # percent rather than in whole units.
+    "priceToBook": {
+        "type": "number", "min": 0.0, "max": 1000.0, "unit": "ratio",
+        "label": "Price/book (P/B)", "target": "profile.priceToBook",
+    },
+    "trailingPE": {
+        "type": "number", "min": 0.0, "max": 10000.0, "unit": "ratio",
+        "label": "Price/earnings (P/E)", "target": "profile.trailingPE",
+    },
+    "beta3Year": {
+        # The one profile number that is legitimately NEGATIVE: an
+        # inverse or short fund has a beta below zero, and those are
+        # precisely the funds whose beta anyone would look up. A min of
+        # 0.0 copied from the ratios above would reject them, and the
+        # field would vanish from the dialog with no explanation.
+        "type": "number", "min": -10.0, "max": 10.0, "unit": "ratio",
+        "label": "Beta (3yr)", "target": "profile.beta3Year",
+    },
 }
 
 # The four breakdown-source selectors are one registry entry each, built
@@ -1866,7 +1890,10 @@ FIELD_GROUPS: tuple[dict, ...] = (
     {
         "key":   "operational",
         "label": "Operational",
-        "note":  "Cost, size and activity. Changes a few times a year.",
+        "note":  "Cost, size, activity, and how the portfolio underneath "
+                 "is valued. Changes a few times a year — the valuation "
+                 "ratios and the beta move with the market, but the "
+                 "sources restate them monthly at best.",
         "fields": (
             {"key": "trailingYieldPct", "label": "Trailing yield"},
             {"key": "forwardYieldPct",  "label": "Forward yield"},
@@ -1876,8 +1903,11 @@ FIELD_GROUPS: tuple[dict, ...] = (
             # What the FUND says it holds, not what we managed to load.
             # A factsheet stating 1,442 holdings is the fund's own count;
             # our holdings list may be a top-10.
-            {"key": "holdingsCount",    "label": "Number of holdings",
-             "sources": ("yahoo", "factsheet", "user")},
+            {"key": "holdingsCount",    "label": "Number of holdings"},
+            # Valuation and risk (v0.121.0).
+            {"key": "priceToBook",      "label": "Price/book (P/B)"},
+            {"key": "trailingPE",       "label": "Price/earnings (P/E)"},
+            {"key": "beta3Year",        "label": "Beta (3yr)"},
             {"key": "dataPoints",       "label": "Data points",  "calculated": True},
             {"key": "score", "label": "Score (all / peer)", "calculated": True},
         ),
@@ -1893,19 +1923,45 @@ FIELD_GROUPS: tuple[dict, ...] = (
             {"key": "previousClose",    "label": "Last close"},
             {"key": "navPrice",         "label": "NAV"},
             {"key": "regularMarketVolume", "label": "Volume (last day)"},
-            {"key": "fiftyTwoWeekHigh", "label": "52w high",
-             "sources": ("yahoo", "user")},
-            {"key": "fiftyTwoWeekLow",  "label": "52w low",
-             "sources": ("yahoo", "user")},
+            {"key": "fiftyTwoWeekHigh", "label": "52w high"},
+            {"key": "fiftyTwoWeekLow",  "label": "52w low"},
             {"key": "ytdReturnPct",     "label": "YTD return",   "calculated": True},
             {"key": "totalReturnPct",   "label": "Total return", "calculated": True},
         ),
     },
 )
 
-# Which sources may supply each field. Defaults to everything except
-# OpenFIGI, which only ever answers identity.
-DEFAULT_FIELD_SOURCES: tuple[str, ...] = ("yahoo", "justetf", "factsheet", "user")
+# Which sources may supply an editable field: ALL of them, for EVERY
+# field, with no per-field narrowing and no exceptions (v0.122.0).
+#
+# This used to be a shorter list with per-field overrides on top of it —
+# no justETF for the valuation ratios, because its public profile page
+# publishes none of them; no factsheet for the 52-week range, because no
+# factsheet prints one; Yahoo only for the holdings count. Each omission
+# was individually defensible and the set of them was an inconsistency:
+# one row of the Edit dialog offering three sources and the row beneath
+# it four, with nothing on the screen saying which was intended.
+#
+# The rule that replaces it is the one stated at the top of this section:
+# "A source that has nothing for a field answers unknown. That is a real
+# answer about that source, not a failure." An empty answer from justETF
+# is information — it tells the reader not to go looking there — and it
+# is recorded as a pin they can change. Suppressing the choice withheld
+# that answer rather than giving it.
+#
+# OpenFIGI is included too, and it is the hardest case: it is an
+# identifier service that answers nothing but identity, and the identity
+# fields are read-only and so have no sources at all. It is listed
+# anyway, because "every source for every field" is only true by
+# construction if it has no exceptions — and the alternative is a table
+# of what each source supports, which is the thing that drifted.
+#
+# Two consequences for anyone editing this: do not reintroduce per-field
+# source lists, and make sure every path tolerates every source. A source
+# that is offered and then rejected by the fetch endpoint is worse than
+# one that was never offered, because the user gets an error where they
+# should get an empty answer.
+DEFAULT_FIELD_SOURCES: tuple[str, ...] = FIELD_SOURCES
 
 
 def field_spec(field: str) -> dict | None:
@@ -1918,8 +1974,21 @@ def field_spec(field: str) -> dict | None:
 
 
 def field_sources(field: str) -> tuple[str, ...]:
-    """Sources that may supply a field. Empty when it is calculated."""
+    """Sources that may supply a field. Empty when it is calculated.
+
+    Every editable field gets the same list — see
+    :data:`DEFAULT_FIELD_SOURCES` for why there is no per-field
+    narrowing, and why reintroducing one would be a regression rather
+    than a refinement. A ``sources`` key on a FIELD_GROUPS entry is
+    deliberately no longer consulted: the rule is true by construction
+    only if there is nowhere to write an exception.
+
+    Calculated and read-only fields still answer with nothing, which is
+    a different statement: they have no source to choose because PorxPy
+    derives them, or because re-sourcing them would orphan the records
+    keyed on them.
+    """
     spec = field_spec(field) or {}
     if spec.get("calculated") or spec.get("readonly"):
         return ()
-    return tuple(spec.get("sources") or DEFAULT_FIELD_SOURCES)
+    return tuple(DEFAULT_FIELD_SOURCES)

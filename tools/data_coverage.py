@@ -52,6 +52,11 @@ GROUPS: dict[str, tuple[str, ...]] = {
     "Metadata":     ("distribution", "market_cap", "style_box"),
     "Costs & size": ("expenseRatioPct", "totalNetAssets", "turnoverPct"),
     "Income":       ("trailingYieldPct", "forwardYieldPct"),
+    # Sparse by nature: the valuation ratios come from Yahoo's
+    # equity-holdings table, which is empty for bond and commodity
+    # funds, and beta3Year is absent for most European UCITS listings.
+    # Low coverage here is a fact about the sources, not a defect.
+    "Valuation & risk": ("priceToBook", "trailingPE", "beta3Year"),
     "Pricing":      ("previousClose", "navPrice", "fiftyTwoWeekHigh",
                      "fiftyTwoWeekLow", "averageVolume"),
 }

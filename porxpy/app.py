@@ -4637,7 +4637,13 @@ def create_app() -> Flask:
             return (v if v is not None else None), note
 
         if source == "openfigi":
-            return None, "OpenFIGI supplies identity only"
+            # Answered without a network call: OpenFIGI maps identifiers
+            # and publishes no fund data, so what it has to say about a
+            # TER is known without asking. Offered on every field all the
+            # same — see config.DEFAULT_FIELD_SOURCES for why an empty
+            # answer from a source the user chose beats hiding the choice.
+            return None, ("OpenFIGI resolves identifiers (ISIN to ticker) "
+                          "and publishes no fund data")
         raise ValueError(f"unknown source {source!r}")
 
     @app.route("/api/funds/<ticker>/fields", methods=["GET"])
@@ -4908,7 +4914,11 @@ def create_app() -> Flask:
     def api_fund_source_fields(ticker: str) -> Response:
         """Ask one source for its answer on a set of fields.
 
-        Body: ``{"source": "yahoo"|"justetf", "fields": [name, ...]}``
+        Body: ``{"source": "yahoo"|"openfigi"|"justetf"|"factsheet",
+        "fields": [name, ...]}`` — every fetchable source, since every
+        field now offers every one of them
+        (see :data:`~porxpy.config.DEFAULT_FIELD_SOURCES`). ``"user"`` is
+        not fetchable: the value IS the assertion.
 
         Every requested field comes back with a value. A source that has
         nothing to say about a field answers ``"unknown"`` (or None for
@@ -4931,7 +4941,11 @@ def create_app() -> Flask:
         body   = request.get_json(force=True, silent=True) or {}
         source = (body.get("source") or "").strip().lower()
         fields = [f for f in (body.get("fields") or []) if isinstance(f, str)]
-        if source not in ("yahoo", "justetf", "factsheet"):
+        # Every fetchable source, because every field now offers every
+        # source (see config.DEFAULT_FIELD_SOURCES). "user" is the one
+        # that is not fetchable: the value IS the assertion, so the dialog
+        # gives it a box to type in rather than calling this.
+        if source not in ("yahoo", "openfigi", "justetf", "factsheet"):
             return jsonify({"error": f"unknown source: {source!r}"}), 400
         if not fields:
             return jsonify({"error": "no fields requested"}), 400
@@ -4952,7 +4966,13 @@ def create_app() -> Flask:
         # Numeric fields answer None rather than the string "unknown" —
         # they have no such vocabulary, and None is what "no value" means
         # everywhere else in the profile.
-        NUMERIC = {"expenseRatioPct", "totalNetAssets", "turnoverPct"}
+        # Every registry field of type "number", read off the registry
+        # rather than listed here: this set was typed out, so the three
+        # numeric fields added after it — turnover's neighbours and then
+        # the valuation ratios — each answered the string "unknown" to a
+        # bulk fetch, which the dialog then showed as a value.
+        NUMERIC = {k for k, s in OVERRIDABLE_FIELDS.items()
+                   if s.get("type") == "number"}
 
         def _unknown(f):
             return None if f in NUMERIC else ("none" if f == "focus_type"
@@ -4988,6 +5008,19 @@ def create_app() -> Flask:
                         values[f] = _unknown(f)
             except Exception as exc:
                 return jsonify({"error": f"Yahoo lookup failed: {exc}"}), 502
+
+        elif source == "openfigi":
+            # OpenFIGI maps identifiers and nothing else, so it answers
+            # every field here with "nothing" — which is the point of
+            # offering it: an empty answer from a source the user chose
+            # is information, and it is recorded as a pin they can move.
+            # Reached without a network call, because what OpenFIGI has
+            # to say about a TER is known without asking it.
+            for f in fields:
+                progress_update(_sf_tok, fields.index(f), len(fields), time.time() - _sf_t0)
+                values[f] = _unknown(f)
+            notes["_source"] = ("OpenFIGI resolves identifiers (ISIN to "
+                                "ticker) and publishes no fund data")
 
         elif source == "factsheet":
             # Reads the stored extraction rather than calling the API
@@ -6459,7 +6492,13 @@ def create_app() -> Flask:
                         k: derived.get(k) for k in
                         ("expenseRatioPct", "turnoverPct", "totalNetAssets",
                          "totalNetAssetsSrc", "currency", "isin",
-                         "market_cap", "style_box", "distribution")
+                         "market_cap", "style_box", "distribution",
+                         # The valuation ratios are inverted out of
+                         # Yahoo's equity-holdings table, so "what the
+                         # source said" and "what PorxPy derived" differ
+                         # here by more than a rename — which is exactly
+                         # what the inspector is for.
+                         "priceToBook", "trailingPE", "beta3Year")
                     }
                 except Exception as exc:
                     y["porxpy_derived"] = {"error": str(exc)}

@@ -73,6 +73,27 @@ Concretely, before finishing a change, sweep the parallel set it belongs to:
   record with it. What does NOT follow automatically is a reader: check
   whether the portfolio view, the optimiser or the frontend's
   `portfolios` list needs to know about it.
+- Add a **fund data field** (something the Operational or Trading tile
+  shows) → it lands in five places and one of them is easy to miss.
+  `OVERRIDABLE_FIELDS` (type, bounds, `unit`, and a `target` of
+  `profile.<key>` — without the target it is silently unextractable),
+  `FIELD_GROUPS` (which tile it appears on), the writer in
+  `extractors.extract_profile`,
+  and `fundFieldValue` in the frontend, which is a switch on the field
+  key and returns nothing for a key it has never heard of. What you do
+  NOT need to touch: `_field_provenance` and the extraction prompt both
+  read the registry, so a field with a target joins them by
+  construction. Name the profile key exactly as the field key —
+  provenance matches the two by name. A `unit` of `%`, `currency` or
+  `ratio` is read by the prompt builder, the extraction validator and
+  the Edit dialog's number input; a fourth unit means teaching all
+  three. Do NOT give a field its own source list: every editable field
+  offers every source in `FIELD_SOURCES`, including ones that cannot
+  possibly answer it, because an empty answer from a source the user
+  chose is information and a per-field list is the asymmetry this rule
+  exists to prevent. Widening the list means every path has to tolerate
+  every source — the `/source_fields` endpoint rejected three of them by
+  name until v0.122.0.
 - Change a **per-card override** → the two that describe a card travel
   together: `breakdown_source.<facet>` (whose numbers) and
   `breakdown_complete.<facet>` (read them as covering the whole fund).

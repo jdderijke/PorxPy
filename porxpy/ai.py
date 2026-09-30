@@ -103,6 +103,26 @@ _FIELD_ALIASES: dict[str, str] = {
     "fund_size":         "totalNetAssets",
     "turnover":          "turnoverPct",
     "portfolio_turnover": "turnoverPct",
+    # Valuation and risk. A factsheet prints these under their display
+    # names far more often than under Yahoo's key names, and the model
+    # answers in whatever the page called them.
+    "price_to_book":      "priceToBook",
+    "price_book":         "priceToBook",
+    "pb":                 "priceToBook",
+    "pb_ratio":           "priceToBook",
+    "p_b":                "priceToBook",
+    "price_to_earnings":  "trailingPE",
+    "price_earnings":     "trailingPE",
+    "pe":                 "trailingPE",
+    "pe_ratio":           "trailingPE",
+    "p_e":                "trailingPE",
+    "priceToEarnings":    "trailingPE",
+    # A factsheet says "Beta" and means the three-year figure; there is
+    # no second beta field for it to be confused with.
+    "beta":               "beta3Year",
+    "beta_3y":            "beta3Year",
+    "beta_3yr":           "beta3Year",
+    "three_year_beta":    "beta3Year",
 }
 
 
@@ -249,7 +269,12 @@ def _field_spec_lines() -> list[str]:
             if spec.get("max") is not None:
                 bits.append(f'max {spec["max"]}')
             rng = f' ({", ".join(bits)})' if bits else ""
+            # A ratio has no scale to state: 14.0 is fourteen times, not
+            # fourteen of anything. Asking for "units/thousands/millions"
+            # here invited an answer the validator then rejected, so the
+            # field disappeared from every extraction.
             hint = ('state unit as "percent"' if unit == "%"
+                    else 'state unit as "ratio"' if unit == "ratio"
                     else 'state unit as "units", "thousands", '
                          '"millions" or "billions"')
             lines.append(f'- "{name}" ({label}): a number{rng}; {hint}')
@@ -1060,7 +1085,14 @@ def validate_extraction(raw: dict) -> dict:
         spec = OVERRIDABLE_FIELDS[name]
         value = blk.get("value")
         if spec.get("type") == "number":
-            num = _to_number(value, decimal_comma_hint=(spec.get("unit") == "%"))
+            # The decimal-comma hint covers percents AND ratios, for the
+            # same reason: "13,705" in a Dutch or German factsheet is a
+            # P/E of 13.705, and reading it as 13705 puts it outside the
+            # field's range so the answer vanishes. No fund has a P/E in
+            # the thousands, so the thousands reading is never the one
+            # wanted here.
+            num = _to_number(value,
+                             decimal_comma_hint=spec.get("unit") in ("%", "ratio"))
             if num is None:
                 _reject(name, f"not a number: {value!r}")
                 continue
@@ -1069,6 +1101,16 @@ def validate_extraction(raw: dict) -> dict:
                 # A percent is a percent; the only sane conversion is
                 # from a fraction, which the prompt does not ask for.
                 num = num * 100.0 if unit in ("fraction", "ratio") else num
+            elif spec.get("unit") == "ratio":
+                # A multiple carries no scale, so there is nothing to
+                # convert — only a unit to recognise. "x", "times" and a
+                # blank are the same answer as "ratio"; anything else
+                # means the model thought it was reporting something
+                # other than a multiple, and that is worth rejecting
+                # rather than silently taking the number.
+                if unit not in ("", "ratio", "x", "times", "multiple"):
+                    _reject(name, f"unrecognised unit {unit!r} for a ratio")
+                    continue
             else:
                 scale = _UNIT_SCALE.get(unit)
                 if scale is None:

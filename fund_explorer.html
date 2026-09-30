@@ -9097,6 +9097,13 @@ function fundFieldValue(data, key){
                                     ? fmtFundSize(p.totalNetAssets, cur) : null;
     case 'holdingsCount':    return p.holdingsCount != null
                                     ? Number(p.holdingsCount).toLocaleString() : null;
+    // Ratios, so no unit suffix — "23.06" and not "23.06%". Two
+    // decimals: a P/E to the nearest whole number loses the difference
+    // between two funds tracking near-identical indices, and three says
+    // more than the monthly source knows.
+    case 'priceToBook':      return _ratio(p.priceToBook);
+    case 'trailingPE':       return _ratio(p.trailingPE);
+    case 'beta3Year':        return _ratio(p.beta3Year);
     case 'dataPoints':       return prices.length ? prices.length.toLocaleString() : null;
     case 'score': {
       // Both figures, as the pre-loaded list shows them: universe rank
@@ -9127,6 +9134,13 @@ function _fmtOrNull(v, fmt){
 }
 function _pct(v, dp){
   return (v == null || v === '') ? null : Number(v).toFixed(dp) + '%';
+}
+// A multiple. Zero is kept rather than treated as absent — a beta of
+// 0.00 is a real statement about a fund that does not track the market,
+// unlike a 0.00% TER, which is Yahoo saying it has no fee data.
+function _ratio(v){
+  if (v == null || v === '' || !isFinite(Number(v))) return null;
+  return Number(v).toFixed(2);
 }
 
 // Where a field's value came from.
@@ -13588,7 +13602,10 @@ function _efOwnControl(f, pin){
       + `</select>`;
   }
   if (f.type === 'number'){
-    const step = f.unit === '%' ? '0.01' : '1';
+    // Hundredths for anything measured in fractions of a unit — a
+    // percent and a ratio alike. A P/B stepping in whole units cannot
+    // be typed as 1.74 with the spinner at all.
+    const step = (f.unit === '%' || f.unit === 'ratio') ? '0.01' : '1';
     return `<input type="number" step="${step}"
              ${f.min != null ? `min="${f.min}"` : ''} ${f.max != null ? `max="${f.max}"` : ''}
              value="${escapeAttr(cur)}" placeholder="your value"
@@ -15072,8 +15089,12 @@ function openFactsheetModal(){
     `${factsheetMeta ? 'Replace' : 'Upload'} factsheet — ${lastFundData.ticker}`;
   const src = document.getElementById('fsSourceInput');
   src.value = ''; src.dataset.resolvedPath = '';
-  // A stored date wins: it is what the user already told us about THIS
-  // document. Only a fresh upload gets the month-end default.
+  // No date field: a factsheet states its own "as at" date and the
+  // extraction reads it off the document (see the AS OF section of the
+  // prompt), which is more reliable than a month-end guess and than
+  // anything typed here. Until a document has been read, its age is
+  // measured from the upload and the existing-factsheet line below says
+  // so in those words.
   document.getElementById('fsNote').value = factsheetMeta?.note || '';
   document.getElementById('fsError').style.display = 'none';
   document.getElementById('fsSaveBtn').disabled = true;

@@ -1,6 +1,6 @@
 # IMPORT_NEW_FUNDS_GUIDE.md — importing new funds and ETFs
 
-*Current as of v0.120.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.122.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between typing an ISIN into an empty box and having a fully
@@ -82,7 +82,7 @@ version you are looking at:
 
 ```
 =======================================================
-  PorxPy  v0.120.0 (built 2026-09-17)
+  PorxPy  v0.122.0 (built 2026-09-30)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -1337,10 +1337,19 @@ from the fund's name is not a Yahoo value, and the caption says
 
 | Source | Answers |
 |---|---|
-| **Yahoo** | The default for nearly everything. Prices, TER, size, yields, classification. |
-| **justETF** | ETF structure — replication method and management style, by ISIN. Best-effort, European funds mostly, scraped from a profile page. |
+| **Yahoo** | The default for nearly everything. Prices, TER, size, yields, classification, and the valuation ratios (P/B, P/E, beta). |
+| **OpenFIGI** | An identifier service: it maps an ISIN to a ticker and publishes no fund data. It answers every field here with nothing, without leaving the machine. |
+| **justETF** | ETF structure — replication method and management style, by ISIN. Best-effort, European funds mostly, scraped from a profile page. Its public profile page carries no valuation ratios, so asking it for a P/E or a beta comes back empty. |
 | **Factsheet** | Whatever the extraction read off the uploaded document. This is how you take a staged factsheet value. |
 | **My own value** | You type it. A field with a closed vocabulary gets a dropdown rather than a text box, so a typo cannot get through. |
+
+**Every field offers every source**, including the combinations that
+cannot work. That is deliberate (v0.122.0): a source with nothing to say
+answers *unknown*, and that is a real answer about that source — it tells
+you not to go looking there, and the choice is recorded as a pin you can
+move later. The alternative, hiding the sources that would come back
+empty, gave one row of the dialog three choices and the row beneath it
+four with nothing saying why.
 
 ### How it behaves
 
@@ -1551,7 +1560,10 @@ grouping read.
 
 ### Operational — 90 days
 
-Cost, size and activity. Restated a few times a year.
+Cost, size, activity, and how the portfolio underneath is valued.
+Restated a few times a year. The valuation ratios and the beta move with
+the market, but the sources publish them monthly at best, so the 90-day
+limit is about right for them too.
 
 | Element | Meaning |
 |---|---|
@@ -1561,6 +1573,9 @@ Cost, size and activity. Restated a few times a year.
 | **Turnover** | Portfolio turnover, percent per year. |
 | **Total assets** | Fund size in the trading currency. Tested against a floor, not ranked. |
 | **Number of holdings** | What the *fund* says it holds — "1,442 positions". Not how many rows you have loaded, which may be a top-10. |
+| **Price/book (P/B)** | The weighted price-to-book of the equities the fund holds. Read from Yahoo's equity-holdings table or a factsheet. Blank for a bond or commodity fund, which has no book value to price. |
+| **Price/earnings (P/E)** | The same, for earnings. A pair of world trackers differing by 2 here are not tracking the same thing. |
+| **Beta (3yr)** | How much the fund has moved with its market over three years. 1.00 is "with the market"; below 1 is damped, above 1 amplified, and an inverse fund is negative. Yahoo publishes this for some listings only — a blank means nobody stated it, not that the fund has no beta. |
 | **Data points** | *Calculated.* How many daily price bars are cached for this listing. |
 | **Score (all / peer)** | *Calculated.* Two ranks, 0–100: against the whole saved universe, then within this fund's peer group. The source column on this row is replaced by the **Peers popover** — click it to list the group and jump to any member. |
 

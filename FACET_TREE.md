@@ -1,6 +1,6 @@
 # FACET_TREE.md — the four facet trees
 
-*Current as of v0.120.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.122.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Sections 1–5 describe how the facet trees behave **today**, across all
@@ -901,6 +901,14 @@ records rather than deleted. The asset picker's name filter was closed
 in v0.89.0.
 Deliberate boundaries are described in the sections above; everything
 here is something that should be fixed.
+
+Re-checked at **v0.122.0** against the code each entry names, rather than
+carried forward: `country_key_at_level`'s docstring still says there is
+no super-region level while its body implements one
+(`porxpy/breakdowns.py:2065`); `rollup_holdings` still emits nine facet
+keys with no `super_sector` among them (`porxpy/breakdowns.py:385`); and
+`Asset_definitions.csv` still reports the duplicate `futures` match on
+load. All three stand as written.
 
 ### Fixed in v0.93.1 — the asset card ignored its own default level
 

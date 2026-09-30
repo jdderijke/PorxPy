@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.120.0. This is the fullest architecture write-up;
+*Current as of v0.122.0. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -217,6 +217,18 @@ The two buttons are a pair: Reload Fund Data re-asks Yahoo and
 deliberately leaves uploaded holdings alone, so this is the half that
 was missing.
 
+**A factsheet is dated by the document, not by the upload.** Every sheet
+states the date its data describes — "as at 31 August 2026", "per
+31-08-2026", "Stand: 31.08.2026", "Alle gegevens per 31 augustus 2026" —
+and the reading takes that date and stores it against the document. That
+is what makes the staleness warning honest: a sheet you download today
+is usually a month or two old already, and measuring from the upload
+would call it fresh for six months. The same applies to a sheet you
+upload by hand, because the *Extract and apply* box in the upload dialog
+is ticked by default. Until a document has been read nothing knows its
+date, so its age is measured from the upload and the dialog says so in
+those words.
+
 PorxPy recognises six fund houses — iShares, Vanguard, Amundi,
 Xtrackers, VanEck and SPDR. It can *find* documents by itself at
 **iShares** (both), **Xtrackers** (holdings) and **Amundi**
@@ -255,6 +267,25 @@ holdings file is checked against the columns your saved mapping was made
 on before it is allowed to replace anything: a file whose layout has
 changed is refused, because a mapping applied to the wrong file produces
 rows that parse cleanly and mean nothing.
+
+### Know what you are paying for the exposure
+
+Two world trackers can hold the same 1,500 companies and still be
+priced differently, because they weight them differently. The
+**Operational** tile carries three figures that say so: **Price/book
+(P/B)** and **Price/earnings (P/E)** — the valuation of the equities the
+fund actually holds — and **Beta (3yr)**, how far it has moved with its
+market over three years.
+
+They come from Yahoo's equity-holdings table, from a factsheet, or from
+your own value, and each can be pinned to a source like every other
+field — every field offers every source, including the ones that will
+come back empty, because "justETF has nothing on this" is an answer
+worth being given rather than a choice worth hiding. A blank is a real
+answer here too: a bond or commodity fund has no book value to price,
+and Yahoo publishes a beta for some listings only. None of the three
+feeds the score or the optimiser — they are there to be read, next to
+the TER, when two funds look interchangeable and are not.
 
 ### Rank the funds, not just the portfolio
 
@@ -724,7 +755,7 @@ independently.
 
 | Service        | Purpose                                              | When called                          |
 |----------------|------------------------------------------------------|--------------------------------------|
-| Yahoo Finance  | Fund profile, price history, holdings, FX, search    | Always (the main data source)        |
+| Yahoo Finance  | Fund profile, price history, holdings, FX, search, valuation ratios | Always (the main data source)        |
 | OpenFIGI       | ISIN → ticker resolution                             | When adding a fund by ISIN           |
 | justETF        | ETF structure (replication, style) — best effort     | Optional, ETFs only, user-confirmed  |
 | Anthropic API  | Reading an uploaded issuer factsheet                 | Off by default; only when you ask    |
@@ -805,8 +836,8 @@ its HTTPS scanning, or turn that scanning off.
 Individual fields age by **group** rather than by cache category, since
 how often something changes is a property of the data and not of where
 it happens to be stored: identification effectively never (an ISIN does
-not change), structure yearly, operational figures like TER and fund
-size quarterly, trading data daily. That is what the field-level
+not change), structure yearly, operational figures like TER, fund
+size and the valuation ratios quarterly, trading data daily. That is what the field-level
 freshness indicators and the per-field re-source controls read.
 
 ---
@@ -903,6 +934,6 @@ it does.
 
 ## Version
 
-Current release: **0.120.0** (2026-09-17)
+Current release: **0.122.0** (2026-09-30)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

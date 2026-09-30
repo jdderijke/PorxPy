@@ -525,6 +525,64 @@ def extract_fund_operations(ticker: yf.Ticker) -> dict:
     return result
 
 
+def extract_equity_holdings(ticker: yf.Ticker) -> dict:
+    """Valuation ratios for the equities a fund holds, from Yahoo.
+
+    Why this exists separately from :func:`extract_fund_operations`:
+    Yahoo keeps a fund's cost and size in the ``fundProfile`` module and
+    the valuation of what it HOLDS in ``topHoldings.equityHoldings``, a
+    different table with a different unit convention — and the unit is
+    the whole reason this is a named function with a comment rather than
+    two lines inside ``extract_profile``.
+
+    **The table is stated as RECIPROCALS.** Yahoo returns 0.04035 under
+    "Price/Earnings" for SPY; the ratio is 1 / 0.04035 = 24.78, which is
+    SPY's actual P/E (``info["trailingPE"]`` says 24.83 on the same day).
+    The same holds for Price/Book: 0.18935 inverts to 5.28, where
+    ``info["priceToBook"]`` reports 1.79 — a number that describes no
+    version of SPY and is not used here. Checked again on TDIV.AS
+    (0.07132 -> 14.02 against ``trailingPE`` 13.71) and sanity-checked
+    against index fact sheets for IWDA.AS and VWRL.AS.
+
+    The inversion is therefore UNCONDITIONAL rather than decided by
+    magnitude, following the rule the expense-ratio chain above sets out:
+    take the unit the source is known to use and say which one it is. If
+    yfinance ever starts handing these over already inverted, every fund
+    in the app will read absurdly (a P/E of 0.04) rather than subtly
+    wrongly — which is the failure mode to prefer, and the cross-check
+    above is how to confirm it.
+
+    Args:
+        ticker: yfinance Ticker.
+
+    Returns:
+        ``{"priceToBook": <ratio>, "trailingPE": <ratio>}``, either of
+        which may be ``None`` — the table is empty for a bond or
+        commodity fund, which is a correct answer rather than a failure.
+    """
+    out: dict = {"priceToBook": None, "trailingPE": None}
+    try:
+        eh = ticker.funds_data.equity_holdings
+        if eh is None or getattr(eh, "empty", True):
+            return out
+        for key, row in (("trailingPE", "price/earnings"),
+                         ("priceToBook", "price/book")):
+            raw = df_cell(eh, row, 0)
+            try:
+                f = float(raw)
+            except (TypeError, ValueError):
+                continue
+            # A zero or a non-finite reciprocal has no ratio to name, and
+            # dividing by it would raise or produce an infinity that then
+            # travels into the cache. Absent is the honest answer.
+            if f != f or f <= 0 or f in (float("inf"), float("-inf")):
+                continue
+            out[key] = round(1.0 / f, 4)
+    except Exception as exc:
+        print(f"[EquityHoldings] ERROR: {exc}")
+    return out
+
+
 def extract_isin_from_ticker(ticker: yf.Ticker, info: dict | None = None
                              ) -> str | None:
     """Best-effort ISIN extraction from a yfinance Ticker.
@@ -1054,6 +1112,13 @@ def extract_profile(ticker: yf.Ticker) -> dict:
         "fiftyTwoWeekHigh", "fiftyTwoWeekLow",
         "averageVolume", "averageDailyVolume10Day",
         "fundInceptionDate",
+        # Beta over three years. The flat blob is the ONLY place Yahoo
+        # publishes it for a fund — there is no equivalent of the
+        # equity-holdings table below — and it is absent for most
+        # European UCITS listings. An absent beta is a correct answer,
+        # and no other source is consulted for one, so nothing here
+        # tries to fill the gap.
+        "beta3Year",
     ]
     profile = {k: safe(info.get(k)) for k in keys_from_info if safe(info.get(k)) is not None}
 
@@ -1132,6 +1197,27 @@ def extract_profile(ticker: yf.Ticker) -> dict:
 
     if expense_pct is not None:  profile["expenseRatioPct"] = expense_pct
     if turnover_pct is not None: profile["turnoverPct"]     = turnover_pct
+
+    # Valuation of what the fund holds (v0.121.0). The equity-holdings
+    # table is the primary source because it is the one populated for
+    # European UCITS listings, where the flat blob has nothing — the
+    # mirror image of the expense-ratio chain above, and the same reason
+    # both walk a chain rather than trusting one module.
+    #
+    # ``info["trailingPE"]`` is a sound fallback: where both answer they
+    # agree to within a couple of percent. ``info["priceToBook"]`` gets
+    # NO such fallback — see extract_equity_holdings for the SPY figures
+    # showing it is a different quantity entirely for a fund. A blank
+    # P/B is better than a confident wrong one.
+    _eq = extract_equity_holdings(ticker)
+    pe = _eq.get("trailingPE")
+    if pe is None:
+        pe = _num(info.get("trailingPE"))
+        if pe is not None and pe <= 0:
+            pe = None
+    if pe is not None:            profile["trailingPE"]  = round(pe, 4)
+    if _eq.get("priceToBook") is not None:
+        profile["priceToBook"] = _eq["priceToBook"]
     if total_assets is not None:
         profile["totalNetAssets"]    = total_assets
         # Which Yahoo key supplied it. The three disagree in both value

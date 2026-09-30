@@ -3,6 +3,149 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.122.0] - 2026-09-30
+
+### Changed - every source is offered for every field, with no exceptions
+
+The Edit fund dialog used to show a different set of sources on
+different rows. Six fields carried their own shorter list: the holdings
+count and the three valuation figures added in v0.121.0 omitted justETF,
+and the 52-week high and low offered only Yahoo and your own value.
+Every one of those omissions was individually defensible — justETF really
+does not publish a P/E, and no factsheet prints a 52-week range — and the
+set of them was an inconsistency: one row offering three choices and the
+row beneath it four, with nothing on the screen saying which was
+intended.
+
+Now `config.DEFAULT_FIELD_SOURCES` is `FIELD_SOURCES`, every editable
+field gets all of it, and `field_sources()` no longer reads a per-field
+override at all — so there is nowhere left to write an exception. Only
+calculated and read-only fields still answer with no sources, which is a
+different statement: they have nothing to choose because PorxPy derives
+them, or because re-sourcing an ISIN would orphan every record keyed on
+it.
+
+The principle was already written down at the top of that section of
+`config.py` and had simply not been applied: *a source that has nothing
+for a field answers "unknown", and that is a real answer about that
+source, not a failure.* An empty answer from justETF tells you not to go
+looking there, and it is recorded as a pin you can move later.
+Suppressing the choice withheld that answer instead of giving it.
+
+**OpenFIGI is now offered too**, which is the hardest case: it is an
+identifier service that maps an ISIN to a ticker and publishes no fund
+data whatsoever. It is listed anyway, because "every source for every
+field" is only true by construction if it has no exceptions, and the
+alternative is a table of what each source supports — the thing that
+drifted. It answers every field with nothing and does so *without
+leaving the machine*, since what OpenFIGI has to say about a TER is known
+without asking it.
+
+### Fixed - choosing a widened source could have returned an HTTP error
+
+`POST /api/funds/<ticker>/source_fields` validated its `source` against a
+hard-coded `("yahoo", "justetf", "factsheet")` rather than against the
+registry, so any source outside those three was a 400. Every other path —
+the per-field `PUT .../fields/<field>/source`, the Save commit, the
+staleness refresh — reads `field_sources()` and needed no change. This is
+the general hazard in widening the list: a source that is offered and
+then rejected by the fetch is worse than one that was never offered,
+because the user gets an error where an empty answer belongs.
+
+## [0.121.0] - 2026-09-30
+
+### Added - valuation and risk on the Operational tile
+
+The **Operational** group now carries three more figures about every
+fund: **Price/book (P/B)**, **Price/earnings (P/E)** and **Beta (3yr)**.
+They appear on the fund page's Operational tile and in the Edit fund
+dialog beside TER and turnover, and each can be pinned to a source and
+corrected by hand like every other field.
+
+Why they were worth adding: two world trackers can hold the same
+companies and weight them differently, and nothing on the screen said
+so. A TER comparison answers what the wrapper costs; these answer what
+you are buying with it.
+
+**Where they come from.** Yahoo publishes a fund's cost and size in one
+module and the valuation of what it HOLDS in another — `equityHoldings`
+— and that table is stated as RECIPROCALS. Yahoo returns 0.04035 under
+"Price/Earnings" for SPY; the ratio is 1/0.04035 = 24.78, which is SPY's
+actual P/E, and `info["trailingPE"]` said 24.83 the same day. The new
+`extractors.extract_equity_holdings` inverts unconditionally rather than
+sniffing by magnitude, for the reason the expense-ratio chain gives a
+few lines above it: take the unit the source is known to use and say
+which one. Confirmed on SPY, TDIV.AS, IWDA.AS and VWRL.AS.
+
+`info["priceToBook"]` is deliberately NOT a fallback for P/B. It reports
+1.79 for SPY, where the equity-holdings table inverts to 5.28 — it is a
+different quantity for a fund, and a blank is better than a confident
+wrong number. `info["trailingPE"]` IS the fallback for P/E, since where
+both answer they agree to within a couple of percent. Beta comes from
+`info["beta3Year"]` alone; Yahoo publishes no equivalent table for it,
+and it is absent for most European UCITS listings.
+
+**justETF was not offered as a source for these three** — reversed one
+release later, in v0.122.0. The reasoning was that its public profile
+page prints a TER, a fund size, a replication method and a distribution
+policy and none of P/B, P/E or beta (checked against the live pages for
+IE00B4L5Y983 and NL0009690239), so a choice that can only come back
+empty would read as "justETF says this fund has no P/E". Kept here as a
+record of a decision that was wrong: see v0.122.0 for why an empty
+answer is worth giving.
+
+**A factsheet can supply all three.** The extraction prompt is generated
+from the field registry, so the new fields joined it automatically — but
+they needed a unit the registry did not have. A ratio is neither a
+percent nor a currency amount, so `"unit": "ratio"` now exists: the
+prompt asks the model to state the unit as `"ratio"` (rather than
+offering it "units, thousands, millions or billions" and then rejecting
+whatever it picked), the validator accepts `ratio`, `x`, `times`,
+`multiple` or a blank and converts nothing, and the Edit dialog's number
+input steps in hundredths so a P/B of 1.74 can be typed at all. The
+decimal-comma hint now covers ratios as well as percents, so a Dutch
+factsheet's "13,705" reads as a P/E of 13.705 rather than 13705 and
+vanishing for being out of range. Aliases were added for the names a
+factsheet actually prints — `pe_ratio`, `price_to_book`, `p_b`, plain
+`beta` and the rest.
+
+Beta's registry entry has a **minimum of -10**, not 0. An inverse or
+short fund has a negative beta, and those are precisely the funds whose
+beta anyone looks up; a min copied from the two ratios beside it would
+have rejected them silently.
+
+### Fixed - a bulk source fetch answered "unknown" for most numeric fields
+
+`/api/funds/<ticker>/fields/fetch` carried a hand-written set of the
+numeric fields — `expenseRatioPct`, `totalNetAssets`, `turnoverPct` —
+and anything not in it fell through to the string `"unknown"`. So asking
+Yahoo for a last close, a NAV, a 52-week high or low, a volume, a
+holdings count or either yield returned the word "unknown" where the
+profile had the number, and the dialog displayed it as the source's
+answer. The set is now derived from the registry (`type == "number"`),
+which is also what stops the three new fields from joining them.
+
+### Housekeeping
+
+- `tools/data_coverage.py` reports a **Valuation & risk** group. Low
+  coverage there is a fact about the sources rather than a defect: the
+  equity-holdings table is empty for bond and commodity funds.
+- The fund inspector's "what PorxPy derived" block lists the three new
+  keys, since the inversion means the raw source and the derived value
+  differ by more than a rename.
+- The factsheet upload dialog carried a comment about a stored date
+  winning over a month-end default. There has been no date field in that
+  dialog for some time — the date is read off the document — and the
+  comment now says so.
+
+### Note on existing funds
+
+The three figures are part of the Yahoo profile, which is cached. A fund
+already on disk shows a dash for all three until its profile is
+refetched — **Reload Fund Data** on the fund page does it immediately,
+and the ordinary 90-day Operational freshness limit does it eventually.
+Nothing is lost in the meantime; the tile is honest about not knowing.
+
 ## [0.120.0] - 2026-09-17
 
 ### Added - a new portfolio can be cloned from an existing one
