@@ -1,6 +1,6 @@
 # IMPORT_NEW_FUNDS_GUIDE.md — importing new funds and ETFs
 
-*Current as of v0.122.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.122.4. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between typing an ISIN into an empty box and having a fully
@@ -82,7 +82,7 @@ version you are looking at:
 
 ```
 =======================================================
-  PorxPy  v0.122.0 (built 2026-09-30)
+  PorxPy  v0.122.4 (built 2026-09-30)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -276,7 +276,7 @@ header:
 
 | Control | What it does |
 |---|---|
-| **★ Save to pre-loaded** | Shown when the fund is **not** saved. Clicking it re-requests the fund with a commit flag, which persists profile, holdings, sectors, asset class and price history to the cache. |
+| **★ Save to pre-loaded** | Shown when the fund is **not** saved. Clicking it re-requests the fund with a commit flag, which persists profile, holdings, sectors, asset class and price history to the cache. **Until you press it, nothing about the fund is on disk** — the tiles, the price chart and Yahoo's top-10 holdings are all in the page and nowhere else. That is why a breakdown card cannot be switched to **Holdings** on an unsaved fund even when the holdings are visible: everything server-side reads the stored rows, and there are none yet. The card says so, and your choice is remembered and takes effect once you save. |
 | **✓ Saved** | Shown once it is on disk. Adding the fund to a portfolio saves it implicitly, so this often appears without you pressing anything. |
 | **⚙ In optimizer / ⃠ Excluded** | Only shown for a saved fund. Flips whether the optimiser may buy or sell it. Stored per fund by ISIN, so it covers every listing. |
 | **+ Add to portfolio** | Adds this listing to the active portfolio, and shows which portfolios already hold it. Membership is by ticker — two listings of one ETF are two holdings. |
@@ -1280,6 +1280,19 @@ sector,Technology,24.0
 It may cover any subset of asset class, sector, country and currency.
 Weights may be percent (0–100) or fraction (0–1) — the parser detects
 which, per facet. Duplicate `(facet, key)` pairs are summed.
+
+**Save it however your spreadsheet likes.** The delimiter is sniffed
+(comma, semicolon, tab or pipe), and a decimal comma is read as a decimal
+comma, so a Dutch or German Excel writing `country;Japan;6,4` needs no
+editing. The encoding is detected too: *CSV UTF-8* with or without its
+byte-order mark, a plain *CSV* saved as Windows-1252, and even *Unicode
+Text* (which is UTF-16, tab-delimited) all import, accents intact. An
+`.xlsx` can be uploaded directly and needs no export at all.
+
+The file's own wording is what gets stored, not the value it resolved to.
+That is deliberate: `Financial Services` is kept as written and resolved
+again on every read, so teaching the vocabulary a new spelling later
+repairs an upload made earlier without re-uploading anything.
 
 The dialog runs in up to three stages:
 

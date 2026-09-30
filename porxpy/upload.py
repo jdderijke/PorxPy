@@ -274,7 +274,19 @@ def _delete_token(token: str) -> None:
 # ---------------------------------------------------------------------------
 # CSV parsing — encoding + delimiter detection
 # ---------------------------------------------------------------------------
-_ENCODINGS_TO_TRY: tuple[str, ...] = ("utf-8", "utf-8-sig", "cp1252", "latin-1")
+# utf-8-sig FIRST, not utf-8 (v0.122.1). Plain "utf-8" succeeds on a
+# BOM'd file and leaves the BOM in the text as a U+FEFF on the first
+# cell, so it was never reached: "utf-8-sig" sat second and could not be.
+# Excel's "CSV UTF-8 (Comma delimited)" always writes that BOM, so the
+# first column name arrived as "<BOM>facet" and the first header cell
+# of every spreadsheet export carried an invisible character.
+#
+# This module was the ONLY CSV reader in PorxPy that got this wrong:
+# resources.py, bundles.py and the targets-CSV reader all lead with
+# utf-8-sig, and the BOM fix recorded in v0.118.0 was made to the
+# targets reader alone. utf-8-sig decodes BOM-less UTF-8 identically, so
+# leading with it costs nothing.
+_ENCODINGS_TO_TRY: tuple[str, ...] = ("utf-8-sig", "cp1252", "latin-1")
 
 
 def _decode_csv_bytes(data: bytes) -> tuple[str, str]:
@@ -283,17 +295,45 @@ def _decode_csv_bytes(data: bytes) -> tuple[str, str]:
     Args:
         data: Raw bytes from the upload.
 
+    UTF-16 is handled ahead of the ladder because it cannot be found by
+    trying: Excel's "Unicode Text (*.txt)" export is UTF-16 with a BOM,
+    and UTF-16-encoded ASCII is all bytes below 0x80, so
+    ``data.decode("utf-8")`` SUCCEEDS on it and yields every character
+    interleaved with NULs. The csv module then failed further downstream
+    with "new-line character seen in unquoted field", which says nothing
+    about the real problem. A BOM identifies it exactly; failing that, a
+    file where a fifth of the bytes are NUL is UTF-16 and nothing else.
+
     Returns:
         ``(decoded_text, encoding_used)``. ``latin-1`` always succeeds
         (it accepts any byte) so this never raises.
     """
+    import codecs
+    if data[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE):
+        try:
+            return data.decode("utf-16"), "utf-16"
+        except UnicodeDecodeError:
+            pass
+    elif data[:4096].count(0) > len(data[:4096]) // 5:
+        for enc in ("utf-16-le", "utf-16-be"):
+            try:
+                return data.decode(enc), enc
+            except UnicodeDecodeError:
+                continue
+
     for enc in _ENCODINGS_TO_TRY:
         try:
-            return data.decode(enc), enc
+            text = data.decode(enc)
         except UnicodeDecodeError:
             continue
+        # Belt and braces: a BOM can also survive a cp1252 or latin-1
+        # decode, where it comes through as three visible mojibake
+        # characters instead. A stray BOM in the first cell is invisible
+        # on screen and fatal to a header match, so it is stripped
+        # whichever encoding got us here.
+        return text.lstrip("\ufeff"), enc
     # Should be unreachable since latin-1 accepts anything.
-    return data.decode("latin-1", errors="replace"), "latin-1"
+    return data.decode("latin-1", errors="replace").lstrip("\ufeff"), "latin-1"
 
 
 def _sniff_delimiter(sample: str) -> str:
@@ -2259,15 +2299,26 @@ def parse_breakdown_csv_preview(
     ]
 
     # Pass 3: resolve keys within each canonical facet ----------------
-    # accepted[facet]: list of (canonical_key, weight)
+    # accepted[facet]: list of (raw_key, canonical_key, weight)
     # unresolved_keys: distinct (facet, raw_key) pairs awaiting mapping.
-    accepted: dict[str, list[tuple[str, float]]] = {f: [] for f in _BD_FACETS}
+    #
+    # The RAW travels with the canonical (v0.122.1). The store's contract
+    # is that an item keeps what the document said and is resolved again
+    # on every read, which is what makes a later alias edit repair a past
+    # upload with no migration. Reporting only the canonical here threw
+    # the file's wording away before the commit could store it, so a CSV
+    # row reading "Financial Services" was stored as the resolved
+    # "financial services" — harmless while the alias exists, and a
+    # silent loss of the evidence the moment anyone asks what the file
+    # actually said.
+    accepted: dict[str, list[tuple[str, str, float]]] = {f: [] for f in _BD_FACETS}
     unresolved_keys_bucket: dict[tuple[str, str], int] = {}
     for facet, rows in facet_groups.items():
         for key_raw, w in rows:
             canon_key = _resolve_breakdown_key(facet, key_raw)
             if canon_key:
-                accepted[facet].append((canon_key, w))
+                accepted[facet].append((key_raw.strip() or canon_key,
+                                        canon_key, w))
             else:
                 k_raw = key_raw.strip()
                 if not k_raw:
@@ -2287,8 +2338,13 @@ def parse_breakdown_csv_preview(
     # collapse duplicate canonical keys here — that's done at commit
     # time (after the user's resolutions are merged in), so duplicates
     # introduced by user mappings get summed too.
+    # "key" is the resolved canonical and "raw" is what the file said.
+    # Both are reported: the dialog counts and displays the canonical,
+    # and the commit stores the raw. They are equal for a file that
+    # already uses canonical spellings, which is why the omission of
+    # "raw" went unnoticed.
     accepted_out: dict[str, list[dict]] = {
-        f: [{"key": k, "weight": w} for k, w in items]
+        f: [{"raw": r, "key": k, "weight": w} for r, k, w in items]
         for f, items in accepted.items()
     }
 
@@ -2420,11 +2476,26 @@ def commit_breakdown_upload(
     if not isin:
         raise ValueError("isin is required")
 
-    # Per-facet accumulator: list of (canonical_key, weight). Duplicates
-    # are summed at the end (per the design — uploading "US" and
-    # "United States" both → united_states means the user meant them
-    # combined).
-    per_facet: dict[str, list[tuple[str, float]]] = {f: [] for f in _BD_FACETS}
+    # Per-facet accumulator: list of (raw, pinned_node, weight).
+    #
+    # THREE elements, from every producer below without exception — the
+    # collapse loop at the end unpacks three, and two of the four
+    # producers used to append two, so every commit carrying at least one
+    # cleanly-resolved row died with "not enough values to unpack
+    # (expected 3, got 2)" (fixed in v0.122.1). It is stated here rather
+    # than left to each producer to remember because the failure is
+    # invisible until the last loop runs, by which point the shape has
+    # already been mixed.
+    #
+    # ``pinned_node`` is "" for a value the resolver placed on its own,
+    # and a canonical key only where the USER supplied the mapping: a pin
+    # records a decision about this document, so a value the vocabulary
+    # can place carries none and follows a later alias edit.
+    #
+    # Duplicates are summed at the end (per the design — uploading "US"
+    # and "United States" both meaning united_states means the user meant
+    # them combined).
+    per_facet: dict[str, list[tuple[str, str, float]]] = {f: [] for f in _BD_FACETS}
 
     # Branch 1: inline accepted (no resolution needed).
     if not token:
@@ -2443,7 +2514,12 @@ def commit_breakdown_upload(
                 if w < 0:
                     raise ValueError(
                         "negative weight in inline accepted payload")
-                per_facet[facet].append((k, w))
+                # The file's own wording, with the resolved canonical as
+                # the fallback for a payload minted before the preview
+                # reported it (an in-flight token, or an older client).
+                # No pin: the resolver placed this one unaided.
+                raw = str(it.get("raw") or "").strip() or k
+                per_facet[facet].append((raw, "", w))
 
     # Branch 2: token-based resolution.
     else:
@@ -2489,8 +2565,13 @@ def commit_breakdown_upload(
         # Start from the already-accepted items.
         for facet in _BD_FACETS:
             for it in (payload.get("accepted") or {}).get(facet, []):
+                # Same shape and the same reasoning as branch 1: the raw
+                # is stored, the canonical is the fallback, and nothing
+                # here is pinned because nothing here needed the user.
+                _k = str(it.get("key") or "")
                 per_facet[facet].append(
-                    (str(it.get("key") or ""), float(it.get("weight") or 0.0))
+                    (str(it.get("raw") or "").strip() or _k, "",
+                     float(it.get("weight") or 0.0))
                 )
 
         # Apply key_map within each facet ----------------------------

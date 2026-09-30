@@ -1,6 +1,6 @@
 # The PorxPy Optimizer — how it works
 
-*Applies to `porxpy/optimizer.py` as of v0.122.0. The full audit — every
+*Applies to `porxpy/optimizer.py` as of v0.122.4. The full audit — every
 claim in the document re-checked against the module — was done at
 v0.91.0; since then the v0.96.0 peer-scoring change was folded into §7b
 and §13's one remaining open issue was re-confirmed by reading
@@ -841,7 +841,7 @@ Defects specific to the optimiser, as opposed to the deliberate
 boundaries in §12. Each is something that should be fixed rather than
 something someone chose.
 
-One remains, re-confirmed at v0.122.0 (`porxpy/optimizer.py:380`, still
+One remains, re-confirmed at v0.122.4 (`porxpy/optimizer.py:380`, still
 `norm = fw / np.sqrt(len(keys) + 1)` inside the per-block loop):
 `_add_target_rows` still computes
 its `norm = facet_weight / sqrt(len(keys) + 1)` inside a body called once

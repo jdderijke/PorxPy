@@ -94,6 +94,14 @@ Concretely, before finishing a change, sweep the parallel set it belongs to:
   exists to prevent. Widening the list means every path has to tolerate
   every source — the `/source_fields` endpoint rejected three of them by
   name until v0.122.0.
+- Read a **user-supplied CSV** → decode it through
+  `upload._decode_csv_bytes` and nothing else. It is the one place that
+  knows a spreadsheet export can be UTF-8 with a BOM, cp1252, or UTF-16
+  (Excel's "Unicode Text", which plain `decode("utf-8")` accepts and
+  silently interleaves with NULs). Three readers carried their own
+  ladders until v0.122.1 and only one of them handled the BOM. The
+  resource-CSV reader in `resources.py` is deliberately separate — those
+  are files PorxPy writes itself — and says so at the site.
 - Change a **per-card override** → the two that describe a card travel
   together: `breakdown_source.<facet>` (whose numbers) and
   `breakdown_complete.<facet>` (read them as covering the whole fund).

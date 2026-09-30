@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.122.0. This is the fullest architecture write-up;
+*Current as of v0.122.4. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -391,7 +391,10 @@ one — so *narrowing* a fund's description can be what makes it
 unrankable, and broadening it is the repair.
 
 **How to read a dot is on the dot.** Hovering any dot gives that dot's
-own reading — "Sector — 82% at sector · counted from holdings" — followed
+own reading, naming the source it came from — "Sector — 82% at sector ·
+counted from holdings", "Country — 100% at country · counted from an
+uploaded CSV", "Asset — 100% at super class · reported by Issuer
+(Yahoo)" — followed
 by the whole scale: what each colour means, and what solid and hollow
 mean. The column headers carry the same text, and the fund page prints
 the two-line version under its labelled block, since that is the screen
@@ -934,6 +937,6 @@ it does.
 
 ## Version
 
-Current release: **0.122.0** (2026-09-30)
+Current release: **0.122.4** (2026-09-30)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

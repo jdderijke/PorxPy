@@ -3,6 +3,241 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.122.4] - 2026-09-30
+
+### Fixed - a new fund drew the superseded flat tile layout
+
+Opening a fund showed the old flat metrics grid instead of the four group
+tiles, then jumped to the group tiles when a request landed.
+
+A regression from v0.122.3, and the interesting part is why. That release
+stopped the group tiles from being drawn with the PREVIOUS fund's field
+taxonomy, which also meant they were no longer drawn with *anything*
+during the round-trip that fetches the new one. `showMetrics` reads the
+absence of a taxonomy as "the taxonomy could not be fetched" and draws
+the flat grid, which is the documented fallback for exactly that. So the
+old layout had always been one failed request away, and v0.122.3 turned
+"failed" into "has not answered yet".
+
+Those are different states and the code had no way to say so. The load is
+now `'idle' | 'loading' | 'ready' | 'failed'`:
+
+- **loading / idle** — draw neither layout. The metrics area stays as
+  `clearFundView` left it, empty like the rest of the fund panel, and the
+  repaint that follows draws the group tiles. A page that changes shape
+  under the reader is worse than one that fills in.
+- **ready** — group tiles, flat grid hidden.
+- **failed** — the flat grid, which is what it is for.
+
+Forgetting another fund's taxonomy resets the state with it: left on
+`ready` with no payload, `showMetrics` would read a successful load that
+never happened.
+
+Verified in a browser engine across all four states, including a
+different fund's taxonomy being dropped:
+
+```
+in flight       metrics=hidden  groups=hidden  (loading)
+taxonomy ready  metrics=hidden  groups=SHOWN   (ready)
+taxonomy failed metrics=SHOWN   groups=hidden  (failed)
+other fund      metrics=hidden  groups=hidden  (idle)
+```
+
+## [0.122.3] - 2026-09-30
+
+### Fixed - "View factsheet" offered the PREVIOUS fund's document
+
+Open a fund that has a factsheet, then open one that has not, and the
+button row still showed an enabled **View factsheet** — which would have
+opened the document belonging to the fund before it. Not a cosmetic
+defect: the wrong fund's PDF.
+
+`factsheetMeta` was module-level state with no record of which fund it
+described. `loadFactsheetMeta` clears it, but it is asynchronous and the
+button row is painted synchronously by the same function that starts it,
+so the first paint of every fund used whatever the last fund had left
+behind.
+
+The same defect, unreported, was live in `fieldTaxonomy` — and there it
+is worse, because that payload carries each field's pin, source and last
+value. The group tiles captioned the new fund's numbers with the previous
+fund's provenance until the request landed.
+
+Both now belong to a fund, and one function — `forgetPerFundCaches` —
+drops them when a different fund arrives, called before anything paints.
+It is one function rather than a guard per cache so the next per-fund
+cache has an obvious home. The pattern is the one the portfolio state
+already uses: `portfolioHoldings` has `portfolioHoldingsPid` beside it,
+and `cashPositions` has `cashPositionsPid`. A repaint of the SAME fund
+keeps its caches, so no label flickers from "Replace" to "Upload" and
+back.
+
+### Fixed - "this fund has no its holdings to read it from"
+
+Selecting **Holdings** as the source for a facet on an unsaved fund
+answered, verbatim, *"stayed on Yahoo — this fund has no its holdings to
+read it from"*. One phrase map was being spliced into two different
+sentence positions: "its holdings" reads correctly after "stayed on" and
+not at all after "this fund has no".
+
+The reason a switch does not take now comes from the server, which is the
+only place that can tell the two situations apart:
+
+- **The fund was never saved.** Its Yahoo top-10 is on the screen and in
+  no file. Everything server-side recomputes availability from the store,
+  correctly finds nothing, and the card falls back to Yahoo. The fix is
+  to press Save; the pin is remembered and takes effect then.
+- **The fund is saved and that source genuinely has nothing** for this
+  facet.
+
+Reported on IE00BYTRRD19 (WTCH.AS), where Yahoo published a top-10 with
+country data, the Holdings button offered itself, and the switch was
+refused with nothing to say. The availability itself was right throughout:
+an unsaved fund persists nothing by design (the explicit-save rule), so
+the page offers what is on screen while the server answers from disk.
+
+`PUT /api/funds/<ticker>/breakdown_source/<facet>` also stopped echoing
+the requested source back as `source`. It now reports the source actually
+**in force**, with `requested`, `pinned` and `note` beside it — a caller
+trusting the old field was told a switch had worked when it had not.
+
+### Known, not changed
+
+The pre-loaded list includes funds that were only ever *looked at*: a
+fetch stamps an identity block into the listing file, the list walks
+listing files, and `utils.listing_is_saved` exists precisely because the
+file's presence stopped meaning "saved" when that began. So an unsaved
+fund appears in the list as a row with no name and no data, which is what
+led to the report above. Whether such a row should be hidden or marked is
+a product decision and is left alone here.
+
+## [0.122.2] - 2026-09-30
+
+### Fixed - a quality dot called an uploaded CSV "holdings"
+
+Upload a country or currency breakdown CSV and switch the card to it, and
+the fund's quality dot reported the facet as *counted from holdings* — a
+source the fund need not even have. On LU1681044480 (AASI.PA), which has
+no holdings rows at all, both the country and the currency dot named
+holdings as their source.
+
+The backend was right throughout: `/api/quality` reported
+`source: "upload"`, `coverage: 1.0`, `measured: true` for both facets, and
+the breakdown card's own provenance caption said "selected from an
+uploaded CSV". The two quality surfaces threw that away. `measured` is
+true for holdings AND for an uploaded CSV — both are counted from actual
+positions rather than reported by the issuer — and both surfaces treated
+it as if it meant holdings:
+
+- the dot's tooltip sentence hardcoded `'counted from holdings'`
+- the fund page's labelled rows hardcoded the word `holdings` in the
+  source column
+
+Which is a different question from the one `measured` answers. The fill
+still says measured-or-reported; the words now name the source. Every
+combination in the shipped fund set was checked: *counted from holdings*,
+*counted from an uploaded CSV*, *reported by Issuer (Yahoo)*, *reported by
+Issuer (factsheet)*, *converted from the country card*, and the
+declared-complete form of each.
+
+`README.md` already described this correctly — "Solid means the number was
+counted from actual positions (a holdings look-through or an upload)" —
+so the documentation was right and the screen was wrong.
+
+### Changed - one name per breakdown source
+
+The source names were written out inline at each place that needed one,
+which is how the dot came to be able to disagree with the button that
+changes it. `BREAKDOWN_SRC_LABEL` now holds them once and the card's
+source buttons read it too. The two legends no longer say "solid = counted
+from holdings", since solid has meant "holdings or an upload" since
+uploads existed; they say "counted from positions", with the actual source
+named per dot in the line above.
+
+`from_country` gets its own phrasing rather than being fed through the
+generic template: "reported by From country" is not English, and nobody
+reported anything — the numbers were converted from the card beside it.
+
+## [0.122.1] - 2026-09-30
+
+### Fixed - every breakdown CSV upload failed on commit
+
+Uploading a breakdown CSV reported *"not enough values to unpack
+(expected 3, got 2)"* and stored nothing. Not specific to one facet, one
+delimiter or one encoding: a currency file with commas and a sector file
+with semicolons and decimal commas failed identically, and so did all
+four of the sample files in `test files/`.
+
+`commit_breakdown_upload` accumulates `(raw, pinned_node, weight)` per
+facet and the collapse loop at the end unpacks three elements. Four
+places append to that accumulator, and only two of them had been updated
+when the pin was introduced: the two that handle *cleanly resolved*
+rows — the inline path taken when a file needs no resolution at all, and
+the accepted rows inside the token path — still appended
+`(key, weight)`. So the failure needed only one row the vocabulary could
+place, which every real file has.
+
+Both now append three, and the shape is documented on the accumulator
+itself rather than left to each producer to remember, because a mixed
+shape is invisible until the last loop runs.
+
+### Fixed - the file's own wording was thrown away before it was stored
+
+Found while fixing the above, and the same bug one level up. A stored
+breakdown item keeps what the document said and is resolved again on
+every read — that is what lets an alias added later repair an upload made
+earlier, with no migration. The preview reported only the *resolved*
+canonical for the rows it had placed, so the commit had nothing else to
+store: a CSV row reading `Financial Services` was stored as
+`financial services`, and `Cyclical` as `cyclical`. Harmless while the
+alias exists, and a silent loss of the evidence the moment anyone asks
+what the file actually said.
+
+The preview now reports `raw` alongside `key`, and the commit stores the
+raw with no pin — a pin records a decision the *user* made about this
+document, and a value the vocabulary placed unaided has none, so it
+follows a later alias edit like a holdings row does. A preview token
+minted before this release still commits: the canonical is the fallback
+when `raw` is absent.
+
+### Fixed - the spreadsheet CSV decoder, and the three copies of it
+
+`upload.py` tried `utf-8` before `utf-8-sig`. Plain `utf-8` *succeeds* on
+a file with a BOM and leaves the BOM in the text, so `utf-8-sig` sat
+second in the ladder and could never be reached — Excel's "CSV UTF-8
+(Comma delimited)" always writes that BOM, and the first header cell of
+every such export arrived carrying an invisible character. The breakdown
+reader survived it by accident, because its header matcher strips
+non-alphanumerics; anything comparing a column name exactly did not.
+
+This was the only CSV reader in PorxPy that got it wrong: `resources.py`,
+`bundles.py` and the targets-CSV reader all lead with `utf-8-sig`, and
+the BOM fix recorded at v0.118.0 was made to the targets reader alone.
+
+Two more gaps closed in the same decoder:
+
+- **UTF-16 is detected before the ladder**, not by trying it. Excel's
+  "Unicode Text" export is UTF-16, and UTF-16-encoded ASCII is all bytes
+  below 0x80 — so `decode("utf-8")` succeeds on it and yields every
+  character interleaved with NULs. The failure surfaced much later as
+  *"new-line character seen in unquoted field"*, which says nothing about
+  the real problem. A BOM identifies it exactly; failing that, a file
+  where a fifth of the bytes are NUL is UTF-16 and nothing else.
+- **A BOM is stripped whichever encoding decoded it**, since it survives
+  a cp1252 or latin-1 decode as visible mojibake instead.
+
+The targets-CSV import now calls that one decoder instead of carrying its
+own two-step ladder. All three readers answer the same question — decode
+a CSV somebody exported from a spreadsheet — and the targets copy handled
+only the BOM, so a file saved as plain "CSV" on a Western Windows came
+through as latin-1 mojibake (`België`, an en dash) and an Excel "Unicode
+Text" export was garbled outright.
+
+Verified across six export shapes — plain UTF-8, Excel CSV UTF-8 with
+BOM, semicolon with decimal commas, cp1252, UTF-16 with BOM and UTF-16LE
+without — all six now parse, commit and keep their accents, through both
+the breakdown upload and the targets import.
+
 ## [0.122.0] - 2026-09-30
 
 ### Changed - every source is offered for every field, with no exceptions

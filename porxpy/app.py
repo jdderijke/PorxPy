@@ -1955,13 +1955,15 @@ def create_app() -> Flask:
             raw = f.read()
         else:
             raw = request.get_data() or b""
-        try:
-            # utf-8-sig: a spreadsheet's "CSV UTF-8" export leads with a
-            # BOM, which would otherwise land inside the first column
-            # name and make every header look missing.
-            text = raw.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            text = raw.decode("latin-1", errors="replace")
+        # The same decoder the holdings and breakdown uploads use, rather
+        # than a second ladder here (v0.122.1). All three answer the same
+        # question — decode a CSV somebody exported from a spreadsheet —
+        # and this copy handled only the BOM: a file saved as plain "CSV"
+        # on a Western Windows is cp1252 and came through as latin-1
+        # mojibake, and an Excel "Unicode Text" export was garbled
+        # outright. One implementation cannot drift from itself.
+        from porxpy.upload import _decode_csv_bytes
+        text, _enc = _decode_csv_bytes(raw)
 
         targets, pins, tolerances, settings, problems = targets_from_csv(text)
 
@@ -8223,12 +8225,49 @@ def create_app() -> Flask:
             override_delete(isin, f"breakdown_source.{facet}")
         else:
             override_put(isin, f"breakdown_source.{facet}", source)
+
+        cards = _cards(isin)
+        in_force = (cards.get(facet) or {}).get("source") or "yahoo"
+
+        # WHY the pin did not take, when it did not. The pin is stored
+        # either way — that is the documented fallback rule in
+        # build_fund_breakdowns: a source the fund does not have yet
+        # yields Yahoo, and the pin activates the moment the source
+        # appears. What was missing is the explanation, and the caller
+        # cannot work it out: it sees availability computed from what is
+        # on SCREEN, while these cards are rebuilt from what is on DISK,
+        # and for an unsaved fund those are different things. Yahoo's
+        # top-10 is in the page and in no file, so the button offered
+        # itself and the server then refused it with nothing to say.
+        #
+        # Two situations, two different fixes, and only the server can
+        # tell them apart:
+        #   unsaved  — the rows exist but were never committed. Save the
+        #              fund and they are there.
+        #   saved    — this source genuinely has nothing for this fund.
+        note = ""
+        if in_force != source:
+            from porxpy.utils import listing_is_saved
+            if source in ("holdings", "upload", "factsheet")                     and not listing_is_saved(ticker):
+                note = ("this fund has not been saved yet, so nothing has "
+                        "been written to disk for it. Press Save to "
+                        "pre-loaded and the rows on screen are stored; "
+                        "your choice is remembered and takes effect then")
+            else:
+                note = f"this fund has no {facet} data from that source"
+
         return jsonify({
             "ticker":          ticker,
             "facet":           facet,
-            "source":          source,
+            # What the user asked for and what is actually in effect.
+            # ``source`` used to be the request echoed back, so a caller
+            # trusting it was told the switch had worked.
+            "source":          in_force,
+            "requested":       source,
+            "pinned":          source != "yahoo",
+            "note":            note,
             "overrides":       _bd_sources(isin),
-            "fund_breakdowns": _cards(isin),
+            "fund_breakdowns": cards,
         })
 
     # -----------------------------------------------------------------------

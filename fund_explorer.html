@@ -4805,16 +4805,18 @@ The first dot is not a percentage but optimiser readiness:
   green = rated against enough peers · orange = too few peers to
   rank within · red = a rating input (cost, size, returns) is missing.
 
-FILL — where the number came from:
-  solid = counted from the fund's actual holdings
+FILL — how the number was arrived at:
+  solid = counted from actual positions (this fund's holdings, or a
+          breakdown CSV you uploaded)
   hollow = reported by the issuer, or declared complete by you.
-Both can read 100%, and they are not the same claim.`;
+Both can read 100%, and they are not the same claim. Which source it
+was is named in the line above, per dot.`;
 
 // The same thing in two lines, for surfaces that show it rather than
 // hide it in a tooltip.
 const QUALITY_LEGEND_HTML =
   'green ≥95% · yellow ≥75% · orange ≥30% · red &lt;30% · grey no data<br>'
-+ 'solid = counted from holdings · hollow = reported, or declared complete';
++ 'solid = counted from positions · hollow = reported, or declared complete';
 
 // Put the legend on every quality column header, wherever it lives.
 //
@@ -4864,6 +4866,36 @@ function qFundDataText(fd){
   return 'not scored';
 }
 
+// What each breakdown source is called, in one place. The card's source
+// buttons read it too, so the dot and the button that changes it cannot
+// call the same source two different things.
+const BREAKDOWN_SRC_LABEL = {
+  yahoo:        'Issuer (Yahoo)',
+  factsheet:    'Issuer (factsheet)',
+  holdings:     'Holdings',
+  upload:       'Upload',
+  from_country: 'From country',
+};
+
+// How a dot says where its number came from. "Measured" and "which
+// source" are two different questions, and conflating them is what this
+// fixes: `measured` is true for holdings AND for an uploaded CSV — both
+// are counted from actual positions — so a facet reading an upload was
+// captioned "counted from holdings", naming a source the fund did not
+// even have. The fill still answers measured-vs-reported; the words now
+// answer which source.
+const QUALITY_PROV_MEASURED = {
+  holdings: 'counted from holdings',
+  upload:   'counted from an uploaded CSV',
+};
+
+// The reported half. Only the derived source needs its own phrasing:
+// "reported by From country" is not English, and nobody reported
+// anything — the numbers were converted from the card next to it.
+const QUALITY_PROV_REPORTED = {
+  from_country: 'converted from the country card',
+};
+
 // One dot's own sentence — "Sector — 82% at sector · counted from
 // holdings". Shared by the compact dots and the labelled fund-page rows
 // so the two forms cannot describe the same dot differently.
@@ -4873,9 +4905,15 @@ function qualitySlotText(entry, slot){
   const f = ((entry || {}).facets || {})[slot.key] || {};
   const pct = f.coverage == null ? 'no data'
             : `${(f.coverage * 100).toFixed(0)}% at ${String(f.level).replace(/_/g,' ')}`;
-  const prov = f.measured ? 'counted from holdings'
-             : (f.completed ? `${f.source || 'source'}, declared complete`
-                            : `reported by ${f.source || 'no source'}`);
+  const prov = f.measured
+             ? (QUALITY_PROV_MEASURED[f.source]
+                || `counted from ${BREAKDOWN_SRC_LABEL[f.source] || f.source
+                    || 'actual positions'}`)
+             : (f.completed
+                ? `${QUALITY_PROV_REPORTED[f.source]
+                    || BREAKDOWN_SRC_LABEL[f.source] || f.source || 'source'}, declared complete`
+                : (QUALITY_PROV_REPORTED[f.source]
+                   || `reported by ${BREAKDOWN_SRC_LABEL[f.source] || f.source || 'no source'}`));
   return `${slot.label} — ${pct} · ${prov}`;
 }
 
@@ -4932,8 +4970,10 @@ function qualityRowsHtml(entry){
     const f = (entry.facets || {})[slot.key] || {};
     const ring = f.measured ? '' : ' q-ring';
     const pct  = f.coverage == null ? '—' : `${(f.coverage * 100).toFixed(0)}%`;
-    const src  = f.measured ? 'holdings'
-               : (f.completed ? `${f.source || '?'} · complete` : (f.source || 'none'));
+    // The source's own name, measured or not. Lower-cased because this
+    // is a dense column of figures, not a button.
+    const srcName = (BREAKDOWN_SRC_LABEL[f.source] || f.source || '').toLowerCase();
+    const src  = f.completed ? `${srcName || '?'} · complete` : (srcName || 'none');
     return `<div class="qrow"${tip}>
       <span class="qlbl">${slot.label}</span>
       <span class="qval">${pct} <span class="qsrc">${escapeHtml(src)}</span></span>
@@ -8394,12 +8434,19 @@ function clearFundView(){
   if (es) es.style.display = '';
 
   // Clear the live fund reference so add-to-portfolio / save buttons
-  // can't act on stale data.
+  // can't act on stale data. The factsheet metadata goes with it, for
+  // the same reason and one step further: a fetch that fails must not
+  // leave the previous fund's document reachable from this panel.
   lastFundData = null;
+  forgetPerFundCaches('');
 }
 
 function renderLoadedFund(data, statusText){
   lastFundData = data;
+  // Before ANY paint: the button row and the group tiles below render
+  // from these caches synchronously, and their loaders only clear them
+  // once their own request is under way.
+  forgetPerFundCaches(data.ticker);
   allPrices = data.price_history || [];
   if (data.isin)         curISIN     = data.isin;
   if (data.resolved_mic) curExchange = data.resolved_mic;
@@ -8918,9 +8965,16 @@ function showMetrics(p, prices, data) {
 
   const el = document.getElementById('metrics');
   // The flat metrics grid is retained only as the fallback for a fund
-  // whose taxonomy has not loaded — otherwise the page would show
-  // nothing at all if that one request failed.
+  // whose taxonomy could not be FETCHED — otherwise the page would show
+  // nothing at all if that one request failed. A request still in flight
+  // is not a failure: leave the area empty and let the repaint that
+  // follows draw the group tiles, rather than drawing the superseded
+  // layout and then replacing it.
   if (fieldTaxonomy && (fieldTaxonomy.groups || []).length){
+    el.style.display = 'none';
+    return;
+  }
+  if (fieldTaxonomyState === 'loading' || fieldTaxonomyState === 'idle'){
     el.style.display = 'none';
     return;
   }
@@ -9049,12 +9103,34 @@ async function refreshStaleFields(ticker, force){
 // cannot disagree about which field belongs where — and adding a field
 // is a config change rather than an edit in three places.
 let fieldTaxonomy = null;      // {groups, source_labels}
+// WHY this is a state and not just "is fieldTaxonomy null":
+//
+// "not answered yet" and "asked and failed" are different, and the flat
+// metrics grid is the fallback for the SECOND one only. Treating them
+// alike drew the superseded layout for every fund during the round-trip
+// and then jumped to the group tiles when it landed — which is worse
+// than either outcome on its own, because the page changes shape under
+// the reader. While the request is in flight the metrics area stays as
+// clearFundView left it: empty, like the rest of the fund panel.
+//
+// 'idle' | 'loading' | 'ready' | 'failed'
+let fieldTaxonomyState = 'idle';
 
 async function loadFieldTaxonomy(ticker){
+  fieldTaxonomyState = 'loading';
   try {
     const r = await fetch(`${API}/funds/${encodeURIComponent(ticker)}/fields`);
-    if (r.ok) fieldTaxonomy = await r.json();
-  } catch(e){ /* the page falls back to no group tiles */ }
+    if (r.ok){
+      fieldTaxonomy = await r.json();
+      fieldTaxonomyState = 'ready';
+    } else {
+      fieldTaxonomyState = 'failed';
+    }
+  } catch(e){
+    // Offline, or the server went away. THIS is what the flat grid is
+    // for: the groups cannot be drawn and something has to be.
+    fieldTaxonomyState = 'failed';
+  }
   return fieldTaxonomy;
 }
 
@@ -11186,15 +11262,15 @@ function renderFundCardControls(data, facet, card) {
   // issuer options name their provenance: "Issuer" alone stopped being
   // unambiguous the moment a factsheet could supply the same numbers.
   const SRC_BTNS = [
-    { key:'yahoo',     label:'Issuer (Yahoo)',
+    { key:'yahoo',     label:BREAKDOWN_SRC_LABEL.yahoo,
       tip:`Use the issuer-published ${facet} breakdown as Yahoo reports it.` },
-    { key:'factsheet', label:'Issuer (factsheet)',
+    { key:'factsheet', label:BREAKDOWN_SRC_LABEL.factsheet,
       tip:`Use the ${facet} breakdown read off this fund's factsheet.`,
       none:`No extracted factsheet for this fund — upload one and run the extraction.` },
-    { key:'holdings',  label:'Holdings',
+    { key:'holdings',  label:BREAKDOWN_SRC_LABEL.holdings,
       tip:`Use the rollup of this fund's own holdings for ${facet}.`,
       none:`No holdings loaded for this fund yet.` },
-    { key:'upload',    label:'Upload',
+    { key:'upload',    label:BREAKDOWN_SRC_LABEL.upload,
       tip:`Use the user-uploaded ${facet} breakdown for this fund.`,
       none:`No CSV covering ${facet} for this fund — use the "upload CSV" button beside these options.` },
     // Currency only, and the BACKEND decides that: the button is listed
@@ -11203,7 +11279,7 @@ function renderFundCardControls(data, facet, card) {
     // disables "Upload" on a facet no CSV covered. Nothing here tests
     // the facet name, so a second derived pair would be a backend
     // change only, as the comment above this list promises.
-    { key:'from_country', label:'From country',
+    { key:'from_country', label:BREAKDOWN_SRC_LABEL.from_country,
       tip:`Convert this fund's country card into ${facet}, country by country, `
         + `using each country's primary currency. It follows the country card: `
         + `an unknown slice there stays unknown here, and marking THAT card `
@@ -11417,11 +11493,20 @@ async function setFundCardSource(facet, source) {
     // Yahoo. Silence there is indistinguishable from a broken button,
     // and that is exactly how it read.
     const now = ((d.fund_breakdowns || {})[facet] || {}).source || d.source;
+    // One phrase per source, for the ONE sentence position it is used
+    // in: "reads from X". It used to be spliced into a second sentence
+    // as well — "this fund has no ${NAME[source]} to read it from" —
+    // which produced "this fund has no its holdings to read it from".
+    // The reason a switch did not take now comes from the SERVER, in
+    // `note`, because only the server can tell "you have not saved this
+    // fund yet" from "that source has nothing for this facet" — and
+    // those have different fixes.
     const NAME = { yahoo:'Yahoo', factsheet:'the factsheet',
-                   holdings:'its holdings', upload:'the uploaded CSV' };
+                   holdings:'its holdings', upload:'the uploaded CSV',
+                   from_country:'the country card' };
     _bkSwitchNotice[facet] = (now !== source)
-      ? { kind:'err', text:`stayed on ${NAME[now] || now} — this fund has `
-                         + `no ${NAME[source] || source} to read it from` }
+      ? { kind:'err', text:`stayed on ${NAME[now] || now}`
+                         + (d.note ? ` — ${d.note}` : '') }
       : { kind:'ok',  text:`now reads from ${NAME[source] || source}` };
     renderFundCardControls(lastFundData, facet,
       (lastFundData.fund_breakdowns || {})[facet]
@@ -15034,9 +15119,50 @@ async function aiForgetKey(){
 // the right label ("Upload" vs "Replace") on first paint instead of
 // flickering when a follow-up request lands.
 let factsheetMeta = null;
+// WHICH fund the metadata above describes. Without it the variable was
+// simply "the last factsheet anyone loaded", and the button row is
+// painted synchronously while loadFactsheetMeta is still in flight — so
+// opening a fund with no factsheet, straight after one that had one, drew
+// an enabled "View factsheet" button that would have opened the PREVIOUS
+// fund's document. Not a cosmetic defect: the wrong fund's PDF.
+let factsheetMetaTicker = '';
+
+// Drop per-fund caches belonging to another fund. Called synchronously
+// wherever the page starts showing a different fund, BEFORE anything
+// paints, because the async loads cannot get there first.
+//
+// ONE function for every such cache, so a third one has an obvious home
+// rather than needing its own guard that someone has to remember. Both
+// of the current two are fetched per fund and read by a synchronous
+// paint, which is the shape that goes wrong:
+//
+//   factsheetMeta  — gates the "View factsheet" button. Stale, it offers
+//                    the PREVIOUS fund's document.
+//   fieldTaxonomy  — carries each field's pin, source and last value.
+//                    Stale, the group tiles caption this fund's numbers
+//                    with another fund's provenance.
+//
+// Pass "" to forget unconditionally.
+function forgetPerFundCaches(ticker){
+  const tk = ticker || '';
+  if (factsheetMetaTicker !== tk){
+    factsheetMeta = null;
+    factsheetMetaTicker = '';
+  }
+  // The taxonomy reports the fund it was built for, so it needs no
+  // companion variable — its own payload is the tag. The STATE has to go
+  // with it: left on 'ready' with no payload, showMetrics reads a
+  // successful load that never happened.
+  if (fieldTaxonomy && (fieldTaxonomy.ticker || '') !== tk){
+    fieldTaxonomy = null;
+    fieldTaxonomyState = 'idle';
+  }
+  if (!fieldTaxonomy && fieldTaxonomyState === 'ready') fieldTaxonomyState = 'idle';
+}
 
 async function loadFactsheetMeta(ticker){
   factsheetMeta = null;
+  factsheetMetaTicker = '';
   if (!ticker) return;
   // The Extract button's availability comes from aiStatus, which would
   // otherwise only be known after visiting Settings. Asked once per
@@ -15047,6 +15173,7 @@ async function loadFactsheetMeta(ticker){
     const r = await fetch(`${API}/funds/${encodeURIComponent(ticker)}/factsheet`);
     if (!r.ok) return;                 // no identity yet: not an error here
     factsheetMeta = (await r.json()).factsheet || null;
+    factsheetMetaTicker = ticker;
   } catch(e){ /* offline: the button simply offers Upload */ }
 }
 
