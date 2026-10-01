@@ -91,14 +91,14 @@ country,falkland islands (malvinas),,latinAmerica,FK|238,FALSE,code=FLK;currency
 country,faroe islands,,europeDeveloped,FO|234,FALSE,code=FRO;currency=DKK
 country,fiji,,australasia,FJ|242,FALSE,code=FJI;currency=FJD
 country,finland,,europeDeveloped,FI|246,FALSE,code=FIN;currency=EUR
-country,france,,europeDeveloped,FR|250|Frankrijk,FALSE,code=FRA;currency=EUR
+country,france,,europeDeveloped,FR|250|Frankrijk|FRANCE (REPUBLIC OF),FALSE,code=FRA;currency=EUR
 country,french guiana,,latinAmerica,GF|254,FALSE,code=GUF;currency=EUR
 country,french polynesia,,australasia,PF|258,FALSE,code=PYF;currency=XPF
 country,french southern territories,,africaMiddleEast,TF|260,FALSE,code=ATF;currency=EUR
 country,gabon,,africaMiddleEast,GA|266,FALSE,code=GAB;currency=XAF
 country,gambia,,africaMiddleEast,GM|270,FALSE,code=GMB;currency=GMD
 country,georgia,,africaMiddleEast,GE|268,FALSE,code=GEO;currency=GEL
-country,germany,,europeDeveloped,DE|276|Duitsland,FALSE,code=DEU;currency=EUR
+country,germany,,europeDeveloped,DE|276|Duitsland|GERMANY (FEDERAL REPUBLIC OF),FALSE,code=DEU;currency=EUR
 country,ghana,,africaMiddleEast,GH|288,FALSE,code=GHA;currency=GHS
 country,gibraltar,,europeDeveloped,GI|292,FALSE,code=GIB;currency=GIP
 country,greece,,europeDeveloped,GR|300|Griekenland,FALSE,code=GRC;currency=EUR
