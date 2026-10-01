@@ -376,8 +376,22 @@ def _build_facet_matrix(candidates: list[dict],
         # comparably regardless of how many buckets it happens to have —
         # otherwise a 40-bucket country target would drown out a 4-bucket
         # asset-class target purely on row count.
+        #
+        # And regardless of how many LEVELS it is targeted at (v0.126.0).
+        # This body runs once per (facet, level) block, and each block
+        # used to carry the full facet weight, so a facet targeted at
+        # three levels counted roughly three times in the objective. That
+        # was a side effect of the construction rather than a decision,
+        # and since v0.125.0 it was the normal case: every stored set
+        # carries the whole chain above each targeted bucket, so any
+        # facet targeted below its coarsest level is targeted at several.
+        # The facet weight is now shared between its levels. The divisor
+        # is √levels for the same reason the bucket divisor is √buckets:
+        # the objective is a sum of SQUARES, so a row scale enters it
+        # squared, and dividing by √L makes the L blocks together weigh
+        # what one block used to.
         fw   = float(facet_weights.get(facet, 1.0))
-        norm = fw / np.sqrt(len(keys) + 1)
+        norm = fw / np.sqrt(len(keys) + 1) / np.sqrt(levels_targeted[facet])
         rel  = float(tol_rel.get(facet, DEFAULT_TOL_REL))
 
         for key in keys + [OTHER_BUCKET]:
@@ -416,6 +430,10 @@ def _build_facet_matrix(candidates: list[dict],
             # make the error number meaningless.
             is_explicit.append(key != OTHER_BUCKET)
 
+    # How many levels of each facet carry a target — the share each
+    # level's block gets of the facet weight (see _add_target_rows).
+    levels_targeted = {facet: max(1, sum(1 for t in (per_level or {}).values() if t))
+                       for facet, per_level in (targets or {}).items()}
     for facet, per_level in (targets or {}).items():
         for level, tgt in (per_level or {}).items():
             if tgt:

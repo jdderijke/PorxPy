@@ -3,6 +3,34 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.126.0] - 2026-10-01
+
+### Fixed - a facet targeted at several levels counted several times
+
+The optimiser gave each `(facet, level)` block of target rows the full
+facet weight, so a facet targeted at three levels weighed roughly three
+times as much in the objective as one targeted at a single level. When
+the two pulled against each other — the funds that meet the sector
+targets push the equity share off — the solver favoured the facet with
+more levels, though nobody had asked it to.
+
+This had been recorded in `OPTIMIZER.md` §13 as an open issue, and was
+rare while multi-level targeting was unusual. v0.125.0 made it the norm:
+every target set now carries the whole chain above each targeted bucket,
+so any detailed facet became a several-level facet.
+
+The facet weight is now shared between the levels that carry a target:
+`_add_target_rows` divides each block's scale by `√(levels targeted)`,
+a square root because the objective is a sum of squares, so the blocks
+together weigh what one did. On a test system with asset class targeted
+at one level and sector at three, each missed by the same amount, the
+two facets' shares of the objective went from 1.5 / 4.5 to 1.5 / 1.5.
+
+Stopping tests, tolerances and reported deviations are untouched: they
+are measured on the unscaled rows. Only how hard the solver pulls on
+each facet changes, so a design proposed before and after this release
+can differ where facets competed.
+
 ## [0.125.0] - 2026-10-01
 
 ### Fixed - parent targets added in the editor disappeared on reopening

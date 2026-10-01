@@ -1,6 +1,6 @@
 # IMPORT_NEW_FUNDS_GUIDE.md — importing new funds and ETFs
 
-*Current as of v0.125.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.126.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between typing an ISIN into an empty box and having a fully
@@ -82,7 +82,7 @@ version you are looking at:
 
 ```
 =======================================================
-  PorxPy  v0.125.0 (built 2026-10-01)
+  PorxPy  v0.126.0 (built 2026-10-01)
   Portfolio X-ray Python
 =======================================================
 ```

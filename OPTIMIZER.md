@@ -1,6 +1,6 @@
 # The PorxPy Optimizer — how it works
 
-*Applies to `porxpy/optimizer.py` as of v0.125.0. The full audit — every
+*Applies to `porxpy/optimizer.py` as of v0.126.0. The full audit — every
 claim in the document re-checked against the module — was done at
 v0.91.0; since then the v0.96.0 peer-scoring change was folded into §7b
 and §13's one remaining open issue was re-confirmed by reading
@@ -156,20 +156,23 @@ countries. Left alone, the country facet would dominate purely by having
 ten times as many rows. So each facet's rows are scaled:
 
 ```
-scale_f = facet_weight_f / √(n_buckets_f + 1)
+scale_f = facet_weight_f / √(n_buckets_f + 1) / √(n_levels_f)
 ```
 
-The `√n` divisor equalises facets of different sizes. The
-`facet_weight` then expresses how much you care.
+The `√n_buckets` divisor equalises facets of different sizes, and the
+`√n_levels` divisor equalises facets targeted at different numbers of
+levels (v0.126.0). The `facet_weight` then expresses how much you care.
 
-The scaling is applied **per `(facet, level)` block**, and each block
-carries the full facet weight. A facet you target at three levels
-therefore contributes three blocks of rows rather than one, and so
-counts for roughly three times as much in the objective as an otherwise
-identical facet you targeted at a single level. That is defensible — you
-did state three separate intentions — but it is a consequence of the
-construction rather than a decision anyone took, and it is worth knowing
-before you conclude the solver is ignoring a facet you targeted once.
+The scaling is applied per `(facet, level)` block, and before v0.126.0
+each block carried the full facet weight, so a facet targeted at three
+levels counted roughly three times as much as one targeted at a single
+level. Nobody chose that; it fell out of the construction. Since
+v0.125.0 every stored target set carries the whole chain above each
+targeted bucket, which made it the normal case, so the facet weight is
+now shared between the levels that carry a target. The divisor is a
+square root because the objective is a sum of squares: a row scale
+enters it squared, so `√L` makes the L blocks together weigh what one
+block does.
 
 ### Where row weights come from (v0.115.0)
 
@@ -177,7 +180,7 @@ Every row carries its own allowance, and the allowance IS the weight:
 
 ```
 allowance_b = max(max_error_rel[facet] x target_b, TOL_FLOOR)   # TOL_FLOOR = 0.005
-row_scale_b = facet_weights[facet] / sqrt(n_buckets + 1) / allowance_b
+row_scale_b = facet_weights[facet] / sqrt(n_buckets + 1) / sqrt(n_levels) / allowance_b
 ```
 
 then the whole system is divided by the smallest row_scale, so the numbers
@@ -841,23 +844,33 @@ Defects specific to the optimiser, as opposed to the deliberate
 boundaries in §12. Each is something that should be fixed rather than
 something someone chose.
 
-One remains, re-confirmed at v0.125.0 (`porxpy/optimizer.py:380`, still
-`norm = fw / np.sqrt(len(keys) + 1)` inside the per-block loop):
-`_add_target_rows` still computes
-its `norm = facet_weight / sqrt(len(keys) + 1)` inside a body called once
-per `(facet, level)` block, so the full facet weight is applied to every
-level of a facet that is targeted at more than one. The v0.115.0 move to
-per-bucket allowances did not touch this — the allowance divides `norm`,
-it does not replace the per-block normalisation — so a facet targeted at
-three levels still counts for roughly three times as much in the
-objective as one targeted at a single level. Since v0.125.0 that is the
-common case rather than the unusual one: every stored target set carries
-the whole chain above each targeted bucket
-(`targets.complete_target_ancestors`), so ANY facet targeted below its
-coarsest level is now targeted at several levels, and this defect
-applies to it. The metadata-facet
-blindness recorded here since v0.30.0 was **fixed in v0.89.0** — see the
-resolved entry below.
+None open as of v0.126.0. The two below are kept as records.
+
+### ~~A facet targeted at several levels counted several times~~ — fixed in v0.126.0
+
+`_add_target_rows` computed its `norm = facet_weight / sqrt(len(keys) +
+1)` inside a body called once per `(facet, level)` block, so the full
+facet weight was applied to every level of a facet targeted at more than
+one. The v0.115.0 move to per-bucket allowances did not touch it — the
+allowance divides `norm`, it does not replace the per-block
+normalisation — so a facet targeted at three levels counted roughly
+three times as much in the objective as one targeted at a single level.
+
+It mattered little while multi-level targeting was unusual. v0.125.0
+made it the norm: every stored target set carries the whole chain above
+each targeted bucket (`targets.complete_target_ancestors`), so any facet
+targeted below its coarsest level became a several-level facet, and a
+detailed sector target set would quietly outweigh an asset-class set
+targeted at the top.
+
+Fixed by sharing the facet weight between the levels that carry a
+target: `norm` is further divided by `√(levels targeted)`. Verified on a
+two-candidate system with asset class targeted at one level and sector
+at three, each missed by the same amount: the two facets' contributions
+to the objective were 1.5 and 4.5 before and are 1.5 and 1.5 after.
+
+The metadata-facet blindness recorded here since v0.30.0 was **fixed in
+v0.89.0**.
 
 ### ~~The metadata facets are targetable, but the optimiser is blind to them~~ — fixed in v0.89.0
 

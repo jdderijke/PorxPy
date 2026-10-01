@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.125.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.126.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -134,7 +134,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.125.0 (built 2026-10-01)
+  PorxPy  v0.126.0 (built 2026-10-01)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -392,10 +392,9 @@ so they keep a plain list. Three things are worth knowing:
   set is grouped by level underneath. A target always comes with its
   parents: set `semiconductors` and `technology` and `sensitive` are
   targeted too, each at least what it contains, and removing a bucket
-  removes everything inside it. A facet targeted below its top level is
-  therefore targeted at several levels, which is worth reading
-  `OPTIMIZER.md` §13 about: the solver weights such a facet more heavily
-  than you asked for.
+  removes everything inside it. A facet targeted at several levels
+  still counts once in the optimiser: its weight is shared between the
+  levels, so detail in one facet does not make it outweigh another.
 - **Targets nest.** The figure beside each heading is what the section
   *commits*, not the levels added up: semiconductors 15% inside
   technology 35% commits 35%, not 50%. Past 100% the figure turns amber,
