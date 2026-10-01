@@ -48,7 +48,12 @@ Concretely, before finishing a change, sweep the parallel set it belongs to:
   stored `0` is a REAL target meaning "hold none of this"; only an absent
   key means untargeted. Every writer must preserve that distinction —
   the editor, `targets_to_csv`, `targets_from_csv` and the storage
-  coercion each dropped zeros independently before v0.119.0. Pins live
+  coercion each dropped zeros independently before v0.119.0. A stored
+  set also always carries every targeted bucket's ANCESTORS, each at
+  least what its children commit: `targets.complete_target_ancestors`
+  enforces it inside `utils._coerce_targets`, so a new writer gets it
+  by going through the coercion and must not store around it (v0.125.0).
+  The editor's ✕ therefore removes a whole branch. Pins live
   beside them in a parallel `target_pins` map of the same shape, are
   pruned against the targets they hold (`prune_pins`), and are read ONLY
   by the editor: a pin says how a design may be edited, not what it asks

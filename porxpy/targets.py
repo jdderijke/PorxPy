@@ -358,6 +358,80 @@ def validate_target_levels(targets: dict) -> list[str]:
     return problems
 
 
+def complete_target_ancestors(facet: str, per_level: dict) -> dict:
+    """Give every targeted bucket a target on each level above it.
+
+    A sub-sector target with no sector or super-sector target above it
+    is a branch with nothing holding it: the editor hangs it straight off
+    the portfolio, the tree no longer shows where it sits, and a sector
+    target added later has to be reconciled with it by hand. So a target
+    set always carries the whole chain (v0.125.0). Each MISSING ancestor
+    is added at exactly what its targeted children commit, which is the
+    smallest value that satisfies them and therefore asks the optimiser
+    for nothing the user did not already ask for.
+
+    Why this lives in the backend and not in the editor: the editor did
+    add the parents on Add (v0.123.0), but a set reaches the store along
+    other paths too — a CSV import, a set saved by an older editor, one
+    written before v0.123.0 — and those arrived with gaps the editor then
+    faithfully redrew. Completing the set inside ``_coerce_targets``
+    makes it true of every read and every write by construction, so a
+    gap stored long ago is closed the next time the set is opened.
+
+    Two deliberate limits:
+
+    * An ancestor that IS targeted is never changed, even when it is
+      smaller than its children. That is a real disagreement in the
+      user's own numbers, and :func:`validate_target_levels` reports it
+      at save rather than this function silently picking a side.
+    * A chain stops at a bucket the vocabulary cannot place, and at
+      ``unknown`` / ``n/a`` — neither may carry a target
+      (``UNTARGETABLE_BUCKETS``).
+
+    The roll-up is the same one ``validate_target_levels`` and
+    ``committed_pct`` use — one level at a time, a bucket committing the
+    larger of its own target and its children's — so the value added
+    here is exactly the one the save-time check will measure it against.
+
+    Args:
+        facet: The facet the block belongs to.
+        per_level: ``{level: {key: pct}}`` for that facet, already coerced.
+
+    Returns:
+        A new ``{level: {key: pct}}`` with the missing ancestors added.
+        A single-level facet is returned unchanged.
+    """
+    from porxpy.breakdowns import _key_at_level
+
+    levels = FACET_LEVELS.get(facet) or ()
+    if len(levels) < 2 or not isinstance(per_level, dict):
+        return per_level
+    out = {lv: dict(blk) for lv, blk in per_level.items()
+           if isinstance(blk, dict)}
+    carried: dict[str, float] = {}
+    for level in levels:
+        here: dict[str, float] = {}
+        for child_key, val in carried.items():
+            parent = _key_at_level(facet, child_key, level)
+            if not parent or parent in UNTARGETABLE_BUCKETS:
+                continue
+            here[parent] = here.get(parent, 0.0) + val
+        blk = out.get(level) or {}
+        for key, need in here.items():
+            if key not in blk:
+                blk[key] = round(need, 4)
+        if blk:
+            out[level] = blk
+        carried = {}
+        for key, pct in blk.items():
+            try:
+                own = float(pct or 0.0)
+            except (TypeError, ValueError):
+                own = 0.0
+            carried[key] = max(own, here.get(key, 0.0))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Baseline target sets (v0.119.0)
 # ---------------------------------------------------------------------------
@@ -524,7 +598,12 @@ def build_baseline_targets(fund_breakdowns: dict, *,
                 f"normalises every fund's card to 100% too, so a target "
                 f"above 100% could never be met.")
         if per_level:
-            out[facet] = per_level
+            # The same chain rule every stored set obeys (v0.125.0). A
+            # baseline reads each level off the card independently, so a
+            # level the fund's card does not carry would otherwise leave
+            # its finer buckets with no parent — and the editor draws the
+            # baseline before any save has coerced it.
+            out[facet] = complete_target_ancestors(facet, per_level)
             if tiny:
                 notes.append(
                     f"{facet}: {tiny} bucket{'' if tiny == 1 else 's'} under "

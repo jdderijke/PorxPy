@@ -1,6 +1,6 @@
 # The PorxPy Optimizer — how it works
 
-*Applies to `porxpy/optimizer.py` as of v0.122.4. The full audit — every
+*Applies to `porxpy/optimizer.py` as of v0.125.0. The full audit — every
 claim in the document re-checked against the module — was done at
 v0.91.0; since then the v0.96.0 peer-scoring change was folded into §7b
 and §13's one remaining open issue was re-confirmed by reading
@@ -841,7 +841,7 @@ Defects specific to the optimiser, as opposed to the deliberate
 boundaries in §12. Each is something that should be fixed rather than
 something someone chose.
 
-One remains, re-confirmed at v0.122.4 (`porxpy/optimizer.py:380`, still
+One remains, re-confirmed at v0.125.0 (`porxpy/optimizer.py:380`, still
 `norm = fw / np.sqrt(len(keys) + 1)` inside the per-block loop):
 `_add_target_rows` still computes
 its `norm = facet_weight / sqrt(len(keys) + 1)` inside a body called once
@@ -850,7 +850,12 @@ level of a facet that is targeted at more than one. The v0.115.0 move to
 per-bucket allowances did not touch this — the allowance divides `norm`,
 it does not replace the per-block normalisation — so a facet targeted at
 three levels still counts for roughly three times as much in the
-objective as one targeted at a single level. The metadata-facet
+objective as one targeted at a single level. Since v0.125.0 that is the
+common case rather than the unusual one: every stored target set carries
+the whole chain above each targeted bucket
+(`targets.complete_target_ancestors`), so ANY facet targeted below its
+coarsest level is now targeted at several levels, and this defect
+applies to it. The metadata-facet
 blindness recorded here since v0.30.0 was **fixed in v0.89.0** — see the
 resolved entry below.
 

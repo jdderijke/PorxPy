@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.122.4. This is the fullest architecture write-up;
+*Current as of v0.125.0. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -142,7 +142,13 @@ coarsest level, a row with finer targets inside it says how many, and
 each row carries a slider plus both readings — its share of the
 portfolio and its share of the bucket that contains it. Moving a slider
 redistributes inside its parent, so a bucket can never outgrow the one
-that holds it and the set stays coherent by construction. A greyed
+that holds it and the set stays coherent by construction. The arrows
+beside each slider step it by 0.1 for fine tuning. Typing a value
+instead moves no other target — the parents grow to make room if they
+must — and pins the row. A target always carries its parents: adding
+a bucket adds any untargeted ones above it, every stored set is
+completed the same way whatever wrote it, and removing a bucket removes
+what is inside it. A greyed
 *rest of…* row shows what a bucket has not handed to any child.
 
 **Set baseline targets** reads a fund's own breakdown into every bucket.
@@ -937,6 +943,6 @@ it does.
 
 ## Version
 
-Current release: **0.122.4** (2026-09-30)
+Current release: **0.125.0** (2026-10-01)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

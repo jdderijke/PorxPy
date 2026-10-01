@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.122.4. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.125.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -134,7 +134,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.122.4 (built 2026-09-30)
+  PorxPy  v0.125.0 (built 2026-10-01)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -355,9 +355,16 @@ A row that has finer targets inside it says so — *technology · 3 inside*
 heading opens every level at once.
 
 From there, drag a slider and its siblings give ground proportionally:
-the unclaimed remainder first, then the buckets you set. Drill into a row
-with the arrow to shape what is inside it. Clearing a box removes a
-target altogether; typing **0** is the different instruction "hold none
+the unclaimed remainder first, then the buckets you set. The small
+arrows either side of a slider step it by 0.1 for fine tuning — they
+rebalance exactly as the slider does, and holding one repeats. Drill into a row
+with the arrow to shape what is inside it. **Typing** a number in the box
+instead moves nothing else: siblings and the row's own contents keep
+their figures, and if the bucket above has no room left it grows to make
+some — parents scale up, never down. A typed row is pinned for you.
+Adding a bucket whose parents have no target adds those parents too, so
+a sub-sector always appears inside its sector. Clearing a box (or the
+✕) removes a target and everything inside it; typing **0** is the different instruction "hold none
 of this", and it is enforced. The circle at the end of a row **pins** it,
 so changing a sibling or its parent leaves it — and everything inside it
 — alone. **Undo** steps back through the session's edits.
@@ -382,10 +389,13 @@ so they keep a plain list. Three things are worth knowing:
   level of it: `technology` at sector level, `semiconductors` at
   sub-sector level, `developed` at super-region level. Every level is
   pickable — that is what the tree is showing you — and what you have
-  set is grouped by level underneath. Targeting the same facet at
-  several levels at once is worth reading `OPTIMIZER.md` §13 about
-  first: the solver weights such a facet more heavily than you asked
-  for.
+  set is grouped by level underneath. A target always comes with its
+  parents: set `semiconductors` and `technology` and `sensitive` are
+  targeted too, each at least what it contains, and removing a bucket
+  removes everything inside it. A facet targeted below its top level is
+  therefore targeted at several levels, which is worth reading
+  `OPTIMIZER.md` §13 about: the solver weights such a facet more heavily
+  than you asked for.
 - **Targets nest.** The figure beside each heading is what the section
   *commits*, not the levels added up: semiconductors 15% inside
   technology 35% commits 35%, not 50%. Past 100% the figure turns amber,

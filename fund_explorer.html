@@ -931,10 +931,10 @@
      "rest of X" row, so a remainder lines up with the buckets it is the
      remainder OF — two grids drifted apart by a pixel read as a bug. */
   .tge-trow,.tge-rest{display:grid;
-    grid-template-columns:16px 1fr 110px 62px 118px 22px 20px;
+    grid-template-columns:16px 1fr 150px 62px 118px 22px 20px;
     gap:.35rem;align-items:center;margin-bottom:.18rem;
     padding-left:calc(var(--d,0) * 13px);}
-  .tge-rest{grid-template-columns:16px 1fr 110px 62px 118px;}
+  .tge-rest{grid-template-columns:16px 1fr 150px 62px 118px;}
   .tge-rest .lbl{display:flex;align-items:center;gap:.4rem;overflow:visible;}
   .tge-rest .rtxt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
     min-width:0;}
@@ -953,9 +953,23 @@
   .tge-trow input[type=range]{width:100%;accent-color:var(--accent);
     height:14px;cursor:pointer;}
   .tge-trow input[type=range]:disabled{cursor:default;opacity:.45;}
+  /* The slider and its two fine-tuning steps share ONE grid cell, so the
+     greyed "rest of" rows (which have no slider) keep lining up. */
+  .tge-trow .slide{display:flex;align-items:center;gap:2px;min-width:0;}
+  .tge-trow .slide input[type=range]{flex:1;min-width:0;}
+  .tge-trow .nudge{background:transparent;border:0;color:var(--muted);
+    cursor:pointer;font-size:.8rem;line-height:1;padding:0 2px;
+    flex:0 0 auto;user-select:none;touch-action:none;}
+  .tge-trow .nudge:hover{color:var(--accent);}
   .tge-trow input[type=number]{font-family:var(--mono);font-size:.71rem;
     padding:.2rem .3rem;background:var(--surface2);color:var(--text);
-    border:1px solid var(--border);border-radius:4px;text-align:right;width:100%;}
+    border:1px solid var(--border);border-radius:4px;text-align:right;width:100%;
+    -moz-appearance:textfield;appearance:textfield;}
+  /* No spinner arrows: a 0.1 step per click is no way to set a target, and
+     the slider beside the box already is the incremental control. */
+  .tge-trow input[type=number]::-webkit-inner-spin-button,
+  .tge-trow input[type=number]::-webkit-outer-spin-button{
+    -webkit-appearance:none;margin:0;}
   .tge-trow .ofp,.tge-rest .ofp{font-family:var(--mono);font-size:.62rem;
     color:var(--muted);overflow:hidden;text-overflow:ellipsis;
     white-space:nowrap;}
@@ -20411,7 +20425,13 @@ let _tgCanonical = Object.fromEntries(_TG_ALL_FACETS.map(f => [f, null]));
 // sliders are not invertible in general, and the alternative rule
 // (proportional both ways) has the worse flaw that a sibling squeezed
 // to 0 can never grow back, since 0 × anything is 0.
-let _tgPins = {};            // {facet: {level: {key: true}}}
+//
+// The number box is NOT a slider (v0.123.0). A typed value is exact and
+// moves no other target: no sibling, and none of the row's own children.
+// Ancestors grow if the value needs the room and never shrink, and the
+// row is pinned, since a number the user typed is one they meant. Only
+// the sliders redistribute — see tgTypeNodeValue.
+let _tgPins = {};           // {facet: {level: {key: true}}}
 let _tgExpanded = new Set(); // node ids currently unfolded
 let _tgUndo = [];            // snapshots of {targets, pins}
 const _TG_UNDO_MAX = 40;
@@ -21409,6 +21429,66 @@ function tgSetNodeValue(n, want){
   return {moved: true, blockers: []};
 }
 
+// How far a node can grow by its OWN number box without moving any
+// other target: its parent's unclaimed remainder, plus whatever the
+// parent can grow by in turn. The climb stops at the portfolio (whose
+// 100% is not a target and cannot grow) and at a pinned ancestor (whose
+// pin says its number does not move).
+function tgTypedHeadroom(n){
+  const p = n.parent;
+  if (!p) return 0;
+  return p.rest + ((p.isRoot || p.pinned) ? 0 : tgTypedHeadroom(p));
+}
+
+// The one entry point for "the user typed a number into this row".
+//
+// Deliberately NOT tgSetNodeValue (v0.123.0). A typed value is an exact
+// statement about this bucket and nothing else, so nothing else is
+// redistributed: no sibling gives or takes, and the node's own children
+// keep their figures — the difference lands in the node's `rest`. When
+// the parent's `rest` cannot hold the growth, the PARENT grows to make
+// room, and so on up the chain: a parent scales up to fit what was typed
+// into it, and never down. The sliders remain the only control that
+// redistributes inside a node.
+//
+// Two walls, each of which clamps the value and is named in `blockers`:
+// the children's sum below (typing under it would have to move them),
+// and the headroom above (see tgTypedHeadroom).
+//
+// Returns {moved, blockers, value}.
+function tgTypeNodeValue(n, want){
+  const p = n.parent;
+  if (!p) return {moved: false, blockers: [], value: n.value};
+  const kids = n.children.reduce((a, c) => a + c.value, 0);
+  const hi   = n.value + tgTypedHeadroom(n);
+  const v    = Math.min(hi, Math.max(kids, want));
+  const blockers = [];
+  if (want < kids - 1e-9){
+    blockers.push(`the buckets inside ${n.label} already add up to ${kids.toFixed(1)}%`);
+  } else if (want > hi + 1e-9){
+    let a = p;
+    while (a && !a.isRoot && !a.pinned) a = a.parent;
+    blockers.push(a && a.pinned
+      ? `${a.label} is pinned`
+      : `only ${hi.toFixed(1)}% is free without moving another target`);
+  }
+
+  let need = v - n.value;
+  n.value  = v;
+  n.rest   = Math.max(0, v - kids);
+  if (need > 0){
+    for (let a = p; a && need > 1e-12; a = a.parent){
+      const take = Math.min(a.rest, need);
+      a.rest -= take;
+      need   -= take;
+      if (need > 1e-12){ a.value += need; }   // grows; its parent pays next
+    }
+  } else {
+    p.rest += -need;                          // parents never scale down
+  }
+  return {moved: true, blockers, value: v};
+}
+
 // Write a tree back into the stored shape. 4dp, because the stored value
 // is what the user dragged to and full float precision shows up as
 // 14.000000000000002 the first time anything sums it.
@@ -21871,13 +21951,21 @@ function tgRowHtml(n, depth, open){
     ${chev}
     <div class="lbl" title="${escapeAttr(n.key + '  ·  ' + lvlName)}">${
       escapeHtml(n.label)}${inside}</div>
-    <input type="range" min="0" max="${maxv.toFixed(4)}"
-           step="0.1" value="${n.value.toFixed(4)}"
-           onpointerdown="tgSnapshot()" oninput="onTgSlide(this)"
-           onchange="_renderTgEditorBody()">
+    <div class="slide">
+      <button class="nudge" onpointerdown="tgNudgeStart(this, -1, event)"
+                onclick="tgNudgeKey(this, -1, event)"
+              title="Step down by ${TG_NUDGE_STEP} — rebalances like the slider. Hold to repeat.">◂</button>
+      <input type="range" min="0" max="${maxv.toFixed(4)}"
+             step="0.1" value="${n.value.toFixed(4)}"
+             onpointerdown="tgSnapshot()" oninput="onTgSlide(this)"
+             onchange="_renderTgEditorBody()">
+      <button class="nudge" onpointerdown="tgNudgeStart(this, 1, event)"
+                onclick="tgNudgeKey(this, 1, event)"
+              title="Step up by ${TG_NUDGE_STEP} — rebalances like the slider. Hold to repeat.">▸</button>
+    </div>
     <input type="number" min="0" max="100" step="0.1"
            value="${+n.value.toFixed(4)}"
-           title="Percent of the fund side. Clear the box to remove the target altogether — a target of 0 is a different instruction, and means hold none of this."
+           title="Percent of the fund side. A typed value moves no other target and pins this row; a parent grows to make room if it has to. Clear the box to remove the target, and every target inside it, altogether — a target of 0 is a different instruction, and means hold none of this."
            onchange="onTgNumber(this)">
     <span class="ofp">${ofp}</span>
     <button class="pin${n.pinned ? ' on' : ''}" onclick="tgTogglePinEl(this)"
@@ -21886,7 +21974,7 @@ function tgRowHtml(n, depth, open){
               : 'Pin this number so changing a sibling or its parent leaves it, and everything inside it, alone.'}"
             >${n.pinned ? '◉' : '○'}</button>
     <button class="rm" onclick="tgRemoveEl(this)"
-            title="Remove this target (its share returns to the unclaimed remainder)">✕</button>
+            title="Remove this target and every target inside it (their share returns to the unclaimed remainder)">✕</button>
   </div>`;
 }
 
@@ -21936,9 +22024,10 @@ function tgFindNode(root, level, key){
   return found;
 }
 
-// The one place a value change is applied: build the tree, move the node,
-// write the tree back. Every caller — slider, number box, baseline — goes
-// through it, so the redistribution rule cannot be implemented twice.
+// The one place a SLIDER change is applied: build the tree, move the node,
+// write the tree back. The number box no longer comes through here
+// (v0.123.0) — a typed value redistributes nothing, so it has its own
+// rule in tgTypeNodeValue rather than a flag on this one.
 // The state a slider's own gesture is measured from.
 //
 // Proportional redistribution is multiplicative, so a sibling squeezed to
@@ -21986,6 +22075,67 @@ function onTgSlide(el){
   tgSyncNumbers(c.facet, res);
 }
 
+// Fine tuning for the slider (v0.123.0). The arrows used to be the number
+// box's spinner, which was removed because a typed value no longer
+// rebalances — but a slider track 150px long cannot land on a tenth of a
+// percent, and the spinner had been the only way to get there. So the
+// steps moved to the slider, and they ARE the slider: each one goes
+// through tgApplyDrag exactly as a drag does, with the same per-node drag
+// base, so siblings rebalance by the same rule, pins hold the same way,
+// and stepping back down restores what stepping up changed.
+//
+// Hold to repeat. One undo snapshot per press, not per step, so Undo
+// takes back the whole press the way it takes back a whole drag.
+const TG_NUDGE_STEP = 0.1;
+let _tgNudgeTimer = null;
+
+function tgNudgeStep(el, dir){
+  const c = tgRowCtx(el);
+  if (!c) return;
+  const cur = ((_tgEditorState[c.facet] || {})[c.level] || {})[c.key] || 0;
+  const want = Math.max(0, Math.round((cur + dir * TG_NUDGE_STEP) * 10000) / 10000);
+  const res = tgApplyDrag(c.facet, c.level, c.key, want);
+  tgSyncNumbers(c.facet, res);
+  return res;
+}
+
+function tgNudgeStart(el, dir, ev){
+  if (ev && ev.button) return;            // primary button only
+  tgNudgeStop();
+  tgSnapshot();
+  tgNudgeStep(el, dir);
+  const stop = () => {
+    tgNudgeStop();
+    el.removeEventListener('pointerup', stop);
+    el.removeEventListener('pointerleave', stop);
+    el.removeEventListener('pointercancel', stop);
+    // Same as a slider's onchange: rebuild once the gesture ends, so the
+    // track lengths and the "% of" readings below are redrawn.
+    _renderTgEditorBody();
+  };
+  el.addEventListener('pointerup', stop);
+  el.addEventListener('pointerleave', stop);
+  el.addEventListener('pointercancel', stop);
+  _tgNudgeTimer = setTimeout(function rep(){
+    const res = tgNudgeStep(el, dir);
+    _tgNudgeTimer = (res && res.moved) ? setTimeout(rep, 60) : null;
+  }, 400);
+}
+
+// Keyboard (Enter / Space on a focused arrow). A mouse click also fires
+// `click` after its pointerdown already stepped, so only a click with no
+// pointer behind it — detail 0 — is acted on here.
+function tgNudgeKey(el, dir, ev){
+  if (ev && ev.detail !== 0) return;
+  tgSnapshot();
+  tgNudgeStep(el, dir);
+  _renderTgEditorBody();
+}
+
+function tgNudgeStop(){
+  if (_tgNudgeTimer){ clearTimeout(_tgNudgeTimer); _tgNudgeTimer = null; }
+}
+
 function onTgNumber(el){
   const c = tgRowCtx(el);
   if (!c) return;
@@ -22001,8 +22151,25 @@ function onTgNumber(el){
     return;
   }
   const v = parseFloat(raw);
-  tgApplyDrag(c.facet, c.level, c.key, isNaN(v) ? 0 : Math.max(0, v));
+  // Typed, not dragged: measured from the CURRENT state rather than a
+  // drag base, and nothing but this row and its ancestors moves — see
+  // tgTypeNodeValue.
+  tgInvalidateDragBase();
+  const root = tgBuildTree(c.facet);
+  const n = tgFindNode(root, c.level, c.key);
+  if (!n) return;
+  const res = tgTypeNodeValue(n, isNaN(v) ? 0 : Math.max(0, v));
+  tgTreeToState(c.facet, root);
+  // A number the user typed is a number they meant, so the row is pinned:
+  // a later slider on a sibling or a parent must not quietly rewrite it.
+  // The pin is the existing one, so the circle shows it and releases it.
+  _tgPins[c.facet] = _tgPins[c.facet] || {};
+  _tgPins[c.facet][c.level] = _tgPins[c.facet][c.level] || {};
+  _tgPins[c.facet][c.level][c.key] = true;
   _renderTgEditorBody();
+  if (res.blockers.length){
+    tgFlashHint(c.facet, `Set to ${res.value.toFixed(1)}%: ${res.blockers.join(', ')}.`);
+  }
 }
 
 function tgToggleExpandEl(el){
@@ -22102,7 +22269,24 @@ function tgFlashHint(facet, msg){
 // returns to the unclaimed remainder, on the same principle the drag
 // rule follows: never invent an assertion the user did not make.
 // Removing is a different act from setting 0, which asserts "hold none".
+//
+// The whole BRANCH goes, not the bucket alone (v0.125.0). A stored set
+// always carries every targeted bucket's ancestors — the backend
+// completes the chain on every read and write (complete_target_ancestors)
+// — so removing technology while semiconductors stayed would have had
+// technology put straight back on save, at semiconductors' value. That
+// would look like the ✕ had not worked. Taking the contents with it is
+// the only removal the rule allows.
 function tgRemoveTarget(facet, level, key){
+  const node = tgFindNode(tgBuildTree(facet), level, key);
+  const desc = [];
+  if (node) (function w(m){ for (const c of m.children){ desc.push(c); w(c); } })(node);
+  for (const d of desc) tgRemoveOne(facet, d.level, d.key);
+  tgRemoveOne(facet, level, key);
+  tgInvalidateDragBase();
+}
+
+function tgRemoveOne(facet, level, key){
   if (_tgEditorState[facet] && _tgEditorState[facet][level]) {
     delete _tgEditorState[facet][level][key];
     if (!Object.keys(_tgEditorState[facet][level]).length) {
@@ -22117,7 +22301,6 @@ function tgRemoveTarget(facet, level, key){
     if (!Object.keys(_tgPins[facet]).length) delete _tgPins[facet];
   }
   _tgExpanded.delete(tgNodeId(facet, level, key));
-  tgInvalidateDragBase();
 }
 
 function addTgEditorRow(facet){
@@ -22142,35 +22325,62 @@ function addTgEditorRow(facet){
   if (!level || !key) return;
   tgSnapshot();
   tgInvalidateDragBase();
-  if (!_tgEditorState[facet]) _tgEditorState[facet] = {};
-  if (!_tgEditorState[facet][level]) _tgEditorState[facet][level] = {};
-  if (_tgEditorState[facet][level][key] === undefined) {
-    // Added at 0, which costs nothing: the invariant still holds because
-    // the parent's unclaimed remainder is unchanged. The first drag then
-    // funds it out of that remainder before it touches a sibling — which
-    // is what makes adding a bucket the baseline did not contain a
-    // one-gesture operation rather than an arithmetic puzzle.
-    _tgEditorState[facet][level][key] = 0;
-  }
-  // Unfold everything above it, or a bucket added three levels down
-  // appears to do nothing at all.
+  const st = (_tgEditorState[facet] = _tgEditorState[facet] || {});
+  // The bucket AND every ancestor of it not yet targeted (v0.123.0).
+  // Adding semiconductors under a sector and super-sector that have no
+  // target used to hang it straight off the portfolio, so the tree no
+  // longer showed where it sat and a sector target added later had to
+  // be reconciled with it by hand. Ancestors are READ from the
+  // vocabulary's `path`, like every other containment question here.
   const pathOf = tgPathOf(facet);
   const lvls = tgLevelsOf(facet);
   const path = pathOf.get(`${level}||${key}`) || {};
+  const added = new Set();
+  const want = [[level, key]];
   for (let i = lvls.indexOf(level) + 1; i < lvls.length; i++){
-    const anc = path[lvls[i]];
-    if (anc) _tgExpanded.add(tgNodeId(facet, lvls[i], anc));
+    if (path[lvls[i]]) want.push([lvls[i], path[lvls[i]]]);
   }
+  for (const [l, k] of want){
+    if ((st[l] || {})[k] !== undefined) continue;
+    // Added at 0, which costs nothing: the parent's unclaimed remainder
+    // is unchanged. The first drag then funds it out of that remainder
+    // before it touches a sibling.
+    (st[l] = st[l] || {})[k] = 0;
+    added.add(tgNodeId(facet, l, k));
+  }
+  // A new bucket can adopt targets that were hanging above it — a
+  // sub-sector set with no sector becomes the new sector's child — so
+  // each one added starts at what its children already commit rather
+  // than at 0, which would put a parent below its own contents. Post-
+  // order, so a new sector is sized before the new super-sector above it.
+  // Nothing else moves: the adopted children were already counted
+  // against the same remainder they are now counted against inside it.
+  if (added.size){
+    const t = tgBuildTree(facet);
+    const size = (n) => {
+      n.children.forEach(size);
+      if (added.has(tgNodeId(facet, n.level, n.key))){
+        n.value = Math.max(n.value, n.children.reduce((a, c) => a + c.value, 0));
+      }
+    };
+    size(t);
+    tgTreeToState(facet, t);
+  }
+  // Unfold everything above it, or a bucket added three levels down
+  // appears to do nothing at all.
+  for (const [l, k] of want.slice(1)) _tgExpanded.add(tgNodeId(facet, l, k));
   _renderTgEditorBody();
-  // Focus the freshly-added row's input so the user can type a percent
-  // straight away.
+  // Focus the freshly-added row's number box so the user can type a
+  // percent straight away. The identity lives on the ROW, not the input
+  // (see tgRowHtml), so the selector goes through the row — it had been
+  // looking for data attributes on the input, matched nothing, and the
+  // focus never landed.
   setTimeout(() => {
-    // Match on the bare key: the row's data-key is the key, never the
-    // "level||key" pair the old <select> carried, so this selector had
-    // been matching nothing and the focus never landed.
-    const inp = document.querySelector(
-      `#targetsEditorBody input[data-facet="${facet}"][data-key="${key.replace(/"/g,'\\"')}"]`);
-    if (inp) inp.focus();
+    const row = [...document.querySelectorAll(
+        `#targetsEditorBody .tge-trow[data-facet="${CSS.escape(facet)}"]`)]
+      .find(r => r.dataset.level === level && r.dataset.key === key);
+    const inp = row && row.querySelector('input[type=number]');
+    if (inp){ inp.focus(); inp.select(); }
   }, 0);
 }
 

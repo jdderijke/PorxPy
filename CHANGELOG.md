@@ -3,6 +3,124 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.125.0] - 2026-10-01
+
+### Fixed - parent targets added in the editor disappeared on reopening
+
+v0.123.0 made the Targets editor add a bucket's untargeted parents when
+the bucket was added. That held only for as long as the dialog was open:
+a set that reached the store any other way — a CSV import, a set saved
+before v0.123.0 — arrived with gaps, and the editor faithfully redrew
+them. Two of the stored portfolios had exactly that: sub-class and
+sub-sector targets (`corporate bond`, `money market`, `renewable
+energy`, `water utilities`) with nothing above them, and a sector target
+(`technology`) with no super-sector.
+
+The rule is now the backend's, not the editor's. A new
+`targets.complete_target_ancestors` gives every targeted bucket a target
+on each level above it, and it is called from `utils._coerce_targets` —
+the coercion every reader and writer of a target set goes through: the
+editor's save, the CSV import, the portfolio view, the optimiser, the
+export. A set with a gap is therefore completed the next time it is
+read, with no migration, and no path can store a new one. Baselines are
+completed as they are built, since the editor draws them before any
+save.
+
+A missing ancestor is added at exactly what its children commit, using
+the same one-level-at-a-time roll-up as the save-time consistency check,
+so it asks the optimiser for nothing the user had not already asked for.
+An ancestor that is already targeted is left alone even when it is
+smaller than its children — that is a disagreement in the user's own
+numbers, and the save-time check names it rather than this silently
+overruling one side. `unknown` and `n/a` never get a parent target.
+
+### Changed - removing a target removes everything inside it
+
+With every stored set carrying its full chain, removing technology while
+semiconductors stayed would only have had technology put back on the
+next save, at semiconductors' value — a ✕ that appeared not to work. The
+✕, and clearing a row's number box, now remove the bucket and every
+target inside it. Undo restores the whole branch.
+
+### Note - the optimiser now sees more multi-level facets
+
+A facet targeted below its coarsest level is now always targeted at
+several levels, which is the case `OPTIMIZER.md` §13's open issue
+describes: such a facet weighs more in the objective than one targeted
+at a single level. The defect is unchanged; what changed is how often it
+applies. Recorded there.
+
+## [0.124.0] - 2026-10-01
+
+### Added - fine-tuning arrows beside every target slider
+
+v0.123.0 removed the number box's spinner arrows, on the reasoning that
+a typed value no longer rebalances and so a spinner on the box served no
+purpose. That was half right: the spinner had also been the only way to
+move a target by a tenth of a percent, which a slider track 150px long
+cannot land on.
+
+The steps are back, on the slider rather than the box: a ◂ and a ▸
+either side of each track. They are part of the slider, not a third kind
+of control — each step goes through `tgApplyDrag` exactly as a drag
+does, with the same per-node drag base, so unpinned siblings rebalance
+by the same rule, pinned buckets hold, and stepping back down restores
+what stepping up changed. Holding an arrow repeats; one press, however
+long, is one Undo step, the way one drag is. They work from the keyboard
+too (Enter or Space on a focused arrow).
+
+The number box stays as v0.123.0 left it: exact, no spinner, moves
+nothing else.
+
+## [0.123.0] - 2026-10-01
+
+### Changed - typing a target is no longer a disguised slider move
+
+The number box in the Targets editor went through the same code as the
+slider, so typing a value redistributed exactly as a drag would: the
+siblings gave ground proportionally, and the bucket's own children were
+rescaled to fit. A typed number is not a gesture, though — it is an exact
+statement about one bucket — and having it quietly rewrite five others
+made the box the one control nobody could predict.
+
+A typed value now has its own rule (`tgTypeNodeValue`). Nothing but the
+row and its ancestors moves. The bucket's children keep their figures
+and the difference lands in its *rest of…*; when the parent has no
+remainder left to give, the parent grows by the shortfall, and so on up
+the chain. Parents scale up, never down. Two walls clamp the value and
+say why in the section hint: the portfolio (100% is not a target and
+cannot grow) or a pinned ancestor above, and the children's own sum
+below. The sliders are now the only control that redistributes inside a
+node.
+
+A typed row is **pinned** as it is set. The user meant that number, and
+without the pin the next slider moved on a sibling or parent would have
+rewritten it. It is the ordinary pin, so the circle shows it and releases
+it.
+
+The spinner arrows beside the box are gone. A 0.1 step per click is no
+way to set a target, and the slider beside it is already the incremental
+control.
+
+### Changed - adding a bucket adds its untargeted parents
+
+Picking a sub-sector whose sector and super-sector carried no target
+added the sub-sector alone, which hung it straight off the portfolio: the
+tree no longer showed where it sat, and a sector added later had to be
+reconciled with it by hand. Adding a bucket now adds every missing
+ancestor too, read off the vocabulary's `path` like every other
+containment question in the editor. Each one added starts at what its
+children already commit — a target that was hanging off the root is
+adopted by its new parent, which must not sit below it — and nothing
+else moves.
+
+### Fixed - a freshly added row did not take the focus
+
+The focus that should land in a new row's number box looked for data
+attributes on the input, which carries none — the identity lives on the
+row — so it matched nothing. It now finds the row and selects the box,
+so a value can be typed straight after **+ Add**.
+
 ## [0.122.4] - 2026-09-30
 
 ### Fixed - a new fund drew the superseded flat tile layout

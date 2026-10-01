@@ -4018,6 +4018,15 @@ def _coerce_targets(raw) -> dict:
                                     level)
                     relocated.setdefault(home, {})[key] = pct
             out[facet] = {lv: blk for lv, blk in relocated.items() if blk}
+
+            # v0.125.0: every targeted bucket carries a target on each
+            # level above it. After the relocation, because a key has to
+            # sit at its home level before its ancestors can be read off
+            # it. Here, in the one coercion every reader and writer goes
+            # through, so no path can store a chain with a gap in it —
+            # see complete_target_ancestors.
+            from porxpy.targets import complete_target_ancestors
+            out[facet] = complete_target_ancestors(facet, out[facet])
     return out
 
 

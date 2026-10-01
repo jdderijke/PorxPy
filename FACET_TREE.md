@@ -1,6 +1,6 @@
 # FACET_TREE.md — the four facet trees
 
-*Current as of v0.122.4. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.125.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Sections 1–5 describe how the facet trees behave **today**, across all
@@ -857,6 +857,52 @@ per portfolio as `target_pins`, parallel to the targets rather than
 promoting each target's value to a dict, and they are consumed entirely
 by the editor: neither the optimiser nor the deviation report reads them.
 
+**Typing is not dragging (v0.123.0).** The number box beside a slider
+follows a different rule, because a typed value is an exact statement
+about one bucket. It redistributes nothing: no sibling moves, and the
+bucket's own children keep their figures, the difference landing in its
+`rest of ...`. When the parent's remainder cannot hold the growth the
+*parent* grows, and so on upward -- parents scale up to fit what is typed
+into them and never down. The climb stops at the portfolio, whose 100%
+is not a target, and at a pinned ancestor; a value past either wall, or
+below what the bucket's own children already commit, is clamped and the
+reason shown. The typed row is then pinned, since a number the user typed
+is one they meant. The sliders are the only control that redistributes
+inside a node -- and the small arrows either side of each slider
+(v0.124.0) are part of the slider: each steps it by 0.1 through the same
+drag path, for the fine tuning a short track cannot do. The invariant above still holds by construction: a parent
+only ever grows to cover its children.
+
+**A target always carries its ancestors (v0.123.0, enforced in the
+backend since v0.125.0).** Picking a sub-sector whose sector and
+super-sector have no target adds both, read off the vocabulary's
+`path`. Each bucket added this way starts at what its children already
+commit -- a sub-sector that was hanging off the root is adopted by the
+new sector, which must not sit below it -- and at 0 when it has none.
+Nothing else moves.
+
+The editor doing this was not enough: a target set reaches the store by
+other paths too (CSV import, a baseline, a set saved before v0.123.0),
+and those arrived with gaps the editor then redrew. So the rule is
+enforced in `targets.complete_target_ancestors`, called from
+`utils._coerce_targets` -- the one coercion every read and every write
+goes through -- and from `build_baseline_targets`. A missing ancestor is
+added at exactly what its children commit, measured by the same
+one-level-at-a-time roll-up `validate_target_levels` uses. An ancestor
+that is already targeted is never changed, even when it is too small:
+that is a disagreement in the user's own numbers, and the save-time check
+reports it rather than this picking a side. The chain stops at a bucket
+the vocabulary cannot place and at `unknown` / `n/a`.
+
+Its consequence for removal: the ✕ (or clearing the box) removes the
+bucket **and everything inside it**. Removing technology alone while
+semiconductors stayed would only have had technology put back, at
+semiconductors' value, on the next save.
+
+Its consequence for the optimiser: any facet targeted below its coarsest
+level is now targeted at several levels, which is the case
+`OPTIMIZER.md` §13's open issue describes.
+
 ## 16c. Reading the tree back (v0.120.0)
 
 The optimiser's **resulting exposure** panel draws the same tree over
@@ -902,7 +948,7 @@ in v0.89.0.
 Deliberate boundaries are described in the sections above; everything
 here is something that should be fixed.
 
-Re-checked at **v0.122.4** against the code each entry names, rather than
+Re-checked at **v0.125.0** against the code each entry names, rather than
 carried forward: `country_key_at_level`'s docstring still says there is
 no super-region level while its body implements one
 (`porxpy/breakdowns.py:2065`); `rollup_holdings` still emits nine facet

@@ -1,6 +1,6 @@
 # WISHLIST.md — possible future enhancements
 
-*Started 2026-08-18, at v0.72.3. Last swept at v0.122.4.*
+*Started 2026-08-18, at v0.72.3. Last swept at v0.125.0.*
 
 Things worth doing that nobody has promised. This is deliberately **not**
 a defect list: a bug lives in the Known open issues section of the
@@ -176,6 +176,41 @@ then just a factsheet. For instance a list of holdings, an analyst report etc.
 Uploading more documents enabled the extraction of more meaningfull data, but at
 the cost of more tokens.
 
+## The pre-loaded list
+
+### Say whether a listed fund has actually been saved
+
+**Wanted.** The list shows funds that were only ever *looked at*
+alongside funds that were saved, and nothing on the row says which is
+which. Any fetch stamps an identity block into
+`cache/listings/<ticker>.json`, `/api/cache/list` walks those files, and
+an identity-only listing therefore appears as a row with no name, no
+categories and every holdings source unavailable.
+
+That is not cosmetic: it is what a reader goes by. It produced three
+separate reports in one session at v0.122.x — IE00BYTRRD19 (WTCH.AS) and
+IE00B802KR88 (SPY1.DE) both looked loaded, so the Holdings breakdown
+source appearing to be unavailable, and the field tiles appearing to be
+missing, both read as defects in those features rather than as
+"nothing about this fund is on disk yet". `utils.listing_is_saved`
+already answers the question exactly, and exists because the file's
+presence stopped meaning "saved" once every fetch began writing one.
+
+**The open decision, which is the reason this is an entry and not a
+change.** Two answers, and they are not equivalent:
+
+- **Hide** unsaved rows. The list then means "your universe" with no
+  qualification, which is what its name promises and what the optimiser
+  reads. The cost is that a fund you are part-way through resolving
+  vanishes from the one place you might go looking for it.
+- **Mark** them — a badge, a dimmed row, an explicit "not saved · Save to
+  keep". The list stays a complete record of what the app knows about,
+  and the row teaches the rule instead of hiding it.
+
+Marking is the safer of the two and the more informative; hiding is the
+more honest about what the list is for. Whichever is chosen, the flag
+itself is a one-line addition to the route.
+
 ## Tools
 
 ### Show the resource fingerprints without pressing Reload
@@ -196,6 +231,35 @@ refresh the table it already renders. Small, but it is a new endpoint
 rather than a rewiring, which is why it is here rather than done.
 
 ## fund_explorer.html
+
+### Send the field taxonomy with the fund, not after it
+
+**Wanted.** The four group tiles cannot be drawn until
+`/api/funds/<ticker>/fields` answers, and that request starts only once
+the fund payload has arrived — so opening a fund is two round-trips and
+two paints, and the tiles appear a beat after everything around them.
+Carrying the taxonomy inside the `/api/fund` payload would make the first
+paint the finished one.
+
+It would also remove a whole class of bug rather than fixing instances of
+it. The taxonomy is per-fund state held in a module-level variable, which
+went wrong twice in one session: at v0.122.3 it was found to be painted
+with the *previous* fund's pins and values, and the guard added for that
+then exposed v0.122.4, where an absent taxonomy was indistinguishable
+from a failed fetch and the superseded flat tile layout was drawn during
+the gap. Both are consequences of the data arriving separately from the
+fund it describes. State that travels with its subject cannot be stale
+for it.
+
+**Why not yet.** The endpoint has a second caller: the Edit fund dialog
+fetches the same taxonomy when it opens, and it needs the pins fresh at
+that moment rather than as of whenever the fund was loaded. So this is
+not a move but a duplication — the fund payload would carry a snapshot
+for painting, and the dialog would keep asking for its own. Whether that
+is one shape serving two needs or two shapes that will drift apart is the
+question to settle first, and it is the same question
+`DEFAULT_GROUP_TTL_DAYS` already answers for the values: a tile may show
+something slightly old, a dialog you are about to edit in may not.
 
 ### The file is getting too big
 The file has been growing over all the versions produced since the start of the project.
