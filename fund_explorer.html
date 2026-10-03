@@ -974,7 +974,8 @@
   .tge-rail .grp{font-family:var(--mono);font-size:.56rem;color:var(--muted);
     letter-spacing:.08em;text-transform:uppercase;margin:.5rem 0 .15rem;}
   .tge-rail .grp:first-child{margin-top:0;}
-  .tge-tab{display:flex;justify-content:space-between;gap:.4rem;
+  .tge-tab{display:flex;flex-wrap:wrap;justify-content:space-between;
+    column-gap:.4rem;row-gap:0;
     background:transparent;border:1px solid transparent;border-radius:5px;
     color:var(--muted);cursor:pointer;font-family:var(--mono);
     font-size:.68rem;padding:4px 7px;text-align:left;}
@@ -984,6 +985,9 @@
   .tge-tab.has .nm{color:var(--text);}
   .tge-tab .c{font-size:.6rem;}
   .tge-tab .c.over{color:var(--amber);}
+  .tge-tab .tol{flex-basis:100%;font-size:.56rem;color:var(--muted);
+    opacity:.85;}
+  .tge-tab.on .tol{color:var(--accent);opacity:1;}
   .tge-tol{display:flex;align-items:center;gap:.3rem;font-family:var(--mono);
     font-size:.62rem;color:var(--muted);margin-left:.8rem;}
   .tge-tol input{width:46px;font-family:var(--mono);font-size:.68rem;
@@ -21978,11 +21982,19 @@ function _renderTgRail(){
       const per = _tgEditorState[f] || {};
       const has = Object.values(per).some(b => Object.keys(b || {}).length);
       const sum = has ? tgCommittedPct(f, per) : 0;
+      // The category's Allowed miss under its name (v0.127.1). It is set in
+      // the category's heading, but a small box there was easy to miss once
+      // it had moved off the Optimizer tab — the rail is where every
+      // category is visible at once, so its tolerance is stated here too.
+      const tol = +((_tgTolerances[f] != null ? _tgTolerances[f]
+                     : OPT_DEFAULTS.max_error_rel) * 100).toFixed(1);
       out.push(`<button class="tge-tab${f === _tgActiveFacet ? ' on' : ''}${has ? ' has' : ''}"
           onclick="tgSelectFacet('${f}')"
-          title="${escapeAttr(has ? tgCommittedLabel(f, sum) : 'No targets yet')}">
+          title="${escapeAttr((has ? tgCommittedLabel(f, sum) : 'No targets yet')
+            + ` · allowed miss ${tol}% of each target — change it in this category's heading`)}">
         <span class="nm">${escapeHtml(facetLabel(f))}</span>
         <span class="c${sum > 100.0001 ? ' over' : ''}">${has ? sum.toFixed(0) + '%' : '—'}</span>
+        <span class="tol">allowed miss ±${tol}%</span>
       </button>`);
     }
   }
@@ -22017,6 +22029,7 @@ function onTgTolChange(el){
   v = Math.max(1, Math.min(100, v));
   el.value = v;
   _tgTolerances[f] = v / 100;
+  _renderTgRail();
 }
 
 // Where the portfolio sits now in one bucket, in percent of the fund

@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.127.0. This is the fullest architecture write-up;
+*Current as of v0.127.1. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -158,7 +158,7 @@ box all follow it. Each row also shows where the portfolio sits **now**,
 as a figure and as a dot on the slider track, so a target is set against
 the present rather than blind. A stored 0 is labelled *hold none*. The
 dialog shows one category at a time, chosen from a rail that lists all
-seven with what each commits, and each category carries its own **Allowed
+seven with what each commits and its allowed miss, and each category carries its own **Allowed
 miss** — the tolerance the optimiser aims at and the Targets tab grades
 against. A target always carries its parents: adding
 a bucket adds any untargeted ones above it, every stored set is
@@ -962,6 +962,6 @@ it does.
 
 ## Version
 
-Current release: **0.127.0** (2026-10-03)
+Current release: **0.127.1** (2026-10-03)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

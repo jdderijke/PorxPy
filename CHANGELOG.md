@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.127.1] - 2026-10-03
+
+### Fixed - the tolerance was hard to find after it left the Optimizer tab
+
+0.127.0 moved the per-category tolerance (Allowed miss) from the
+Optimizer tab into the targets editor, as a small box in each
+category's heading — visible only for the category on screen, and easy
+to miss for anyone looking for where it had gone. The editor's rail now
+states each category's allowed miss under its name, for all seven at
+once, and follows the box as it is edited. The tooltip says where to
+change it.
+
 ## [0.127.0] - 2026-10-03
 
 ### Changed - the targets editor, the Targets tab and the optimiser's result, made readable

@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.127.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.127.1. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -134,7 +134,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.127.0 (built 2026-10-03)
+  PorxPy  v0.127.1 (built 2026-10-03)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -376,7 +376,8 @@ so changing a sibling or its parent leaves it — and everything inside it
 — alone. **Undo** steps back through the session's edits.
 
 Below that, a rail on the left lists every category with what its
-targets commit; pick one to edit it. The categories come in two groups:
+targets commit and its **allowed miss**; pick one to edit it. The allowed
+miss itself is changed in the box in that category's heading. The categories come in two groups:
 
 | Group | Facets | What it measures |
 |---|---|---|
