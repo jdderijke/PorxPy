@@ -3,6 +3,84 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.127.0] - 2026-10-03
+
+### Changed - the targets editor, the Targets tab and the optimiser's result, made readable
+
+Three screens answer one question — how does this portfolio sit against
+its targets — and each answered it in a different shape, behind controls
+whose rules had to be learnt from four paragraphs of prose before
+anything could be touched.
+
+**The targets editor.**
+
+- The four explanatory paragraphs are now one sentence and a folded
+  *How targets work* list. Each rule also lives on the control it
+  governs, as a tooltip.
+- **When I change a bucket** — *others make room* / *others stay put* —
+  states the edit rule above the tree, and the slider, its arrows and
+  the number box all follow it. Before, the rule was tied to the
+  control: a slider rebalanced its siblings, a typed number moved
+  nothing and silently pinned its row, and nothing on screen said which
+  was which. The auto-pin is gone; a pin is only ever the user's own.
+  The choice is remembered per browser.
+- Every row shows where the portfolio sits **now**, as a figure and as a
+  dot on the slider track. Before, you set targets blind and had to
+  close the dialog and read X-ray to know whether 30% technology was a
+  tilt or a rebalance. Served by a new `target_actuals` block on the
+  portfolio view (`targets.exposure_by_level`), measured on the same
+  fund-side rollup the Targets tab reads.
+- A stored 0 is labelled **hold none**. A 0 and an empty box looked
+  alike while meaning opposite things, and a bucket added from the
+  picker starts at 0 — so an added-and-forgotten bucket quietly told
+  the optimiser to hold none of it.
+- **One category at a time**, picked from a rail that lists all seven
+  with what each commits (amber past 100%). The dialog is wider, and
+  the reserve and the baseline picker sit side by side above it.
+- **Allowed miss** (the per-category tolerance) is set in the editor,
+  beside the targets it qualifies, and saved with them. It was on the
+  Optimizer tab, although the CSV export already treated it as part of
+  the target set and the Targets tab now grades by it too. Same store as
+  before, the portfolio's `optimizer_settings`; the Optimizer tab now
+  reports the figures and links to the editor. `PUT /targets` accepts a
+  `tolerances` map.
+- Country rows are named by the vocabulary's labels or the X-ray's
+  country formatter: *United States*, *Asia (Developed)*, rather than
+  *Unitedstates*. One formatter, `tgKeyLabel`, so all three screens
+  agree.
+
+**The Targets tab and the optimiser's resulting exposure — one table.**
+
+- Both are drawn by one renderer, `tgExposureTableHtml`, over the facet
+  tree: target, actual (or proposed), Δ, and ✓ / ▲ over / ▼ under per
+  bucket, with a bullet bar — bar = measured, tick = target, shaded band
+  = the bucket's allowed miss. The Targets tab used to be a Chart.js bar
+  chart of bare deviations, one chart per level, which neither nested
+  nor said whether a miss mattered: −3 on a 5% target and on a 40% one
+  looked the same.
+- Every bucket is graded against **its own allowance**, by
+  `config.bucket_allowance` — moved there from the optimiser together
+  with `TOL_FLOOR`, and now also called by
+  `targets.compute_target_deviations`, which gives each item an
+  `allowance` and a `within`. The tab and the solver cannot disagree
+  about whether a bucket passed.
+- A **verdict** heads each panel: how many targets are within tolerance
+  and, worst first against their own allowance, a link to each one that
+  is not — which unfolds the branch and scrolls to the row.
+- The Targets tab shows what no target claims as greyed *not targeted* /
+  *rest of …* rows, with the largest buckets in each. The optimiser
+  panel still draws none, deliberately: it reports only what was asked.
+- The optimiser panel adds a **Now** column and a dot for the held
+  position, from a new `current` block in the optimiser's result —
+  the same buckets measured on the portfolio as held, with the same
+  candidate exposures and denominator as `achieved`.
+- Both open by one rule: fully when a category has 40 buckets or fewer,
+  otherwise only the branches holding a miss. The optimiser used to open
+  fully always, so a baseline design meant scrolling past hundreds of
+  passing rows to find the few that missed.
+- On the Optimizer tab the resulting exposure now comes **before** the
+  trades, and coverage notes past two fold under a count.
+
 ## [0.126.0] - 2026-10-01
 
 ### Fixed - a facet targeted at several levels counted several times

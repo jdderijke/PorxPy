@@ -40,7 +40,8 @@ from __future__ import annotations
 
 from porxpy.breakdowns import facet_items
 from porxpy.config import (BASELINE_MIN_TARGET_PCT, BREAKDOWN_FACETS,
-                           FACET_LEVELS, TARGET_FACETS)
+                           DEFAULT_OPTIMIZER_SETTINGS, FACET_LEVELS,
+                           TARGET_FACETS, bucket_allowance)
 
 
 def _to_fraction(pct: float) -> float:
@@ -52,7 +53,8 @@ def _to_fraction(pct: float) -> float:
 
 
 def compute_target_deviations(fundlevel_breakdowns: dict,
-                              targets: dict) -> dict:
+                              targets: dict,
+                              tolerances: dict | None = None) -> dict:
     """Compute the per-facet target-vs-actual deviation block.
 
     Pure function. The caller is responsible for assembling
@@ -69,6 +71,13 @@ def compute_target_deviations(fundlevel_breakdowns: dict,
         targets: Per-facet ``{key: percent}`` dicts. Country/region
             targets use mstar_region keys (e.g. ``"northAmerica"``).
             Sparse — keys absent mean "no target".
+        tolerances: Per-facet relative tolerances, ``{facet: fraction
+            of each target}`` — the portfolio's saved Optimizer
+            setting. A facet without one gets the app default. Used only
+            to give each targeted bucket its ``allowance``, by the same
+            rule the optimiser aims at (:func:`config.bucket_allowance`),
+            so this report and the optimiser cannot disagree about
+            whether a bucket is close enough (v0.127.0).
 
     Returns:
         ::
@@ -79,7 +88,9 @@ def compute_target_deviations(fundlevel_breakdowns: dict,
                     "has_targets":   bool,
                     "items": [
                         {"key": str, "actual": fraction, "target": fraction,
-                         "deviation": fraction},  # actual - target
+                         "deviation": fraction,   # actual - target
+                         "allowance": fraction,   # how far it may sit
+                         "within":    bool},      # |deviation| <= allowance
                         ...
                     ],
                     "untargeted_pct":    fraction,
@@ -139,6 +150,8 @@ def compute_target_deviations(fundlevel_breakdowns: dict,
             any_targets = True
 
         levels_out: dict[str, dict] = {}
+        rel = float((tolerances or {}).get(facet)
+                    or DEFAULT_OPTIMIZER_SETTINGS["max_error_rel"])
 
         for level, lvl_targets in target_block.items():
             if not isinstance(lvl_targets, dict) or not lvl_targets:
@@ -166,11 +179,14 @@ def compute_target_deviations(fundlevel_breakdowns: dict,
             for key, pct in sorted(lvl_targets.items()):
                 tgt_frac = _to_fraction(pct)
                 actual   = actual_by_key.get(key, 0.0)
+                allow    = bucket_allowance(rel, tgt_frac)
                 targeted_items.append({
                     "key":          key,
                     "actual":       round(actual, 6),
                     "target":       round(tgt_frac, 6),
                     "deviation":    round(actual - tgt_frac, 6),
+                    "allowance":    round(allow, 6),
+                    "within":       abs(actual - tgt_frac) <= allow + 1e-9,
                     "unmeasurable": not available,
                 })
 
@@ -208,6 +224,47 @@ def compute_target_deviations(fundlevel_breakdowns: dict,
         "facets":      out_facets,
         "any_targets": any_targets,
     }
+
+
+def exposure_by_level(fundlevel_breakdowns: dict) -> dict:
+    """The portfolio's current exposure to every bucket, at every level.
+
+    Why this exists: the targets editor used to show only the targets
+    being set, so whether "technology 30%" was a small tilt or a large
+    rebalance could only be answered by closing it and reading X-ray.
+    This is the figure each editor row now shows beside its own, for
+    targeted and untargeted buckets alike — and it is measured on the
+    same fund-side rollup the deviation report reads, so the editor's
+    "now" and the Targets tab's "actual" are one number (v0.127.0).
+
+    Args:
+        fundlevel_breakdowns: The same rollup
+            :func:`compute_target_deviations` is given.
+
+    Returns:
+        ``{facet: {level: {key: fraction}}}`` over every target facet
+        and every level its block carries. Zero-weight buckets are left
+        out; an absent key reads as 0.
+    """
+    out: dict[str, dict[str, dict[str, float]]] = {}
+    for facet in TARGET_FACETS:
+        block = (fundlevel_breakdowns or {}).get(facet) or {}
+        levels = FACET_LEVELS.get(facet) or (facet,)
+        per: dict[str, dict[str, float]] = {}
+        for level in levels:
+            row = {}
+            for it in facet_items(block, level):
+                if not isinstance(it, dict):
+                    continue
+                key = (it.get("key") or "").strip()
+                w = float(it.get("weight") or 0.0)
+                if key and w > 0:
+                    row[key] = round(row.get(key, 0.0) + w, 6)
+            if row:
+                per[level] = row
+        if per:
+            out[facet] = per
+    return out
 
 
 # ---------------------------------------------------------------------------

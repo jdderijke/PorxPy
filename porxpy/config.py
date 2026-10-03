@@ -296,7 +296,7 @@ CACHE_CATEGORIES: list[str] = LISTING_CATEGORIES + FUND_CATEGORIES
 # "10%" is three places it can drift.
 #
 # `max_error_rel` is the per-facet default, a fraction OF EACH TARGET;
-# a facet with no stored value gets this one. See optimizer.TOL_FLOOR
+# a facet with no stored value gets this one. See TOL_FLOOR below
 # for the floor that stops a small target demanding an accuracy whole
 # shares cannot express.
 DEFAULT_OPTIMIZER_SETTINGS: dict[str, Any] = {
@@ -316,6 +316,43 @@ OPTIMIZER_SETTING_BOUNDS: dict[str, tuple[float, float]] = {
     "min_weight":    (0.0, 0.5),
     "min_trade":     (0.0, 1e9),
 }
+
+# The floor under a bucket's allowance, in whole-portfolio fractions.
+#
+# Pure proportionality breaks at the bottom: 10% of a 2% target is 0.2pp,
+# finer than whole shares and the min-weight prune can express, so every
+# run would report an unreachable target that is in practice met. 0.5pp
+# is the grain below which the answer is noise rather than an answer.
+#
+# There is deliberately NO ceiling. A large target getting a large
+# allowance is the user's own instruction — "within 10% of it" — and
+# capping it at some absolute figure would quietly reintroduce the
+# percentage-point tolerance this replaced, for exactly the buckets where
+# it was least wrong and therefore hardest to notice.
+#
+# Here rather than in optimizer.py since v0.127.0: the Targets tab now
+# judges each bucket against the same allowance the solver aims at, and
+# the two only agree by construction if there is one copy of the rule.
+TOL_FLOOR = 0.005
+
+
+def bucket_allowance(rel: float, target: float) -> float:
+    """How far one bucket may sit from its target, in portfolio fractions.
+
+    Why this exists: the solver, its result table and the Targets tab all
+    ask "is this bucket close enough?", and before v0.127.0 only the
+    solver could answer — the Targets tab drew bare deviations, so a
+    3-point miss read the same on a 5% target and on a 40% one.
+
+    Args:
+        rel: The facet's tolerance, a fraction OF EACH TARGET (0.10 =
+            within a tenth of it).
+        target: The bucket's target as a fraction of the fund side.
+
+    Returns:
+        ``max(rel * target, TOL_FLOOR)``.
+    """
+    return max(float(rel) * float(target), TOL_FLOOR)
 
 DEFAULT_CACHE_CONFIG: dict[str, dict[str, Any]] = {
     "profile":       {"enabled": True, "ttl_days": 30},
@@ -1318,7 +1355,7 @@ TARGET_FACETS: tuple[str, ...] = BREAKDOWN_FACETS + META_FACETS
 # How small a bucket "set baseline targets" will write (v0.119.0).
 #
 # The optimiser's per-bucket allowance floors at TOL_FLOOR = 0.5
-# percentage points (see optimizer.py), so a target below that cannot be
+# percentage points (see bucket_allowance), so a target below that cannot be
 # missed: every holding from zero upwards is already inside tolerance. A
 # world-equity index rolled down to sub-sector is mostly that band --
 # a long tail of buckets that constrain nothing and cost a solver row

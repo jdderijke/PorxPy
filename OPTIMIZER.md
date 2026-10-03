@@ -1,6 +1,6 @@
 # The PorxPy Optimizer — how it works
 
-*Applies to `porxpy/optimizer.py` as of v0.126.0. The full audit — every
+*Applies to `porxpy/optimizer.py` as of v0.127.0. The full audit — every
 claim in the document re-checked against the module — was done at
 v0.91.0; since then the v0.96.0 peer-scoring change was folded into §7b
 and §13's one remaining open issue was re-confirmed by reading
@@ -180,6 +180,7 @@ Every row carries its own allowance, and the allowance IS the weight:
 
 ```
 allowance_b = max(max_error_rel[facet] x target_b, TOL_FLOOR)   # TOL_FLOOR = 0.005
+# config.bucket_allowance since v0.127.0 -- the Targets tab grades by it too
 row_scale_b = facet_weights[facet] / sqrt(n_buckets + 1) / sqrt(n_levels) / allowance_b
 ```
 
@@ -640,7 +641,16 @@ target.
   `deviation` is signed: positive is overweight. `tolerance` is emitted
   rather than left for the caller to recompute (v0.115.0), so the relative
   rule and its floor live in one place and a table cannot disagree with
-  the solver about whether a row passed.
+  the solver about whether a row passed. Since v0.127.0 that one place is
+  `config.bucket_allowance`, which `targets.compute_target_deviations`
+  also calls, so the Targets tab grades the held portfolio by the same
+  allowance.
+- **`current`** (v0.127.0) — the same buckets measured on the portfolio
+  as held, before any trade: same candidate exposures, same fund-side
+  denominator as `achieved`, so the two differ only by the trades. The
+  resulting-exposure table shows it as **Now** beside **Proposed**.
+  Reading "now" off the Targets tab instead would compare numbers built
+  from different candidate sets.
 - **`facets`** — per facet: `max_dev`, the biggest miss anywhere in the
   facet, plus the bucket that DECIDED it — `worst_bucket`, `worst_level`,
   `worst_dev`, that bucket's `tolerance`, and `ratio` = worst_dev over
@@ -844,7 +854,7 @@ Defects specific to the optimiser, as opposed to the deliberate
 boundaries in §12. Each is something that should be fixed rather than
 something someone chose.
 
-None open as of v0.126.0. The two below are kept as records.
+None open as of v0.127.0 (re-checked against the code). The two below are kept as records.
 
 ### ~~A facet targeted at several levels counted several times~~ — fixed in v0.126.0
 

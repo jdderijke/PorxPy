@@ -79,7 +79,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from porxpy.config import DEFAULT_OPTIMIZER_SETTINGS
+from porxpy.config import (DEFAULT_OPTIMIZER_SETTINGS, TOL_FLOOR,
+                           bucket_allowance)
 
 
 # A synthetic bucket collecting every exposure that falls outside the
@@ -99,19 +100,10 @@ WEIGHT_EPS = 1e-4
 # agree, and they only do so by construction if there is one copy.
 DEFAULT_TOL_REL = float(DEFAULT_OPTIMIZER_SETTINGS["max_error_rel"])
 
-# The floor under a bucket's allowance, in whole-portfolio fractions.
-#
-# Pure proportionality breaks at the bottom: 10% of a 2% target is 0.2pp,
-# finer than whole shares and the min-weight prune can express, so every
-# run would report an unreachable target that is in practice met. 0.5pp
-# is the grain below which the answer is noise rather than an answer.
-#
-# There is deliberately NO ceiling. A large target getting a large
-# allowance is the user's own instruction — "within 10% of it" — and
-# capping it at some absolute figure would quietly reintroduce the
-# percentage-point tolerance this replaced, for exactly the buckets where
-# it was least wrong and therefore hardest to notice.
-TOL_FLOOR = 0.005
+# The floor under a bucket's allowance (0.5pp) and the rule built on it
+# live in config since v0.127.0 — see config.TOL_FLOOR and
+# config.bucket_allowance. The Targets tab judges buckets by the same
+# allowance, so one copy is what keeps the two screens agreeing.
 
 # Precision for SCREENING solves — the hundreds of throwaway fits greedy
 # and the swap search run to rank candidates against each other.
@@ -412,7 +404,7 @@ def _build_facet_matrix(candidates: list[dict],
             # the targets sum to 100% its target is 0, so it floors at
             # TOL_FLOOR and stray exposure is penalised hard — which is
             # exactly the "I want exactly this mix" reading above.
-            tol_b = max(rel * raw_target, TOL_FLOOR)
+            tol_b = bucket_allowance(rel, raw_target)
             scale = norm / tol_b
 
             A_rows.append(row * scale)
@@ -1042,6 +1034,7 @@ def optimise_portfolio(candidates: list[dict],
               "frozen":       {"share", "base", "tickers"},
               "selected":     [ticker, ...],   # in selection order
               "achieved":     {facet: {level: {bucket: fraction}}},
+              "current":      {facet: {level: {bucket: fraction}}},  # as held
               "deviation":    {facet: {level: {bucket: achieved - target}}},
               "tolerance":    {facet: {level: {bucket: allowance}}},
               "target_met":   bool,     # every facet inside its tolerance?
@@ -1457,6 +1450,16 @@ def optimise_portfolio(candidates: list[dict],
     # the relative rule live here, and a second implementation of them in
     # the frontend is a second place they can drift.
     tolerance: dict[str, dict[str, dict[str, float]]] = {}
+    # The same buckets measured on the portfolio AS HELD, before any trade
+    # (v0.127.0). Same exposures, same fund-side denominator, so "now" and
+    # "proposed" differ only by the trades — reading "now" off the Targets
+    # tab instead would compare two numbers built from different candidate
+    # sets and call the difference the design's doing.
+    current: dict[str, dict[str, dict[str, float]]] = {}
+    w_now = [((float(c.get("current_shares") or 0.0)
+               * float(c.get("price_base") or 0.0)) / fund_side
+              if fund_side else 0.0)
+             for c in (usable + frozen)]
     for facet, per_level in (targets or {}).items():
         rel = float(tol_rel.get(facet, DEFAULT_TOL_REL))
         for level, tgt in (per_level or {}).items():
@@ -1465,7 +1468,13 @@ def optimise_portfolio(candidates: list[dict],
             achieved.setdefault(facet, {})[level] = {}
             deviation.setdefault(facet, {})[level] = {}
             tolerance.setdefault(facet, {})[level] = {}
+            current.setdefault(facet, {})[level] = {}
             for key in sorted(tgt.keys()):
+                current[facet][level][key] = round(float(sum(
+                    w_now[j] * float((((c.get("exposures") or {})
+                                       .get(facet) or {})
+                                      .get(level) or {}).get(key, 0.0))
+                    for j, c in enumerate(usable + frozen))), 6)
                 got = sum(w_full[j] * float((((c.get("exposures") or {})
                                               .get(facet) or {})
                                              .get(level) or {}).get(key, 0.0))
@@ -1476,7 +1485,7 @@ def optimise_portfolio(candidates: list[dict],
                 deviation[facet][level][key] = round(
                     float(got) - float(tgt[key]), 6)
                 tolerance[facet][level][key] = round(
-                    max(rel * float(tgt[key]), TOL_FLOOR), 6)
+                    bucket_allowance(rel, tgt[key]), 6)
 
     # Errors, per facet, in real percentage points on the buckets the user
     # actually targeted — the same numbers the deviation table shows, so the
@@ -1549,6 +1558,7 @@ def optimise_portfolio(candidates: list[dict],
         "cash_after":  round(reserve, 2),
         "selected":    [usable[j]["ticker"] for j in sel],
         "achieved":    achieved,
+        "current":     current,
         "deviation":   deviation,
         # Per-bucket allowance, mirroring `deviation` (v0.115.0). The
         # table shows target / achieved / miss / allowed on one row.

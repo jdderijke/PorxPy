@@ -56,17 +56,25 @@ Concretely, before finishing a change, sweep the parallel set it belongs to:
   The editor's ✕ therefore removes a whole branch. Pins live
   beside them in a parallel `target_pins` map of the same shape, are
   pruned against the targets they hold (`prune_pins`), and are read ONLY
-  by the editor: a pin says how a design may be edited, not what it asks
+  by the editor. The per-category tolerance (`optimizer_settings.
+  max_error_rel`) travels with a target set too: the editor saves it in
+  the same PUT, the CSV carries it, and the optimiser and the Targets tab
+  both read it — so a new writer of targets should ask whether it writes
+  tolerances as well. Pins: a pin says how a design may be edited, not what it asks
   for, so neither `optimizer.py` nor `compute_target_deviations` may grow
   a dependency on one.
 - Change the shape of a **facet tree on screen** → there is ONE builder,
-  `tgBuildTreeFrom(facet, perLevel, decorate)`, and two callers: the
-  Targets editor (`tgBuildTree`, values are the targets being set) and
-  the optimiser's resulting-exposure panel (`_optExposureTree`, values
-  are the targets achieved). A change to how buckets nest belongs in the
-  builder. The two panels differ deliberately in two ways only, each
-  commented at the site: the optimiser draws no `rest of …` row, and it
-  opens fully unfolded. Containment is READ from each canonical entry's
+  `tgBuildTreeFrom(facet, perLevel, decorate)`, and three callers: the
+  Targets editor (`tgBuildTree`, values are the targets being set), the
+  Targets tab (`_tgTabTree`, the portfolio as held) and the optimiser's
+  resulting-exposure panel (`_optExposureTree`, the design as proposed).
+  A change to how buckets nest belongs in the builder. The two READ-BACK
+  panels also share one renderer, `tgExposureTableHtml`, one opening
+  rule (`tgExposureDefaultExpanded`) and one verdict (`tgVerdictHtml`),
+  and grade every bucket by `config.bucket_allowance` — the rule the
+  solver aims at, so change it there and nowhere else. They differ
+  deliberately in two ways, each commented at the site: the optimiser
+  draws no `rest of …` row, and it adds a Now column. Containment is READ from each canonical entry's
   `path`, never derived in the browser, so any new caller must make sure
   the vocabulary is fetched (`_tgFetchCanonical`) before it renders.
 - Add a field to the **portfolio record** → three things carry it

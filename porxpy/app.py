@@ -1838,8 +1838,11 @@ def create_app() -> Flask:
     def api_portfolio_targets_put(pid: str) -> Response:
         """Replace the stored targets for ``pid``.
 
-        Body (JSON): ``{"targets": {<facet>: {<key>: percent, ...}, ...}}``.
-        Replace semantics — the whole dict is overwritten. Pass an
+        Body (JSON): ``{"targets": {<facet>: {<key>: percent, ...}, ...}}``,
+        optionally with ``target_pins``, ``cash_reserve`` and
+        ``tolerances`` (``{facet: fraction of each target}``, merged into
+        the portfolio's Optimizer settings). Replace semantics for the
+        targets — the whole dict is overwritten. Pass an
         empty/all-facets-empty dict to clear.
 
         Returns:
@@ -1879,10 +1882,21 @@ def create_app() -> Flask:
                 reserve = cash_reserve_set(pid, body.get("cash_reserve") or 0.0)
             else:
                 reserve = cash_reserve_get(pid)
-        except ValueError as exc:
+            # Tolerances are part of the design and are edited beside the
+            # targets they qualify (v0.127.0) — they were on the Optimizer
+            # tab, while the CSV export already treated them as part of
+            # the target set. Same store as before, the portfolio's
+            # optimizer_settings, so the optimiser reads them unchanged.
+            # Absent means leave alone, as for the reserve.
+            from porxpy.utils import optimizer_settings_get, optimizer_settings_set
+            tols = body.get("tolerances")
+            if isinstance(tols, dict) and tols:
+                optimizer_settings_set(pid, {"max_error_rel": tols})
+            tolerances = optimizer_settings_get(pid).get("max_error_rel") or {}
+        except (ValueError, KeyError) as exc:
             return jsonify({"error": str(exc)}), 404
         return jsonify({"targets": persisted, "target_pins": pins,
-                        "cash_reserve": reserve})
+                        "cash_reserve": reserve, "tolerances": tolerances})
 
     @app.route("/api/portfolios/<pid>/targets/csv", methods=["GET"])
     def api_portfolio_targets_csv_get(pid: str) -> Response:
@@ -2670,11 +2684,21 @@ def create_app() -> Flask:
         # denominator that still included that cash made the Targets tab
         # and the optimiser answer the same question two ways, the tab
         # reporting a shortfall on a design the optimiser called met.
-        target_deviations = compute_target_deviations(
-            fundlevel_breakdowns_ex_cash, targets)
         # The cash reserve rides along with the targets it belongs to, so
         # the Targets tab and its editor can render without a second call.
         from porxpy.utils import cash_reserve_get, optimizer_settings_get
+        # Read before the deviations since v0.127.0: each targeted bucket
+        # is now judged against its own allowance, from the same
+        # per-facet tolerance the optimiser aims at.
+        _opt_saved = optimizer_settings_get(p.get("id") or "")
+        target_deviations = compute_target_deviations(
+            fundlevel_breakdowns_ex_cash, targets,
+            _opt_saved.get("max_error_rel") or {})
+        # Every bucket's current exposure at every level, targeted or not,
+        # on the same fund-side basis — what the targets editor shows as
+        # "now" beside each row (v0.127.0).
+        from porxpy.targets import exposure_by_level
+        target_actuals = exposure_by_level(fundlevel_breakdowns_ex_cash)
         cash_reserve = cash_reserve_get(p.get("id") or "")
         # The Optimizer panel's saved settings ride along too (v0.117.0),
         # for the same reason the reserve does: the panel is rendered from
@@ -2682,7 +2706,7 @@ def create_app() -> Flask:
         # would let the screen paint defaults first and correct itself
         # afterwards — which is exactly what "it forgot my tolerance"
         # looks like even when the value was stored correctly.
-        optimizer_settings = optimizer_settings_get(p.get("id") or "")
+        optimizer_settings = _opt_saved
 
         # Three totals, not one (v0.89.0). The portfolio funds list no
         # longer carries the cash rows — a cash position is not a fund —
@@ -2740,6 +2764,7 @@ def create_app() -> Flask:
             # ``targets`` is the editable {facet: {key: percent}} dict.
             "targets":               targets,
             "target_deviations":     target_deviations,
+            "target_actuals":        target_actuals,
             # Which of those targets are pinned. Travels with the view so
             # the editor opens holding the same pins the last save stored
             # — a pin read one request later would let the editor's first

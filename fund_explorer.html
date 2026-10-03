@@ -903,7 +903,6 @@
   .tg-untarg{font-family:var(--mono);font-size:.63rem;color:var(--amber);
     margin-top:.5rem;line-height:1.5;}
   .tg-untarg-detail{color:var(--muted);}
-  .tg-chart-wrap{position:relative;width:100%;height:auto;min-height:80px;}
 
   /* Targets editor modal rows */
   .tge-section{margin-bottom:1.1rem;padding-bottom:.6rem;
@@ -931,10 +930,72 @@
      "rest of X" row, so a remainder lines up with the buckets it is the
      remainder OF — two grids drifted apart by a pixel read as a bug. */
   .tge-trow,.tge-rest{display:grid;
-    grid-template-columns:16px 1fr 150px 62px 118px 22px 20px;
+    grid-template-columns:16px 1fr 190px 62px 66px 118px 22px 20px;
     gap:.35rem;align-items:center;margin-bottom:.18rem;
     padding-left:calc(var(--d,0) * 13px);}
-  .tge-rest{grid-template-columns:16px 1fr 150px 62px 118px;}
+  .tge-rest{grid-template-columns:16px 1fr 190px 62px 66px 118px;}
+  /* Where the portfolio sits now (v0.127.0): a figure beside the box and
+     a dot on the slider track, so a target is set against the present
+     rather than blind. */
+  .tge-trow .now,.tge-rest .now{font-family:var(--mono);font-size:.62rem;
+    color:var(--amber);opacity:.85;text-align:right;white-space:nowrap;
+    padding-right:.5rem;border-right:1px solid var(--border2);}
+  .tge-trow .trk{position:relative;flex:1;min-width:0;display:flex;
+    align-items:center;}
+  .tge-trow .trk input[type=range]{flex:1;min-width:0;}
+  .tge-trow .nowmk{position:absolute;top:50%;width:7px;height:7px;
+    margin:-3.5px 0 0 -3.5px;border:1.5px solid var(--amber);
+    border-radius:50%;background:var(--bg);pointer-events:none;opacity:.9;}
+  /* A stored 0 is the instruction "hold none of this" — said in words,
+     because an empty-looking box and a zero target read alike. */
+  .tge-trow .zero{font-family:var(--mono);font-size:.56rem;color:var(--red);
+    border:1px solid rgba(248,113,113,.45);border-radius:3px;padding:0 3px;
+    margin-left:.35rem;font-style:normal;}
+  .tge-lead{font-family:var(--mono);font-size:.72rem;color:var(--text);
+    line-height:1.55;margin:0 0 .5rem;}
+  .tge-help{font-family:var(--mono);font-size:.66rem;color:var(--muted);
+    line-height:1.55;margin:0 0 .8rem;}
+  .tge-help summary{cursor:pointer;color:var(--accent);font-size:.66rem;}
+  .tge-help ul{margin:.4rem 0 0;padding-left:1.1rem;}
+  .tge-help li{margin-bottom:.25rem;}
+  .tge-top{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);
+    gap:.8rem;align-items:start;}
+  .tge-top .tge-reserve,.tge-top .tge-baseline{margin-bottom:.7rem;}
+  .tge-mode{display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;
+    font-family:var(--mono);font-size:.68rem;color:var(--text);
+    margin:0 0 .8rem;}
+  .tge-mode .lbl{color:var(--muted);}
+  .tge-mode label{display:flex;gap:.3rem;align-items:center;cursor:pointer;}
+  /* One category at a time (v0.127.0): a rail of the seven, each with
+     what it commits, beside the one being edited. */
+  .tge-layout{display:grid;grid-template-columns:180px minmax(0,1fr);
+    gap:1rem;align-items:start;}
+  .tge-rail{display:flex;flex-direction:column;gap:2px;position:sticky;top:0;}
+  .tge-rail .grp{font-family:var(--mono);font-size:.56rem;color:var(--muted);
+    letter-spacing:.08em;text-transform:uppercase;margin:.5rem 0 .15rem;}
+  .tge-rail .grp:first-child{margin-top:0;}
+  .tge-tab{display:flex;justify-content:space-between;gap:.4rem;
+    background:transparent;border:1px solid transparent;border-radius:5px;
+    color:var(--muted);cursor:pointer;font-family:var(--mono);
+    font-size:.68rem;padding:4px 7px;text-align:left;}
+  .tge-tab:hover{color:var(--text);border-color:var(--border2);}
+  .tge-tab.on{color:var(--text);background:var(--surface2);
+    border-color:var(--accent);}
+  .tge-tab.has .nm{color:var(--text);}
+  .tge-tab .c{font-size:.6rem;}
+  .tge-tab .c.over{color:var(--amber);}
+  .tge-tol{display:flex;align-items:center;gap:.3rem;font-family:var(--mono);
+    font-size:.62rem;color:var(--muted);margin-left:.8rem;}
+  .tge-tol input{width:46px;font-family:var(--mono);font-size:.68rem;
+    padding:.1rem .25rem;background:var(--surface2);color:var(--text);
+    border:1px solid var(--border);border-radius:4px;text-align:right;}
+  .tge-gnote{font-family:var(--mono);font-size:.62rem;color:var(--muted);
+    margin:-.2rem 0 .45rem;line-height:1.5;}
+  @media (max-width:760px){
+    .tge-top,.tge-layout{grid-template-columns:minmax(0,1fr);}
+    .tge-rail{flex-direction:row;flex-wrap:wrap;position:static;}
+    .tge-rail .grp{display:none;}
+  }
   .tge-rest .lbl{display:flex;align-items:center;gap:.4rem;overflow:visible;}
   .tge-rest .rtxt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
     min-width:0;}
@@ -1003,6 +1064,44 @@
   .oex-trow .inside{font-family:var(--mono);font-size:.58rem;
     color:var(--muted);opacity:.85;}
   .oex-trow .lvl{color:var(--muted);font-size:.9em;}
+  /* The exposure table (v0.127.0), shared by the Targets tab and the
+     optimiser's resulting exposure. Each row carries a bullet bar: the
+     measured exposure as a bar, the target as a tick, the allowance as
+     a shaded band around it, and (optimiser) the held figure as a dot. */
+  .xbar{position:relative;height:10px;background:var(--surface2);
+    border-radius:2px;min-width:80px;}
+  .xband{position:absolute;top:0;bottom:0;background:rgba(52,211,153,.16);}
+  .xfill{position:absolute;left:0;top:2px;bottom:2px;border-radius:1px;
+    background:var(--green);opacity:.85;}
+  .fit-over .xfill,.fit-under .xfill{background:var(--amber);}
+  .fit-nm .xfill{background:var(--muted);}
+  .xtick{position:absolute;top:-2px;bottom:-2px;width:2px;margin-left:-1px;
+    background:var(--text);}
+  .xnow{position:absolute;top:50%;width:7px;height:7px;
+    margin:-3.5px 0 0 -3.5px;border:1.5px solid var(--muted);
+    border-radius:50%;background:var(--bg);}
+  .xfit{font-family:var(--mono);font-size:.66rem;white-space:nowrap;
+    display:inline-flex;align-items:baseline;}
+  .xfit.ok{color:var(--green);}
+  .xfit.over,.xfit.under{color:var(--amber);}
+  .xfit.nm{color:var(--muted);}
+  .xfit .sub{color:var(--muted);font-size:.9em;margin-left:.25rem;}
+  .oex-rest td{color:var(--muted);font-style:italic;}
+  .oex-rest .xdet{display:block;font-size:.6rem;font-style:normal;
+    white-space:normal;opacity:.85;margin-left:14px;}
+  .oex-trow.flash td{background:rgba(79,142,247,.16);transition:background .6s;}
+  .xnotes{font-family:var(--mono);font-size:.64rem;color:var(--muted);
+    border-left:2px solid var(--border2);padding-left:10px;margin:0 0 .6rem;
+    line-height:1.6;}
+  .xverdict{font-family:var(--mono);font-size:.74rem;line-height:1.6;
+    padding:.55rem .8rem;border-radius:8px;border:1px solid var(--border2);
+    margin:0 0 .8rem;}
+  .xverdict.ok{border-color:rgba(52,211,153,.45);color:var(--green);}
+  .xverdict.off{border-color:rgba(251,191,36,.45);color:var(--amber);}
+  .xverdict .who{color:var(--text);}
+  .xverdict button{background:transparent;border:0;color:var(--accent);
+    cursor:pointer;font-family:var(--mono);font-size:.7rem;padding:0;
+    text-decoration:underline dotted;}
   .tge-trow .pin{background:transparent;border:0;color:var(--muted);
     cursor:pointer;font-size:.78rem;line-height:1;padding:0;}
   .tge-trow .pin.on{color:var(--accent);}
@@ -1871,11 +1970,17 @@
             <div id="tgCsvMsg" class="mhint" style="margin:.3rem 0 0"></div>
             <div style="font-family:var(--mono);font-size:.65rem;color:var(--muted);
                         margin:.2rem 0 .8rem;line-height:1.5">
-              Bars show <span style="color:var(--green)">actual − target</span>:
-              positive = overweight, negative = underweight. "Untargeted" sums
-              the actual exposure in buckets you didn't set a target for.
+              Each bar is the actual exposure; the white tick is the target and
+              the shaded band how far it may sit from it (<b>Allowed miss</b>,
+              set per category in Edit targets — the same allowance the
+              optimiser aims at). <span style="color:var(--green)">✓</span>
+              within, <span style="color:var(--amber)">▲ over</span> /
+              <span style="color:var(--amber)">▼ under</span> outside it.
+              Greyed rows are what no target claims.
             </div>
-            <!-- Four facet sections rendered into here by renderTargetsTile(). -->
+            <div id="tgVerdict"></div>
+            <!-- One table per category, rendered by renderTargetsTile()
+                 through the same tgExposureTableHtml the optimiser uses. -->
             <div id="pTargetsFacets"></div>
           </div>
         </div>
@@ -1952,20 +2057,13 @@
                tolerance has to be set to whatever the loosest facet needs,
                which drags the strict ones down with it. These also weight the
                objective — a facet you demand 2% on is worked five times harder
-               than one you allow 10% on. -->
-          <div class="mhint" style="margin:.2rem 0 .35rem">
-            Max fit error, per target category — how much of each target may be
-            missed, as a share <em>of that target</em>. At 10%, a 40% target may
-            be 4 points off and a 5% target only 0.5 — never less than 0.5
-            points, which is finer than whole shares can express anyway. Tighter
-            categories are prioritised by the solver, so spend your precision
-            where it matters.
-          </div>
-          <!-- Built from the facets that actually carry targets. A
-               tolerance on an untargeted facet is a setting with nothing
-               to apply to — the backend ignores it, and asking for it
-               implies the optimiser will do something it cannot. -->
-          <div class="fgrp" id="optErrGrid" style="grid-template-columns:repeat(4,1fr)"></div>
+               than one you allow 10% on.
+               v0.127.0: SET in the targets editor, beside the targets they
+               qualify, and only reported here. They are part of the design
+               (the CSV export always carried them with the targets), and the
+               Targets tab now grades against them too, so a box on this tab
+               alone would be a setting for one of its two readers. -->
+          <div class="mhint" id="optTolSummary" style="margin:.2rem 0 .7rem"></div>
           <div class="mhint" id="optNoTargets" style="display:none;margin:.2rem 0 .6rem;color:var(--muted)"></div>
 
           <div class="fgrp" style="grid-template-columns:repeat(4,1fr)">
@@ -1996,6 +2094,21 @@
         </div>
 
         <div id="optResult" style="display:none">
+          <!-- Fit first (v0.127.0): the verdict and the exposure table
+               come before the trades, because whether the design is
+               worth applying is decided here — the trades are how. -->
+          <div class="cc" style="margin-top:.8rem">
+            <div class="ct">// resulting exposure</div>
+            <div id="optVerdict"></div>
+            <div class="mhint" style="margin:.3rem 0 .6rem">
+              Now → proposed, against each target. The dot is where the
+              portfolio sits today, the bar where this design puts it, the
+              band what each target allows. Large residuals usually mean the
+              targets aren't reachable with the funds available — not that the
+              solver failed.
+            </div>
+            <div id="optAchieved"></div>
+          </div>
           <div class="cc" style="margin-top:.8rem">
             <div class="ct" style="display:flex;justify-content:space-between;align-items:center">
               <span>// proposed trades <span id="optTradeCount" class="src"></span></span>
@@ -2038,15 +2151,6 @@
             <div id="optAlternatives"></div>
           </div>
 
-          <div class="cc" style="margin-top:.8rem">
-            <div class="ct">// resulting exposure</div>
-            <div class="mhint" style="margin:.3rem 0 .6rem">
-              What the design actually achieves against each target. Large
-              residuals usually mean the targets aren't reachable with the
-              funds available — not that the solver failed.
-            </div>
-            <div id="optAchieved"></div>
-          </div>
         </div>
       </div>
 
@@ -3422,83 +3526,103 @@
 </div>
 
 <div class="modal-bg" id="targetsEditorModal">
-  <div class="modal" style="max-width:760px;width:95vw;max-height:90vh;overflow-y:auto">
+  <div class="modal" style="max-width:1100px;width:96vw;max-height:92vh;overflow-y:auto">
     <div class="modal-h">
       <h3 id="targetsEditorTitle">Edit exposure targets</h3>
     </div>
     <div class="modal-b">
-      <p style="font-family:var(--mono);font-size:.7rem;color:var(--muted);
-                line-height:1.5;margin:0 0 .9rem">
-        Every target is a percentage <b>of the fund side</b>, and each row
-        also shows what it is as a share of the bucket that contains it.
-        Drag a slider and its <b>siblings give ground proportionally</b> —
-        the unclaimed remainder first, then the buckets you set — so a
-        bucket can never grow past its parent and the tree always stays
-        consistent. Drill into a row to shape what is inside it; the greyed
-        <i>rest of…</i> line is the part nothing inside it claims.
+      <!-- v0.127.0: one sentence up front, the rules folded away. The four
+           paragraphs that stood here were all correct and all read before
+           a single control — so they were skipped, and every rule they
+           stated arrived as a surprise. Each rule also lives on the
+           control it governs, as a tooltip. -->
+      <p class="tge-lead">
+        Set what share of the fund side each bucket should hold. Anything
+        you leave untargeted the optimiser fills freely, so start from a
+        broad fund to begin at market weight and tilt from there.
       </p>
-      <p style="font-family:var(--mono);font-size:.7rem;color:var(--muted);
-                line-height:1.5;margin:0 0 .9rem">
-        <b>Unclaimed room is a blank cheque.</b> Target technology 30% and
-        nothing else, and the optimiser is only asked for "30% technology,
-        70% not-technology" — 70% financial services satisfies that
-        exactly. <b>Set baseline targets</b> reads a broad fund's own
-        breakdown into every bucket, so market weight is the starting point
-        and a tilt is one slider. <b>Pin</b> (○ → ◉) a number to stop it
-        moving when a sibling or its parent does; everything inside a
-        pinned bucket is protected with it. Clearing a box removes the
-        target; typing <b>0</b> is the different instruction "hold none of
-        this", and it is enforced.
-      </p>
-      <p style="font-family:var(--mono);font-size:.66rem;color:var(--muted);
-                line-height:1.5;margin:0 0 .9rem">
-        <b>Cash held by me</b> is an amount, not a percentage, and it is
-        reserved before anything else: the optimiser leaves exactly that
-        much in your own accounts, selling positions to raise it if you
-        hold less. Every percentage below is then a share of what is
-        left — reserve 50,000 of 100,000 and "50% equity" means 25,000.
-      </p>
-      <p style="font-family:var(--mono);font-size:.66rem;color:var(--muted);
-                line-height:1.5;margin:0 0 .9rem">
-        The figure beside each heading is what those targets
-        <b>commit</b>, not the levels added up. Targets nest, so a target
-        set at a finer level counts inside the one that contains it:
-        semiconductors 15% within technology 35% commits 35%, not 50%.
-        Past 100% the figure turns amber, because at that point the
-        category really is over-committed.
-      </p>
+      <details class="tge-help">
+        <summary>How targets work</summary>
+        <ul>
+          <li><b>Percentages are of the fund side</b>, what is left after
+            <i>Cash held by me</i>. Each row also shows its share of the
+            bucket that contains it.</li>
+          <li><b>Unclaimed room is a blank cheque.</b> Target technology 30%
+            and nothing else, and 70% financial services satisfies it
+            exactly. <b>Set baseline targets</b> copies a broad fund's own
+            breakdown into every bucket, so a tilt is one slider.</li>
+          <li><b>When I change a bucket</b> decides what else moves.
+            <i>Others make room</i>: its siblings give or take, the
+            unclaimed remainder first. <i>Others stay put</i>: nothing else
+            changes, and a parent grows if it has to. Slider, arrows and
+            typed numbers all follow it.</li>
+          <li><b>Pin</b> (○ → ◉) holds a number still while its siblings or
+            its parent move. Everything inside a pinned bucket is held
+            with it.</li>
+          <li><b>✕</b> removes a target and everything inside it. <b>0</b>
+            is different: it means “hold none of this”, and the
+            optimiser enforces it.</li>
+          <li>The <span style="color:var(--amber)">○</span> on each slider
+            and the <i>now</i> figure show where the portfolio sits today.</li>
+          <li><b>Allowed miss</b>, beside each category, is how far a bucket
+            may sit from its target, as a share of that target (never less
+            than 0.5 points). The optimiser aims inside it and the Targets
+            tab grades against it.</li>
+          <li><b>Committed</b> counts nested targets once: semiconductors
+            15% inside technology 35% commits 35%, not 50%. Over 100% turns
+            amber, because the category really is over-committed.</li>
+        </ul>
+      </details>
 
-      <!-- Cash reserve (v0.90.0). An AMOUNT, not a percentage, and
-           deliberately above the facet sections: it is taken off the top,
-           and everything below is a percentage of what remains. -->
-      <div class="tge-reserve">
-        <div class="tge-reserve-h">
-          <label for="tgCashReserve">Cash held by me</label>
-          <span class="tge-reserve-cur" id="tgReserveCur"></span>
+      <div class="tge-top">
+        <!-- Cash reserve (v0.90.0). An AMOUNT, not a percentage: it is
+             taken off the top, and everything below is a percentage of
+             what remains. -->
+        <div class="tge-reserve">
+          <div class="tge-reserve-h">
+            <label for="tgCashReserve"
+                   title="An amount, not a percentage, reserved before anything else: the optimiser leaves exactly this much in your own accounts, selling positions to raise it if you hold less.">Cash held by me</label>
+            <span class="tge-reserve-cur" id="tgReserveCur"></span>
+          </div>
+          <input type="number" min="0" step="any" id="tgCashReserve"
+                 placeholder="0" oninput="onTgReserveChange()">
+          <div class="tge-reserve-note" id="tgReserveNote"></div>
         </div>
-        <input type="number" min="0" step="any" id="tgCashReserve"
-               placeholder="0" oninput="onTgReserveChange()">
-        <div class="tge-reserve-note" id="tgReserveNote"></div>
+
+        <!-- Baseline target set (v0.119.0). A sparse target set cannot
+             say "and the rest at market weight", so the remainder is a
+             blank cheque. A fund's own breakdown IS that missing
+             sentence. -->
+        <div class="tge-baseline">
+          <span class="lbl">Start from a fund</span>
+          <select id="tgBaselineFund"></select>
+          <button class="btn btn-s" id="tgBaselineBtn"
+                  title="Replace the asset class, sector, country and currency targets with this fund's own breakdown"
+                  onclick="applyTgBaseline()">Set baseline targets</button>
+          <button class="btn btn-s" id="tgUndoBtn" onclick="tgUndoStep()"
+                  title="Step back through this session's edits">Undo</button>
+          <div class="tge-basenotes" id="tgBaselineNotes"></div>
+        </div>
       </div>
 
-      <!-- Baseline target set (v0.119.0). The answer to "I set technology
-           to 30% and the optimiser handed me 70% financial services": a
-           sparse target set cannot say "and the rest at market weight",
-           so the remainder is a blank cheque. A fund's own breakdown IS
-           that missing sentence. -->
-      <div class="tge-baseline">
-        <span class="lbl">Start from a fund</span>
-        <select id="tgBaselineFund"></select>
-        <button class="btn btn-s" id="tgBaselineBtn"
-                onclick="applyTgBaseline()">Set baseline targets</button>
-        <button class="btn btn-s" id="tgUndoBtn" onclick="tgUndoStep()"
-                title="Step back through this session's edits">Undo</button>
-        <div class="tge-basenotes" id="tgBaselineNotes"></div>
+      <!-- The edit rule, made visible (v0.127.0). Before it, a slider
+           rebalanced the siblings and a typed number moved nothing and
+           pinned itself — two behaviours behind two controls that look
+           alike, with nothing on screen saying which was which. -->
+      <div class="tge-mode" title="Applies to the slider, its arrows and the number box alike">
+        <span class="lbl">When I change a bucket:</span>
+        <label><input type="radio" name="tgMode" value="rebalance"
+                      onchange="setTgEditMode(this.value)"> others make room</label>
+        <label><input type="radio" name="tgMode" value="fixed"
+                      onchange="setTgEditMode(this.value)"> others stay put</label>
       </div>
 
-      <!-- Facet sections, each with a "+ Add" picker and the
-           list of already-added rows. -->
-      <div id="targetsEditorBody"></div>
+      <!-- One category at a time (v0.127.0): the rail lists all seven
+           with what each commits; the pane holds the one being edited. -->
+      <div class="tge-layout">
+        <nav class="tge-rail" id="tgFacetRail"></nav>
+        <div id="targetsEditorBody"></div>
+      </div>
 
       <div id="targetsEditorErr" style="display:none;color:var(--red);
             font-family:var(--mono);font-size:.7rem;margin-top:.8rem"></div>
@@ -5874,37 +5998,27 @@ function renderOptimizerScorePresets(){
 }
 
 function renderOptimizerTolerances(){
-  const grid = document.getElementById('optErrGrid');
+  const box  = document.getElementById('optTolSummary');
   const none = document.getElementById('optNoTargets');
   const summary = document.getElementById('optTargetsSummary');
-  if (!grid) return;
 
   const facets = _optTargetedFacets();
-  // Precedence: what is on screen right now (an edit the user has made
-  // but not yet run), then what this PORTFOLIO has saved, then the app
-  // default. The middle step is v0.117.0 — without it every visit
-  // reopened on 10 and the considered value the user chose last week was
-  // gone, which read as the app ignoring the input.
-  const saved = _optSavedSettings();
-  const savedTol = saved.max_error_rel || {};
-  const prev = {};
-  grid.querySelectorAll('input.opterr').forEach(el => { prev[el.dataset.facet] = el.value; });
-
-  // v0.115.0: the number is a share OF EACH TARGET, not percentage points.
-  // Range starts at 1 rather than 0.5 because a 0.5% relative tolerance is
-  // below the 0.5pp floor for every target under 100% and so would be a
-  // control with no effect.
-  grid.innerHTML = facets.map(f => `
-    <div class="field">
-      <label class="mfl">${escapeHtml(facetLabel(f))} % of target</label>
-      <input class="opterr" type="number" min="1" max="100" step="1"
-             title="How much of each ${escapeAttr(facetLabel(f))} target may be missed, as a share of that target. 10 means a 40% target may be 4 points off and a 5% target 0.5 points. Never tighter than 0.5 points."
-             data-facet="${f}" value="${
-               prev[f] != null ? prev[f]
-               : (savedTol[f] != null ? +(savedTol[f] * 100).toFixed(2)
-                                      : OPT_DEFAULTS.max_error_rel * 100)}">
-    </div>`).join('');
-  grid.style.display = facets.length ? '' : 'none';
+  // v0.127.0: reported, not edited. The tolerances are set in the targets
+  // editor beside the targets they qualify, and read from what THIS
+  // portfolio has saved — the one store both the optimiser and the
+  // Targets tab grade against.
+  const tol = _optCollectTolerances();
+  if (box){
+    box.style.display = facets.length ? '' : 'none';
+    box.innerHTML = facets.length
+      ? 'Allowed miss, as a share of each target: '
+        + facets.map(f => `${escapeHtml(facetLabel(f))} <b>${
+            +(tol[f] * 100).toFixed(1)}%</b>`).join(' · ')
+        + ` <span style="color:var(--muted)">— never under 0.5 points.
+            Tighter categories are worked harder. Set in
+            <a href="#" style="color:var(--accent)" onclick="openTargetsEditor();return false">Edit targets</a>.</span>`
+      : '';
+  }
 
   if (none){
     none.style.display = facets.length ? 'none' : '';
@@ -5958,11 +6072,16 @@ function applyOptimizerSettingsToPanel(){
   }
 }
 
+// The per-facet tolerances a run is made with: this portfolio's saved
+// ones (set in the targets editor since v0.127.0), the app default for a
+// targeted facet that has none. Only the targeted facets — a tolerance on
+// an untargeted one has nothing to apply to.
 function _optCollectTolerances(){
+  const saved = _optSavedSettings().max_error_rel || {};
   const out = {};
-  document.querySelectorAll('#optErrGrid input.opterr').forEach(el => {
-    out[el.dataset.facet] = (parseFloat(el.value) || 10) / 100;
-  });
+  for (const f of _optTargetedFacets()){
+    out[f] = saved[f] != null ? Number(saved[f]) : OPT_DEFAULTS.max_error_rel;
+  }
   return out;
 }
 
@@ -6321,10 +6440,8 @@ function renderOptimizerResult(d){
          Already on target — no trades needed.</td></tr>`;
 
   // Achieved vs target is drawn separately, because it re-renders on
-  // its own when a branch is folded or unfolded. It opens fully
-  // unfolded: unlike the targets editor nothing here is being typed, so
-  // there is no long list to keep out of the way of, and a folded tree
-  // would hide the finer misses that are the whole reason to read it.
+  // its own when a branch is folded or unfolded. It opens with every
+  // miss in view — see _optResetExposureExpansion.
   _optResetExposureExpansion(d);
   _renderOptExposure();
 }
@@ -6360,80 +6477,21 @@ function _optExposureTree(d, facet){
     n.got   = (((d.achieved  || {})[facet] || {})[n.level] || {})[n.key] || 0;
     n.delta = (((d.deviation || {})[facet] || {})[n.level] || {})[n.key] || 0;
     n.allow = (((d.tolerance || {})[facet] || {})[n.level] || {})[n.key];
+    // As held before the trades, on the same basis (v0.127.0). Undefined
+    // from a backend that predates it, which the table draws as "—".
+    n.now   = (((d.current   || {})[facet] || {})[n.level] || {})[n.key];
   });
 }
 
-function _optExposureWalk(d, facet, fn){
-  const walk = (n) => { for (const c of n.children){ fn(c); walk(c); } };
-  walk(_optExposureTree(d, facet));
-}
-
+// Opened by the same rule as the Targets tab (tgExposureDefaultExpanded):
+// fully when the tree is small, otherwise only the branches holding a
+// miss. Fold, unfold and expand-all go through the shared handlers, with
+// this panel's expansion state named by the row's scope.
 function _optResetExposureExpansion(d){
   _optExpanded = new Set();
   for (const facet of Object.keys(d.deviation || {})){
-    _optExposureWalk(d, facet, n => {
-      if (n.children.length) _optExpanded.add(tgNodeId(facet, n.level, n.key));
-    });
+    tgExposureDefaultExpanded(facet, _optExposureTree(d, facet), _optExpanded);
   }
-}
-
-function optExposureExpandAll(facet, on){
-  if (!optProposal) return;
-  _optExposureWalk(optProposal, facet, n => {
-    if (!n.children.length) return;
-    const id = tgNodeId(facet, n.level, n.key);
-    if (on) _optExpanded.add(id); else _optExpanded.delete(id);
-  });
-  _renderOptExposure();
-}
-
-// The key is read off the row rather than interpolated into the handler:
-// focus_theme keys are free text typed by the user, so one containing a
-// quote would otherwise break the call it was written into.
-function optToggleExposureEl(el){
-  const r = el.closest('tr');
-  if (!r) return;
-  const id = tgNodeId(r.dataset.facet, r.dataset.level, r.dataset.key);
-  if (_optExpanded.has(id)) _optExpanded.delete(id); else _optExpanded.add(id);
-  _renderOptExposure();
-}
-
-// One row of the tree. A table row, not a div: the four number columns
-// have to line up down the whole facet, and only the first cell is
-// indented — that indent is what carries the containment.
-function _optExposureRowHtml(n, depth, open, multi){
-  const kids = n.children.length;
-  // A folded row says how many buckets are inside it. Without that the
-  // tree looks like the finer buckets were never measured — the arrow
-  // alone is too easy to miss. Same reasoning, same wording, as the
-  // targets editor's rows.
-  const chev = kids
-    ? `<button class="tw" onclick="optToggleExposureEl(this)"
-               title="${open ? 'Fold' : 'Unfold the ' + kids + ' buckets inside this'}"
-               >${open ? '▾' : '▸'}</button>`
-    : `<span class="tw"></span>`;
-  const inside = (!open && kids)
-    ? ` <span class="inside">· ${kids} inside</span>` : '';
-  // The level is still named when the facet reports at more than one.
-  // Containment shows which bucket sits inside which, but not the grain
-  // a figure was measured at, and japan the country and japan the region
-  // are different exposures that would otherwise read as one name twice.
-  const lvlName = LEVEL_LABELS_LONG[n.level] || n.level;
-  const lvl = multi ? ` <span class="lvl">(${escapeHtml(lvlName)})</span>` : '';
-  const tgt = n.got - n.delta;
-  const off = n.allow != null && Math.abs(n.delta) > n.allow + 1e-9;
-  return `<tr class="oex-trow" style="--d:${depth}"
-      data-facet="${escapeAttr(n.facet)}" data-level="${escapeAttr(n.level)}"
-      data-key="${escapeAttr(n.key)}">
-    <td title="${escapeAttr(n.key + '  ·  ' + lvlName)}">${chev}${
-      escapeHtml(n.label)}${lvl}${inside}</td>
-    <td class="r tk">${(tgt*100).toFixed(1)}%</td>
-    <td class="r tk">${(n.got*100).toFixed(1)}%</td>
-    <td class="r tk ${off ? (n.delta>0?'pos':'neg') : ''}">${
-      n.delta>0?'+':''}${(n.delta*100).toFixed(1)}%</td>
-    <td class="r tk" style="color:var(--muted)">${
-      n.allow == null ? '—' : '±' + (n.allow*100).toFixed(1)}</td>
-  </tr>`;
 }
 
 // Achieved vs target, per facet. This is what makes the result
@@ -6506,54 +6564,38 @@ function _renderOptExposure(){
   // about whether a row passed. A row is flagged when it is outside ITS
   // OWN allowance, not against a fixed 2pp: that fixed figure was why a
   // 5% target achieving 0.6% read as unremarkable.
+  // v0.127.0: drawn by the shared exposure table, with the held figure
+  // beside the proposed one so the table says what the trades change.
   const blocks = [];
+  const trees  = [];
   for (const [facet, perLevel] of Object.entries(d.deviation || {})){
     const multi = Object.keys(perLevel || {}).length > 1;
     const root  = _optExposureTree(d, facet);
-    const rows  = [];
-    const emit = (n, depth) => {
-      const open = _optExpanded.has(tgNodeId(facet, n.level, n.key));
-      rows.push(_optExposureRowHtml(n, depth, open, multi));
-      if (open) for (const c of n.children) emit(c, depth + 1);
-    };
-    for (const n of root.children) emit(n, 0);
-    // No greyed "rest of X" pseudo-row here, deliberately — unlike the
-    // targets editor, where the unclaimed remainder is the number that
-    // answers "and what happens to the other 70%". This panel reports
-    // only what was asked for and what was achieved, and a remainder row
-    // would have to invent a target nobody set.
-    blocks.push(`
-      <div style="margin-bottom:.9rem">
-        <div class="oex-head">
-          <div class="ct" style="font-size:.7rem">${escapeHtml(facetLabel(facet))}</div>
-          <button class="tge-xall" onclick="optExposureExpandAll('${escapeAttr(facet)}', true)"
-                  title="Unfold every level of this category">expand all</button>
-          <button class="tge-xall" onclick="optExposureExpandAll('${escapeAttr(facet)}', false)"
-                  title="Fold back to the top level">collapse</button>
-        </div>
-        <table class="dtable">
-          <colgroup><col><col style="width:100px"><col style="width:100px">
-                    <col style="width:90px"><col style="width:90px"></colgroup>
-          <thead><tr class="htitles">
-            <th class="nosort"></th>
-            <th class="nosort r">Target</th>
-            <th class="nosort r">Achieved</th>
-            <th class="nosort r">Δ</th>
-            <th class="nosort r" title="This bucket's own allowance, in percentage points: the tolerance you set for the category, taken as a share of this target (never less than 0.5).">Allowed</th>
-          </tr></thead><tbody>${rows.join('')}</tbody>
-        </table>
-      </div>`);
+    trees.push([facet, root]);
+    const nodes = tgExposureNodes(root);
+    const okN = nodes.filter(n => tgFitOf(n) === 'ok').length;
+    blocks.push(tgExposureSectionHtml('opt', facet, root, {
+      scope: 'opt', expanded: _optExpanded, multi,
+      gotLabel: 'Proposed', showNow: true,
+      // No `rest` — see the option's note on tgExposureTableHtml.
+    }, `${okN} of ${nodes.length} within`));
   }
+  const verdict = document.getElementById('optVerdict');
+  if (verdict) verdict.innerHTML = tgVerdictHtml('opt', trees, 'would be');
   // Cash isn't a target bucket but people always want to know what's left.
   blocks.push(
     `<div class="mhint">Cash left after trades: <strong>${fmtP(d.cash_after, cur)}</strong>`
     + ` (${(d.cash_weight*100).toFixed(1)}% of the portfolio)</div>`);
   const notesHtml = lvlNotes.length
-    ? `<div style="font-family:var(--mono);font-size:.66rem;color:var(--muted);
-                   border-left:2px solid var(--line);padding-left:10px;
-                   margin:0 0 .9rem;line-height:1.6">
-         ${lvlNotes.join('<br><br>')}
-       </div>`
+    // Folded past two: a run over a large universe produces one note per
+    // facet and level, and nine paragraphs of coverage pushed the verdict's
+    // table off the screen. The count stays visible, so nothing is hidden
+    // that the reader does not know is there.
+    ? (lvlNotes.length > 2
+        ? `<details class="xnotes" style="margin-bottom:.9rem"><summary style="cursor:pointer;color:var(--accent)">${
+            lvlNotes.length} coverage notes — which funds could not be measured on what</summary>${
+            lvlNotes.join('<br><br>')}</details>`
+        : `<div class="xnotes" style="margin-bottom:.9rem">${lvlNotes.join('<br><br>')}</div>`)
     : '';
   host.innerHTML = notesHtml + blocks.join('');
 }
@@ -20366,14 +20408,6 @@ const _TG_ALL_FACETS = _TG_GROUPS.flatMap(g => g.facets);
 // the list can never name different sets.
 const _TG_META_FACETS = (_TG_GROUPS.find(g => g.key === 'style') || {}).facets || [];
 
-// Per-facet Chart.js instances. Indexed by facet name so we can destroy
-// before re-creating (Chart.js complains when two charts share a canvas).
-//
-// Derived from _TG_ALL_FACETS rather than written out, as is the
-// canonical-values cache below. Both used to be hand-kept object
-// literals, which meant adding a facet needed three lists updated in
-// step and failed silently in whichever one was missed.
-let _tgCharts = Object.fromEntries(_TG_ALL_FACETS.map(f => [f, null]));
 
 // The cash reserve being edited, in base currency. Kept beside
 // _tgEditorState because it is saved by the same button in the same
@@ -20426,11 +20460,29 @@ let _tgCanonical = Object.fromEntries(_TG_ALL_FACETS.map(f => [f, null]));
 // (proportional both ways) has the worse flaw that a sibling squeezed
 // to 0 can never grow back, since 0 × anything is 0.
 //
-// The number box is NOT a slider (v0.123.0). A typed value is exact and
-// moves no other target: no sibling, and none of the row's own children.
-// Ancestors grow if the value needs the room and never shrink, and the
-// row is pinned, since a number the user typed is one they meant. Only
-// the sliders redistribute — see tgTypeNodeValue.
+// Two edit rules, and since v0.127.0 the USER picks between them with
+// "When I change a bucket" rather than by which control they touch:
+//
+//   others make room (rebalance) — the rule above, tgSetNodeValue.
+//   others stay put  (fixed)     — tgTypeNodeValue: nothing else moves;
+//       the difference lands in the node's own remainder, and ancestors
+//       grow if the value needs the room (they never shrink).
+//
+// Slider, arrows and number box all follow the chosen rule. From v0.123.0
+// to v0.126.0 the rule was tied to the control — sliders rebalanced, a
+// typed number was fixed and silently pinned its row — so two controls
+// that look alike did different things and nothing on screen said so.
+// The auto-pin went with it: a pin is now only ever the user's own.
+let _tgEditMode = (() => {
+  try { return localStorage.getItem('porxpy.tgEditMode') === 'fixed' ? 'fixed' : 'rebalance'; }
+  catch(e){ return 'rebalance'; }
+})();
+// The category on screen (v0.127.0). One at a time, chosen from the rail.
+let _tgActiveFacet = null;
+// Allowed miss per category, a fraction OF EACH TARGET, edited beside the
+// targets it qualifies and saved with them (v0.127.0). The same store the
+// optimiser and the Targets tab read: the portfolio's optimizer_settings.
+let _tgTolerances = {};
 let _tgPins = {};           // {facet: {level: {key: true}}}
 let _tgExpanded = new Set(); // node ids currently unfolded
 let _tgUndo = [];            // snapshots of {targets, pins}
@@ -20542,49 +20594,121 @@ async function tgImportCsv(input){
 }
 
 // Render the Targets tab. Decides between the empty-state placeholder
-// and the live deviation tile based on view.target_deviations.any_targets.
+// and the live tile based on view.target_deviations.any_targets.
+//
+// v0.127.0: each category is the shared exposure table (see
+// tgExposureTableHtml) rather than a Chart.js bar chart of bare
+// deviations. The chart showed actual − target alone, sorted by size,
+// one chart per level — so a nested sub-sector sat in a separate chart
+// from the sector it belongs to, untargeted exposure was a line of text
+// under it, and nothing said whether a miss mattered. The table nests,
+// grades each row against its own allowance, and shows what no target
+// claims as greyed rows in place.
+let _tgTabExpanded = new Set();
+// The view the expansion state above was opened for. A new view (another
+// portfolio, or the same one after a save) starts again from the default
+// rule; a re-render of the same one — a fold, a tab switch — keeps it.
+let _tgTabView = null;
+
+// The tree for one category of the Targets tab, from the view payload.
+function _tgTabTree(view, facet){
+  const block = ((view && view.target_deviations || {}).facets || {})[facet];
+  if (!block || !block.has_targets) return null;
+  const perLevel = {}, byKey = {};
+  for (const [lvl, lblk] of Object.entries(block.levels || {})){
+    for (const it of (lblk.items || [])){
+      (perLevel[lvl] = perLevel[lvl] || {})[it.key] = it.target * 100;
+      byKey[`${lvl}||${it.key}`] = {...it, unmeasurable: it.unmeasurable || !lblk.measurable};
+    }
+  }
+  return tgBuildTreeFrom(facet, perLevel, n => {
+    const it = byKey[`${n.level}||${n.key}`] || {};
+    n.got   = it.actual || 0;
+    n.delta = it.deviation || 0;
+    n.allow = it.allowance != null ? it.allowance : null;
+    n.unmeasurable = !!it.unmeasurable;
+  });
+}
+
+// What a "rest of" row on the Targets tab holds: the exposure inside
+// `owner` that no target claims, and the largest buckets making it up.
+// The buckets are READ from the backend's untargeted list at the
+// children's level and placed by the vocabulary's `path`, never derived.
+function _tgTabRest(view, facet, owner){
+  const block = (((view.target_deviations || {}).facets || {})[facet]) || {};
+  const kids  = owner.children;
+  const got   = Math.max(0, (owner.isRoot ? 1 : (owner.got || 0))
+                            - kids.reduce((a, c) => a + (c.got || 0), 0));
+  const pathOf = tgPathOf(facet);
+  const levels = [...new Set(kids.map(c => c.level))];
+  const items  = [];
+  for (const lvl of levels){
+    for (const it of ((block.levels || {})[lvl] || {}).untargeted_items || []){
+      const path = pathOf.get(`${lvl}||${it.key}`) || {};
+      const inside = owner.isRoot
+        // At the top: not inside any targeted bucket at a coarser level.
+        ? !Object.entries(path).some(([l, k]) => l !== lvl
+            && (((view.targets || {})[facet] || {})[l] || {})[k] !== undefined)
+        : path[owner.level] === owner.key;
+      if (inside) items.push(it);
+    }
+  }
+  items.sort((a, b) => b.actual - a.actual);
+  const SHOW = 4;
+  const detail = items.slice(0, SHOW)
+    .map(it => `${tgKeyLabel(facet, it.key)} ${(it.actual * 100).toFixed(1)}%`)
+    .join(', ') + (items.length > SHOW ? `, +${items.length - SHOW} more` : '');
+  if (got < 0.0005 && !items.length) return null;
+  return {got, detail};
+}
+
 function renderTargetsTile(view){
   if (!view) return;
   const td = view.target_deviations || {facets:{}, any_targets:false};
   const emptyEl = document.getElementById('pTargetsEmpty');
   const tileEl  = document.getElementById('pTargetsTile');
   if (!emptyEl || !tileEl) return;
-
-  // A cash reserve on its own is a plan (v0.90.0). It is not a facet
-  // target, so `any_targets` does not see it — and hiding the whole tile
-  // because of that left a user who had set only a reserve looking at
-  // "no targets set" with a number saved.
   const reserve = Number(view.cash_reserve || 0);
   if (!td.any_targets && !reserve) {
     emptyEl.style.display = '';
     tileEl.style.display  = 'none';
-    // Destroy any old charts to free Chart.js instances.
-    for (const facet of _TG_ALL_FACETS) {
-      if (_tgCharts[facet]) { _tgCharts[facet].destroy(); _tgCharts[facet] = null; }
-    }
     return;
   }
-
   emptyEl.style.display = 'none';
   tileEl.style.display  = '';
 
-  // Render one section per facet, in canonical order.
-  const root = document.getElementById('pTargetsFacets');
-  root.innerHTML = '';
+  // The tree needs each bucket's `path`, which arrives with the
+  // vocabulary the editor fetches. Draw now (flat if it is missing) and
+  // again once it has arrived — _tgFetchCanonical caches, failure
+  // included, so this cannot loop.
+  const targeted = _TG_ALL_FACETS.filter(f => ((td.facets || {})[f] || {}).has_targets);
+  const missing  = targeted.filter(f => !_tgCanonical[f]);
+  if (missing.length){
+    Promise.all(missing.map(_tgFetchCanonical)).then(() => {
+      if (currentPortfolioView === view) preserveViewState(() => renderTargetsTile(view));
+    });
+  }
+  if (view !== _tgTabView){
+    _tgTabView = view;
+    _tgTabExpanded = new Set();
+    if (!missing.length){
+      for (const f of targeted) tgExposureDefaultExpanded(f, _tgTabTree(view, f), _tgTabExpanded);
+    } else {
+      // Defaults are chosen once the containment is known.
+      _tgTabView = null;
+    }
+  }
 
-  // The reserve first, because it is taken first: every percentage below
-  // is a share of what is left once it is set aside. Stated in money, and
-  // against the cash actually held, so the row says what will happen
-  // rather than only what was asked for.
+  const root = document.getElementById('pTargetsFacets');
+  const out = [];
   if (reserve > 0){
+    // Read the view's figures in the reserve's own terms: what it is,
+    // what is held, and what the optimiser would have to do about it.
     const cur   = view.base_currency || view.portfolio?.base_currency || '';
     const held  = Number(view.cash_value_base || 0);
     const total = Number(view.total_value_base || 0);
     const diff  = reserve - held;
     const rest  = Math.max(0, total - reserve);
-    // The reserve was in range when it was saved; the portfolio may have
-    // fallen since. Said plainly here rather than left to the optimiser,
-    // which would otherwise be the first thing to mention it.
     const over  = total > 0 && reserve > total + 0.005;
     const state = over
       ? `<span style="color:var(--red)">more than the portfolio is now worth `
@@ -20594,300 +20718,64 @@ function renderTargetsTile(view){
       : (diff > 0
           ? `<span style="color:var(--amber)">${escapeHtml(fmtMoney(diff, cur))} short — the optimiser sells to raise it</span>`
           : `<span style="color:var(--accent)">${escapeHtml(fmtMoney(-diff, cur))} above — the optimiser invests the difference</span>`);
-    const gh = document.createElement('div');
-    gh.className = 'tg-group-head';
-    gh.innerHTML = `<span class="tg-group-label">Cash held by me</span>` +
-      `<span class="tg-group-note">Reserved before anything else. ` +
-      `Every percentage below is a share of the ${escapeHtml(fmtMoney(rest, cur))} that remains.</span>`;
-    root.appendChild(gh);
-    const rr = document.createElement('div');
-    rr.className = 'tg-facet';
-    rr.style.cssText = 'font-family:var(--mono);font-size:.72rem;padding:6px 0 10px';
-    rr.innerHTML = `<b>${escapeHtml(fmtMoney(reserve, cur))}</b> reserved · ` +
-                   `holding ${escapeHtml(fmtMoney(held, cur))} · ${state}`;
-    root.appendChild(rr);
+    out.push(`<div class="tg-group-head"><span class="tg-group-label">Cash held by me</span>`
+      + `<span class="tg-group-note">Reserved before anything else. Every percentage `
+      + `below is a share of the ${escapeHtml(fmtMoney(rest, cur))} that remains.</span></div>`
+      + `<div class="tg-facet" style="font-family:var(--mono);font-size:.72rem;padding:6px 0 10px">`
+      + `<b>${escapeHtml(fmtMoney(reserve, cur))}</b> reserved · `
+      + `holding ${escapeHtml(fmtMoney(held, cur))} · ${state}</div>`);
   }
-  let _tgGroupSeen = null;
+
+  const trees = [];
+  let grpSeen = null;
   for (const facet of _TG_ALL_FACETS) {
-    // Group header, once per group, at the point its first facet renders.
     const grp = _TG_GROUPS.find(g => g.facets.includes(facet));
-    if (grp && grp.key !== _tgGroupSeen) {
-      _tgGroupSeen = grp.key;
-      const gh = document.createElement('div');
-      gh.className = 'tg-group-head';
-      gh.innerHTML = `<span class="tg-group-label">${escapeHtml(grp.label)}</span>` +
-                     `<span class="tg-group-note">${escapeHtml(grp.note)}</span>`;
-      root.appendChild(gh);
+    if (grp && grp.key !== grpSeen) {
+      grpSeen = grp.key;
+      out.push(`<div class="tg-group-head"><span class="tg-group-label">${escapeHtml(grp.label)}</span>`
+        + `<span class="tg-group-note">${escapeHtml(grp.note)}</span></div>`);
     }
-    const block = (td.facets || {})[facet] || {has_targets:false, items:[]};
-    const section = document.createElement('div');
-    section.className = 'tg-facet';
-    section.id = `tgFacet_${facet}`;
-
-    const head = document.createElement('div');
-    head.className = 'tg-facet-head';
-    // Committed, not summed — the backend rolls every target up to the
-    // coarsest level (targets.py committed_pct) for exactly the reason
-    // the editor does. The level is named only when the facet has more
-    // than one, which is what committed_level differing from the facet
-    // name tells us without a second lookup.
-    const cLvl = block.committed_level || facet;
-    const cAt  = cLvl !== facet
-      ? ` at ${(LEVEL_LABELS_LONG[cLvl] || cLvl).toLowerCase()}` : '';
-    head.innerHTML = `<span>${escapeHtml(facetLabel(facet))}</span>` +
-      (block.has_targets
-        ? `<span class="tg-facet-sum" title="${escapeAttr(TG_COMMITTED_HINT)}">`
-          + `targets commit ${(block.target_committed_pct || 0).toFixed(1)}%${cAt}</span>`
-        : '<span class="tg-facet-sum">no targets set</span>');
-    section.appendChild(head);
-
+    const block = (td.facets || {})[facet] || {has_targets:false, levels:{}};
     if (!block.has_targets) {
-      const e = document.createElement('div');
-      e.className = 'tg-facet-empty';
-      e.textContent = 'No targets — click "Edit targets" above to add some.';
-      section.appendChild(e);
-      root.appendChild(section);
-      // Destroy any prior chart for this facet so a stale canvas doesn't
-      // linger when the user clears all targets on a facet.
-      if (_tgCharts[facet]) { _tgCharts[facet].destroy(); _tgCharts[facet] = null; }
+      out.push(`<div class="tg-facet"><div class="tg-facet-head"><span>${
+        escapeHtml(facetLabel(facet))}</span><span class="tg-facet-sum">no targets set</span></div></div>`);
       continue;
     }
+    const tree = _tgTabTree(view, facet);
+    trees.push([facet, tree]);
 
-    // v0.65.0: one chart PER LEVEL, not one per facet. A sub-sector 15%
-    // and a sector 20% are nested, not competing, and putting them on
-    // one axis invites reading them as alternatives. Coarsest last, so
-    // the specific commitments are read before what contains them.
-    const pending = [];
-    for (const lvl of Object.keys(block.levels || {})) {
-      const lblk  = block.levels[lvl] || {};
-      const items = lblk.items || [];
-      if (!items.length) continue;
-
-      if (Object.keys(block.levels).length > 1) {
-        const lh = document.createElement('div');
-        lh.className = 'tg-level-head';
-        lh.style.cssText = 'font-family:var(--mono);font-size:.6rem;' +
-          'text-transform:uppercase;color:var(--muted);margin:8px 0 2px';
-        lh.textContent = LEVEL_LABELS_LONG[lvl] || lvl;
-        section.appendChild(lh);
+    // What cannot be judged, and why — per level, in words, above the
+    // table rather than as a row of zeroes inside it.
+    const levels = Object.keys(block.levels || {});
+    const multi  = levels.length > 1;
+    const notes  = [];
+    for (const lvl of levels){
+      const lblk = block.levels[lvl] || {};
+      const lname = multi ? `${LEVEL_LABELS_LONG[lvl] || lvl}: ` : '';
+      if (!lblk.measurable){
+        notes.push(`${escapeHtml(lname)}not measurable — no fund in this portfolio `
+          + `reports at this level. The targets are kept and will be measured as soon as one does.`);
+      } else if ((lblk.coverage || 0) < 0.999){
+        notes.push(`${escapeHtml(lname)}measured on <b>${((lblk.coverage || 0) * 100).toFixed(0)}%</b>`
+          + ` of the portfolio — the rest does not report at this level.`);
       }
-
-      // A level nothing in the portfolio can answer is stated as such
-      // rather than drawn as a row of full-length underweight bars,
-      // which would read as "you hold none of this" when the truth is
-      // "we cannot tell". Partial coverage still draws, with the figure
-      // beside it.
-      if (!lblk.measurable) {
-        const um = document.createElement('div');
-        um.className = 'tg-facet-empty';
-        um.textContent = 'Not measurable — no fund in this portfolio '
-          + 'reports at this level. The targets are kept and will be '
-          + 'measured as soon as one does.';
-        section.appendChild(um);
-        continue;
-      }
-      if ((lblk.coverage || 0) < 0.999) {
-        const cv = document.createElement('div');
-        cv.className = 'tg-untarg';
-        cv.innerHTML = `Measured on <b>${((lblk.coverage||0)*100).toFixed(0)}%</b>`
-          + ' of the portfolio — the rest does not report at this level.';
-        section.appendChild(cv);
-      }
-
-      const barHeight = 22;
-      const wrap = document.createElement('div');
-      wrap.className = 'tg-chart-wrap';
-      wrap.style.height = Math.max(80, items.length * barHeight + 36) + 'px';
-      const canvas = document.createElement('canvas');
-      canvas.id = `tgChart_${facet}__${lvl}`;
-      wrap.appendChild(canvas);
-      section.appendChild(wrap);
-
-      const untargPct = lblk.untargeted_pct || 0;
-      if (untargPct > 0.0005) {
-        const u = document.createElement('div');
-        u.className = 'tg-untarg';
-        const detail = (lblk.untargeted_items || [])
-          .map(it => `${tgKeyLabel(facet, it.key)} ${(it.actual*100).toFixed(1)}%`)
-          .join(', ');
-        u.innerHTML =
-          `Untargeted: <b>${(untargPct*100).toFixed(1)}%</b>` +
-          (detail ? ` <span class="tg-untarg-detail">(${escapeHtml(detail)})</span>` : '');
-        section.appendChild(u);
-      }
-      pending.push([`${facet}__${lvl}`, facet, items]);
     }
-
-    root.appendChild(section);
-
-    // Charts only after the sections are in the DOM, so each canvas has
-    // measurable dimensions for Chart.js to size against.
-    for (const [chartKey, f, items] of pending) _renderTgChart(chartKey, f, items);
+    const nodes = tgExposureNodes(tree);
+    const okN = nodes.filter(n => tgFitOf(n) === 'ok').length;
+    const cLvl = block.committed_level || facet;
+    const cAt  = cLvl !== facet ? ` at ${(LEVEL_LABELS_LONG[cLvl] || cLvl).toLowerCase()}` : '';
+    const sum = `<span title="${escapeAttr(TG_COMMITTED_HINT)}">targets commit `
+      + `${(block.target_committed_pct || 0).toFixed(1)}%${cAt}</span> · ${okN} of ${nodes.length} within`;
+    out.push(tgExposureSectionHtml('tab', facet, tree, {
+      scope: 'tab', expanded: _tgTabExpanded, multi,
+      gotLabel: 'Actual', showNow: false,
+      rest: (owner) => _tgTabRest(view, facet, owner),
+    }, sum, notes));
   }
+  root.innerHTML = out.join('');
+  const v = document.getElementById('tgVerdict');
+  if (v) v.innerHTML = tgVerdictHtml('tab', trees, 'are');
 }
-
-// Build a single facet's deviation bar chart. Horizontal bars,
-// centred on zero, positive = overweight (green), negative = underweight (red).
-function _renderTgChart(chartKey, facet, items){
-  if (_tgCharts[chartKey]) { _tgCharts[chartKey].destroy(); _tgCharts[chartKey] = null; }
-  const canvas = document.getElementById(`tgChart_${chartKey}`);
-  if (!canvas) return;
-
-  // Sort: largest absolute deviation at the top so the most "off"
-  // buckets are visually prominent. Stable for zero-deviation rows.
-  const sorted = items.slice().sort((a,b) =>
-    Math.abs(b.deviation) - Math.abs(a.deviation));
-
-  // Y-axis labels are "Bucket (target%)" — appending the target makes
-  // each row read as a complete statement ("Equity (60%) is +10%
-  // overweight") and saves the user a glance over to the tooltip.
-  // ``it.target`` is a fraction (0–1) from the server; format to one
-  // decimal in percent and trim a redundant trailing ".0" so common
-  // targets render as "60%" rather than "60.0%".
-  const fmtTarget = (frac) => {
-    const pct = (frac * 100).toFixed(1);
-    return pct.endsWith('.0') ? pct.slice(0, -2) : pct;
-  };
-  const labels = sorted.map(it =>
-    `${tgKeyLabel(facet, it.key)} (${fmtTarget(it.target)}%)`);
-  // True deviation in percent (signed). This is the number we print on
-  // the bar and show in the tooltip — never clamped.
-  const trueDev = sorted.map(it => +(it.deviation * 100).toFixed(2));   // %
-  // Fixed, uniform axis across all four facets so the charts are
-  // directly comparable at a glance. Bars whose true deviation exceeds
-  // the cap are clamped to the edge for geometry only; the printed
-  // value (and tooltip) still show the real number, so the clamp is
-  // honest rather than misleading.
-  const AXIS_CAP = 25;   // percent, symmetric (−25% … +25%)
-  const clamp = (v) => Math.max(-AXIS_CAP, Math.min(AXIS_CAP, v));
-  const data   = trueDev.map(clamp);
-  const colors = trueDev.map(v => v >= 0 ? '#34d399' : '#f87171');
-
-  const xMin = -AXIS_CAP;
-  const xMax =  AXIS_CAP;
-
-  _tgCharts[chartKey] = new Chart(canvas, {
-    type: 'bar',
-    data: {
-      labels,
-      datasets: [{
-        data,
-        backgroundColor: colors,
-        borderColor:     colors,
-        borderWidth:     0,
-        // Carry the true (unclamped) deviation + actual/target so the
-        // tooltip and the on-bar label can show real numbers without a
-        // separate lookup. (Chart.js ignores unknown dataset props.)
-        meta: sorted.map((it, i) => ({
-          actual: it.actual, target: it.target, trueDev: trueDev[i],
-          clamped: trueDev[i] !== data[i],
-        })),
-      }],
-    },
-    options: {
-      indexAxis: 'y',
-      responsive: true,
-      maintainAspectRatio: false,
-      // Reserve a little right/left padding so on-bar labels that sit
-      // just past a near-cap bar tip don't get cropped at the edge.
-      layout: { padding: { left: 6, right: 6 } },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: function(ctx){
-              const i = ctx.dataIndex;
-              const m = ctx.dataset.meta?.[i] || {};
-              const dev = (m.trueDev != null) ? m.trueDev : ctx.parsed.x;
-              const sign = dev >= 0 ? '+' : '';
-              const rows = [
-                `Actual:    ${(m.actual*100).toFixed(2)}%`,
-                `Target:    ${(m.target*100).toFixed(2)}%`,
-                `Deviation: ${sign}${dev.toFixed(2)}%`,
-              ];
-              if (m.clamped) rows.push('(bar clamped to axis limit)');
-              return rows;
-            },
-          },
-        },
-      },
-      scales: {
-        x: {
-          min: xMin, max: xMax,
-          grid: { color: 'rgba(255,255,255,.05)', lineWidth: 1,
-                  // Heavier zero line so the centre is visible at a glance.
-                  drawTicks: false, },
-          ticks: { color: '#7a8099', font: { family: 'IBM Plex Mono', size: 10 },
-                   stepSize: 5, callback: v => v + '%' },
-          border: { color: 'rgba(255,255,255,.15)' },
-          title: { display: false },
-        },
-        y: {
-          grid: { display: false },
-          ticks: { color: '#e8eaf0', font: { family: 'IBM Plex Mono', size: 11 } },
-          border: { color: 'rgba(255,255,255,.08)' },
-        },
-      },
-    },
-    plugins: [_tgBarLabelPlugin],
-  });
-}
-
-// Inline Chart.js plugin: print each bar's deviation value just past
-// its tip. Kept inline rather than pulling in chartjs-plugin-datalabels
-// so the Targets tab has no extra dependency. Reads the TRUE deviation
-// from dataset.meta[i].trueDev so clamped bars still show their real
-// value. Positive values are drawn to the right of the bar tip,
-// negative to the left, with the text anchored away from zero.
-const _tgBarLabelPlugin = {
-  id: 'tgBarLabel',
-  afterDatasetsDraw(chart){
-    const { ctx, scales } = chart;
-    const xScale = scales.x;
-    const meta0  = chart.getDatasetMeta(0);
-    const ds     = chart.data.datasets[0];
-    if (!meta0 || !ds) return;
-    ctx.save();
-    ctx.font = '600 10px "IBM Plex Mono", monospace';
-    ctx.textBaseline = 'middle';
-    meta0.data.forEach((bar, i) => {
-      const m = (ds.meta && ds.meta[i]) || {};
-      const dev = (m.trueDev != null) ? m.trueDev : ds.data[i];
-      const sign = dev >= 0 ? '+' : '';
-      const text = `${sign}${dev.toFixed(1)}%`;
-      // Bar tip is at bar.x (pixel); bar.base is the zero-line pixel.
-      // For short bars (|dev| ≤ 20%) the label sits just BEYOND the tip,
-      // away from zero, in the bar's colour. For long bars (|dev| > 20%)
-      // the tip is near the chart edge, so we flip the label to sit
-      // INSIDE the bar end (anchored back toward zero) in a dark colour
-      // for contrast — cleaner than crowding the axis edge.
-      const pad = 5;
-      const inside = Math.abs(dev) > 20;
-      if (dev >= 0) {
-        if (inside) {
-          ctx.textAlign = 'right';
-          ctx.fillStyle = '#0a0c10';            // dark text on green bar
-          ctx.fillText(text, bar.x - pad, bar.y);
-        } else {
-          ctx.textAlign = 'left';
-          ctx.fillStyle = '#34d399';
-          ctx.fillText(text, bar.x + pad, bar.y);
-        }
-      } else {
-        if (inside) {
-          ctx.textAlign = 'left';
-          ctx.fillStyle = '#0a0c10';            // dark text on red bar
-          ctx.fillText(text, bar.x + pad, bar.y);
-        } else {
-          ctx.textAlign = 'right';
-          ctx.fillStyle = '#f87171';
-          ctx.fillText(text, bar.x - pad, bar.y);
-        }
-      }
-    });
-    ctx.restore();
-  },
-};
 
 // Render a human-friendly label for a per-facet canonical key.
 // Reuses existing facet formatters where they exist; falls back to a
@@ -20896,8 +20784,16 @@ const _tgBarLabelPlugin = {
 function tgKeyLabel(facet, key){
   if (!key) return '';
   if (facet === 'country') {
-    // Region keys: "northAmerica" → "North America".
-    return _humaniseCamel(key);
+    // The vocabulary's own label first — "Asia (Developed)", "Developed
+    // Markets" — where it says more than the key. Country rows carry
+    // their key as their label, so those go through fmtCountry, the
+    // X-ray's formatter, rather than the camel-case splitter that made
+    // "unitedstates" read "Unitedstates" (v0.127.0). Region keys the
+    // vocabulary has not loaded yet still split: "northAmerica" →
+    // "North America".
+    const lbl = _tgCountryLabels().get(key);
+    if (lbl && lbl !== key) return lbl;
+    return /[A-Z]/.test(key) ? _humaniseCamel(key) : fmtCountry(key);
   }
   if (facet === 'asset_class') {
     return key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
@@ -20917,6 +20813,17 @@ function tgKeyLabel(facet, key){
     return fmtFocusTheme(key);
   }
   return key;
+}
+
+// key → label over the loaded country vocabulary, rebuilt only when the
+// vocabulary array itself changes (it is fetched once and cached).
+let _tgCountryLabelMap = {src: null, map: new Map()};
+function _tgCountryLabels(){
+  const src = _tgCanonical.country;
+  if (src !== _tgCountryLabelMap.src){
+    _tgCountryLabelMap = {src, map: new Map((src || []).map(c => [c.key, c.label]))};
+  }
+  return _tgCountryLabelMap.map;
 }
 
 function _humaniseCamel(s){
@@ -20977,6 +20884,19 @@ async function openTargetsEditor(){
   // Opens folded to the coarsest level, which is the point of the tree:
   // the whole facet in three or four rows, then drill in.
   _tgExpanded = new Set();
+
+  const _savedTol = (currentPortfolioView.optimizer_settings || {}).max_error_rel || {};
+  _tgTolerances = {};
+  for (const f of _TG_ALL_FACETS){
+    _tgTolerances[f] = _savedTol[f] != null ? Number(_savedTol[f]) : OPT_DEFAULTS.max_error_rel;
+  }
+  // Open on the first category that has targets — that is where the work
+  // is — or on the first category at all when nothing is set yet.
+  _tgActiveFacet = _TG_ALL_FACETS.find(f =>
+      Object.values(_tgEditorState[f] || {}).some(b => Object.keys(b || {}).length))
+    || _TG_ALL_FACETS[0];
+  document.querySelectorAll('#targetsEditorModal input[name=tgMode]')
+    .forEach(r => { r.checked = (r.value === _tgEditMode); });
 
   _tgReserve = Number(currentPortfolioView.cash_reserve || 0);
   const _resEl = document.getElementById('tgCashReserve');
@@ -21264,6 +21184,290 @@ function tgBuildTree(facet){
                          n => { n.pinned = tgPinned(n.facet, n.level, n.key); });
 }
 
+// ── The exposure table (v0.127.0) ────────────────────────────────────
+// ONE renderer for "how does this portfolio sit against its targets",
+// with two callers: the Targets tab (the portfolio as held) and the
+// optimiser's resulting exposure (the design as proposed, with the held
+// figure beside it). Until v0.127.0 they answered that one question in
+// two shapes — a flat bar chart of bare deviations on the tab, a tree
+// table with an allowance column in the optimiser — so a 3-point miss
+// read the same on a 5% target as on a 40% one on the first, and the
+// two screens could not be compared row for row.
+//
+// The rows are the tgBuildTreeFrom tree, so containment is the same one
+// the editor draws. Each node carries, from the caller's `decorate`:
+//   value          the target, in percent (the builder's own field)
+//   got            what is measured — actual or proposed — as a fraction
+//   now            what is held, as a fraction; undefined = no column
+//   delta          got − target, fraction
+//   allow          this bucket's allowance (fraction) or null
+//   unmeasurable   nothing in the portfolio answers at this level
+//
+// Options:
+//   scope     'tab' | 'opt' — names whose expansion state a row belongs to
+//   expanded  Set of tgNodeId's currently unfolded
+//   multi     the facet reports at more than one level
+//   gotLabel  heading of the measured column
+//   showNow   draw the Now column and the held-position dot
+//   rest      (owner) => {got, detail} for a "rest of" row, or omitted
+//             for none. The optimiser omits it deliberately: it reports
+//             only what was asked for, and a remainder row would have to
+//             invent a target nobody set.
+function tgFitOf(n){
+  if (n.unmeasurable) return 'nm';
+  if (n.allow == null) return 'none';
+  if (Math.abs(n.delta) <= n.allow + 1e-9) return 'ok';
+  return n.delta > 0 ? 'over' : 'under';
+}
+
+function _tgFitCell(n){
+  const fit = tgFitOf(n);
+  if (fit === 'nm') return '<span class="xfit nm" title="No fund here reports at this level, so this target cannot be measured yet.">n/m</span>';
+  if (fit === 'none') return '';
+  const allowTxt = `±${(n.allow * 100).toFixed(1)}`;
+  const tip = `Allowed ${allowTxt} points: the category's Allowed miss taken as a share of this target, never under 0.5.`;
+  const sym = fit === 'ok' ? '✓' : (fit === 'over' ? '▲ over' : '▼ under');
+  return `<span class="xfit ${fit}" title="${escapeAttr(tip)}">${sym}<span class="sub">${allowTxt}</span></span>`;
+}
+
+// The bar's scale: one per table, so rows compare by length. Rounded up
+// to a whole 5 so the scale does not twitch between near-identical runs.
+function _tgExposureScale(root){
+  let m = 0;
+  for (const c of tgExposureNodes(root)){
+    m = Math.max(m, c.value + (c.allow || 0) * 100,
+                 (c.got || 0) * 100, (c.now || 0) * 100);
+  }
+  return Math.max(5, Math.ceil(m / 5) * 5);
+}
+
+function _tgBarHtml(n, scale, showNow){
+  const pc = (v) => Math.max(0, Math.min(100, v / scale * 100));
+  const t  = n.value, a = (n.allow || 0) * 100;
+  const band = n.allow == null ? ''
+    : `<span class="xband" style="left:${pc(t - a)}%;width:${pc(t + a) - pc(t - a)}%"></span>`;
+  const now = (showNow && n.now != null)
+    ? `<span class="xnow" style="left:${pc(n.now * 100)}%"></span>` : '';
+  return `<div class="xbar">${band}<span class="xfill" style="width:${
+    pc((n.got || 0) * 100)}%"></span><span class="xtick" style="left:${pc(t)}%"></span>${now}</div>`;
+}
+
+function tgExposureTableHtml(facet, root, o){
+  const scale = _tgExposureScale(root);
+  const rows  = [];
+  const pct   = (f) => `${(f * 100).toFixed(1)}%`;
+  const row = (n, depth, open) => {
+    const kids = n.children.length;
+    // A folded row says how many buckets are inside it; the arrow alone
+    // is too easy to miss. Same wording as the targets editor's rows.
+    const chev = kids
+      ? `<button class="tw" onclick="tgExposureToggleEl(this)"
+                 title="${open ? 'Fold' : 'Unfold the ' + kids + ' buckets inside this'}"
+                 >${open ? '▾' : '▸'}</button>`
+      : '<span class="tw"></span>';
+    const inside = (!open && kids) ? ` <span class="inside">· ${kids} inside</span>` : '';
+    // The level is still named when the facet reports at more than one:
+    // japan the country and japan the region are different exposures.
+    const lvlName = LEVEL_LABELS_LONG[n.level] || n.level;
+    const lvl = o.multi ? ` <span class="lvl">(${escapeHtml(lvlName)})</span>` : '';
+    const fit = tgFitOf(n);
+    const sign = n.delta > 0 ? '+' : '';
+    rows.push(`<tr class="oex-trow fit-${fit}" style="--d:${depth}"
+        data-scope="${o.scope}" data-facet="${escapeAttr(n.facet)}"
+        data-level="${escapeAttr(n.level)}" data-key="${escapeAttr(n.key)}">
+      <td title="${escapeAttr(n.key + '  ·  ' + lvlName)}">${chev}${
+        escapeHtml(n.label)}${lvl}${inside}</td>
+      <td>${_tgBarHtml(n, scale, o.showNow)}</td>
+      ${o.showNow ? `<td class="r tk" style="color:var(--muted)">${
+        n.now == null ? '—' : pct(n.now)}</td>` : ''}
+      <td class="r tk">${n.value.toFixed(1)}%</td>
+      <td class="r tk">${n.unmeasurable ? '—' : pct(n.got || 0)}</td>
+      <td class="r tk ${fit === 'over' ? 'pos' : (fit === 'under' ? 'neg' : '')}">${
+        n.unmeasurable ? '—' : sign + (n.delta * 100).toFixed(1)}</td>
+      <td>${_tgFitCell(n)}</td>
+    </tr>`);
+  };
+  const restRow = (owner, depth) => {
+    const r = o.rest(owner);
+    if (!r) return;
+    const label = owner.isRoot ? 'not targeted' : `rest of ${owner.label}`;
+    rows.push(`<tr class="oex-trow oex-rest" style="--d:${depth}">
+      <td><span class="tw"></span>${escapeHtml(label)}${
+        r.detail ? `<span class="xdet">${escapeHtml(r.detail)}</span>` : ''}</td>
+      <td></td>
+      ${o.showNow ? '<td></td>' : ''}
+      <td class="r tk" title="Unclaimed: the part of this target no target inside it claims">${owner.rest.toFixed(1)}%</td>
+      <td class="r tk">${pct(r.got)}</td>
+      <td></td><td></td>
+    </tr>`);
+  };
+  const emit = (n, depth) => {
+    const open = o.expanded.has(tgNodeId(facet, n.level, n.key));
+    row(n, depth, open);
+    if (open && n.children.length){
+      for (const c of n.children) emit(c, depth + 1);
+      if (o.rest) restRow(n, depth + 1);
+    }
+  };
+  for (const n of root.children) emit(n, 0);
+  if (o.rest) restRow(root, 0);
+
+  const barTip = `Bar: ${o.gotLabel.toLowerCase()}. Tick: target. Band: allowed miss.`
+               + `${o.showNow ? ' Dot: now.' : ''} Scale 0–${scale}%.`;
+  return `
+    <table class="dtable">
+      <colgroup><col><col style="width:150px">${o.showNow ? '<col style="width:74px">' : ''}
+                <col style="width:74px"><col style="width:84px">
+                <col style="width:64px"><col style="width:112px"></colgroup>
+      <thead><tr class="htitles">
+        <th class="nosort"></th>
+        <th class="nosort" title="${escapeAttr(barTip)}">0–${scale}%</th>
+        ${o.showNow ? '<th class="nosort r" title="What the portfolio holds today">Now</th>' : ''}
+        <th class="nosort r">Target</th>
+        <th class="nosort r">${escapeHtml(o.gotLabel)}</th>
+        <th class="nosort r" title="${escapeAttr(o.gotLabel)} − target, in percentage points">Δ</th>
+        <th class="nosort" title="Within this bucket's allowance, or over / under it. The figure is the allowance in points.">Fit</th>
+      </tr></thead><tbody>${rows.join('')}</tbody>
+    </table>`;
+}
+
+// Every targeted node of a tree, in display order.
+function tgExposureNodes(root){
+  const out = [];
+  const walk = (n) => { for (const c of n.children){ out.push(c); walk(c); } };
+  if (root) walk(root);
+  return out;
+}
+
+// Which branches open by default — the same rule on both panels. A small
+// tree opens fully, since nothing is hidden by doing so; a large one (a
+// baseline can put hundreds of buckets in a facet) opens only the
+// branches holding a miss, so what needs attention is on screen and the
+// rest is a click away. Before v0.127.0 the optimiser always opened
+// fully, which for a baseline design meant scrolling past hundreds of
+// ✓ rows to find the three that were off.
+const TG_EXPOSURE_OPEN_ALL = 40;
+function tgExposureDefaultExpanded(facet, root, into){
+  const all = tgExposureNodes(root).length <= TG_EXPOSURE_OPEN_ALL;
+  const walk = (n) => {
+    let miss = false;
+    for (const c of n.children){
+      const sub = walk(c);
+      const f = tgFitOf(c);
+      if (c.children.length && (all || sub)) into.add(tgNodeId(facet, c.level, c.key));
+      miss = miss || sub || f === 'over' || f === 'under';
+    }
+    return miss;
+  };
+  walk(root);
+  return into;
+}
+
+// The headline above either panel: how many targets sit inside their
+// allowance, and which do not, each a link to its row. `trees` is
+// [[facet, root], ...]; `what` reads "are" / "would be".
+function tgVerdictHtml(scope, trees, what){
+  let total = 0, ok = 0, nm = 0;
+  const off = [];
+  for (const [, root] of trees){
+    for (const n of tgExposureNodes(root)){
+      const f = tgFitOf(n);
+      if (f === 'none') continue;
+      total++;
+      if (f === 'ok') ok++;
+      else if (f === 'nm') nm++;
+      else off.push(n);
+    }
+  }
+  if (!total) return '';
+  const nmTxt = nm ? ` · ${nm} not measurable yet` : '';
+  if (!off.length){
+    return `<div class="xverdict ok">✓ All ${ok} target${ok === 1 ? '' : 's'} ${
+      escapeHtml(what)} within tolerance${nmTxt}.</div>`;
+  }
+  // Worst first, measured against each bucket's OWN allowance — a 2-point
+  // miss on a 0.5-point allowance matters more than 4 on a 6.
+  off.sort((a, b) => Math.abs(b.delta) / (b.allow || 1) - Math.abs(a.delta) / (a.allow || 1));
+  const SHOW = 8;
+  const links = off.slice(0, SHOW).map(n =>
+    `<button data-scope="${scope}" data-facet="${escapeAttr(n.facet)}"
+             data-level="${escapeAttr(n.level)}" data-key="${escapeAttr(n.key)}"
+             onclick="tgExposureJumpEl(this)"
+             title="${escapeAttr(facetLabel(n.facet))} — show this row">${
+      escapeHtml(n.label)}</button> <span class="who">${n.delta > 0 ? '+' : ''}${
+      (n.delta * 100).toFixed(1)}</span>`).join(', ');
+  const more = off.length > SHOW ? `, and ${off.length - SHOW} more` : '';
+  return `<div class="xverdict off">⚠ ${ok} of ${total} targets ${escapeHtml(what)} within
+    tolerance${nmTxt}. Outside: ${links}${more}.</div>`;
+}
+
+// Fold / unfold, and jump to a row from the verdict. The scope on the
+// row names whose expansion state and whose renderer it belongs to;
+// keys are read off the DOM rather than interpolated into the handler,
+// because focus_theme keys are free text and may contain a quote.
+function _tgExposureScope(scope){
+  return scope === 'opt'
+    ? {set: _optExpanded, render: () => _renderOptExposure(),
+       tree: (f) => optProposal ? _optExposureTree(optProposal, f) : null}
+    : {set: _tgTabExpanded, render: () => renderTargetsTile(currentPortfolioView),
+       tree: (f) => _tgTabTree(currentPortfolioView, f)};
+}
+
+function tgExposureToggleEl(el){
+  const r = el.closest('tr');
+  if (!r) return;
+  const sc = _tgExposureScope(r.dataset.scope);
+  const id = tgNodeId(r.dataset.facet, r.dataset.level, r.dataset.key);
+  if (sc.set.has(id)) sc.set.delete(id); else sc.set.add(id);
+  preserveViewState(sc.render);
+}
+
+function tgExposureExpandAll(scope, facet, on){
+  const sc = _tgExposureScope(scope);
+  for (const id of [...sc.set]) if (id.startsWith(facet + '||')) sc.set.delete(id);
+  if (on){
+    for (const n of tgExposureNodes(sc.tree(facet))){
+      if (n.children.length) sc.set.add(tgNodeId(facet, n.level, n.key));
+    }
+  }
+  preserveViewState(sc.render);
+}
+
+function tgExposureJumpEl(el){
+  const {scope, facet, level, key} = el.dataset;
+  const sc = _tgExposureScope(scope);
+  const root = sc.tree(facet);
+  const n = root && tgFindNode(root, level, key);
+  for (let a = n && n.parent; a && !a.isRoot; a = a.parent){
+    sc.set.add(tgNodeId(facet, a.level, a.key));
+  }
+  sc.render();
+  const tr = [...document.querySelectorAll(`tr.oex-trow[data-scope="${scope}"]`)]
+    .find(r => r.dataset.facet === facet && r.dataset.level === level && r.dataset.key === key);
+  if (!tr) return;
+  tr.scrollIntoView({block: 'center', behavior: 'smooth'});
+  tr.classList.add('flash');
+  setTimeout(() => tr.classList.remove('flash'), 1400);
+}
+
+// One facet section of either panel: heading, fold controls, notes and
+// the table. `sum` is the right-hand caption in the heading.
+function tgExposureSectionHtml(scope, facet, root, o, sum, notes){
+  return `
+    <div class="tg-facet" style="margin-bottom:.4rem">
+      <div class="oex-head">
+        <div class="ct" style="font-size:.7rem;margin:0">${escapeHtml(facetLabel(facet))}</div>
+        <button class="tge-xall" onclick="tgExposureExpandAll('${scope}', '${escapeAttr(facet)}', true)"
+                title="Unfold every level of this category">expand all</button>
+        <button class="tge-xall" onclick="tgExposureExpandAll('${scope}', '${escapeAttr(facet)}', false)"
+                title="Fold back to the top level">collapse</button>
+        ${sum ? `<span class="tg-facet-sum" style="margin-left:auto">${sum}</span>` : ''}
+      </div>
+      ${(notes || []).length ? `<div class="xnotes">${notes.join('<br>')}</div>` : ''}
+      ${tgExposureTableHtml(facet, root, o)}
+    </div>`;
+}
+
 // How small this node can get: the sum of the topmost pinned buckets
 // inside it. `rest` contributes nothing — it is always squeezable.
 //
@@ -21440,16 +21644,16 @@ function tgTypedHeadroom(n){
   return p.rest + ((p.isRoot || p.pinned) ? 0 : tgTypedHeadroom(p));
 }
 
-// The one entry point for "the user typed a number into this row".
+// The "others stay put" rule (v0.123.0 for typed numbers; since v0.127.0
+// for every control, when the user picks that rule — see tgMoveNode).
 //
-// Deliberately NOT tgSetNodeValue (v0.123.0). A typed value is an exact
-// statement about this bucket and nothing else, so nothing else is
-// redistributed: no sibling gives or takes, and the node's own children
-// keep their figures — the difference lands in the node's `rest`. When
-// the parent's `rest` cannot hold the growth, the PARENT grows to make
-// room, and so on up the chain: a parent scales up to fit what was typed
-// into it, and never down. The sliders remain the only control that
-// redistributes inside a node.
+// Deliberately NOT tgSetNodeValue. The value is an exact statement about
+// this bucket and nothing else, so nothing else is redistributed: no
+// sibling gives or takes, and the node's own children keep their
+// figures — the difference lands in the node's `rest`. When the parent's
+// `rest` cannot hold the growth, the PARENT grows to make room, and so on
+// up the chain: a parent scales up to fit what was put into it, and
+// never down.
 //
 // Two walls, each of which clamps the value and is named in `blockers`:
 // the children's sum below (typing under it would have to move them),
@@ -21736,6 +21940,11 @@ async function applyTgBaseline(){
         if (c.children.length) _tgExpanded.add(tgNodeId(f, c.level, c.key));
       }
     }
+    // Show a category the baseline actually filled, or the dialog would
+    // look unchanged while sitting on, say, market cap.
+    if (!Object.keys(d.targets || {}).includes(_tgActiveFacet)){
+      _tgActiveFacet = Object.keys(d.targets || {})[0] || _tgActiveFacet;
+    }
     _tgBaselineNotes = [`Baseline: ${d.name || ticker}.`]
                         .concat(d.notes || []);
     _renderTgEditorBody();
@@ -21756,20 +21965,79 @@ function tgRenderBaselineNotes(){
 }
 
 // Build the editor body from _tgEditorState + _tgCanonical.
+// The rail of categories (v0.127.0). Each entry carries what its targets
+// commit, so the categories not on screen are still accounted for — the
+// over-commitment amber shows here too, not only once you open one.
+function _renderTgRail(){
+  const rail = document.getElementById('tgFacetRail');
+  if (!rail || !_tgEditorState) return;
+  const out = [];
+  for (const grp of _TG_GROUPS){
+    out.push(`<div class="grp" title="${escapeAttr(grp.note)}">${escapeHtml(grp.label)}</div>`);
+    for (const f of grp.facets){
+      const per = _tgEditorState[f] || {};
+      const has = Object.values(per).some(b => Object.keys(b || {}).length);
+      const sum = has ? tgCommittedPct(f, per) : 0;
+      out.push(`<button class="tge-tab${f === _tgActiveFacet ? ' on' : ''}${has ? ' has' : ''}"
+          onclick="tgSelectFacet('${f}')"
+          title="${escapeAttr(has ? tgCommittedLabel(f, sum) : 'No targets yet')}">
+        <span class="nm">${escapeHtml(facetLabel(f))}</span>
+        <span class="c${sum > 100.0001 ? ' over' : ''}">${has ? sum.toFixed(0) + '%' : '—'}</span>
+      </button>`);
+    }
+  }
+  rail.innerHTML = out.join('');
+}
+
+function tgSelectFacet(facet){
+  if (!_TG_ALL_FACETS.includes(facet)) return;
+  _tgActiveFacet = facet;
+  tgInvalidateDragBase();
+  _renderTgEditorBody();
+}
+
+function setTgEditMode(mode){
+  _tgEditMode = mode === 'fixed' ? 'fixed' : 'rebalance';
+  // Remembered per viewer: how someone likes to edit is a habit, not a
+  // property of the portfolio.
+  try { localStorage.setItem('porxpy.tgEditMode', _tgEditMode); } catch(e){}
+  document.querySelectorAll('#targetsEditorModal input[name=tgMode]')
+    .forEach(r => { r.checked = (r.value === _tgEditMode); });
+  tgInvalidateDragBase();
+  if (_tgEditorState) _renderTgEditorBody();
+}
+
+// A category's Allowed miss, typed as a percent of each target.
+function onTgTolChange(el){
+  const f = el.dataset.facet;
+  let v = parseFloat(el.value);
+  // Bounds mirror config.OPTIMIZER_SETTING_BOUNDS, which clamps on save
+  // too; clamped here so the box shows what will be stored.
+  if (isNaN(v)) v = OPT_DEFAULTS.max_error_rel * 100;
+  v = Math.max(1, Math.min(100, v));
+  el.value = v;
+  _tgTolerances[f] = v / 100;
+}
+
+// Where the portfolio sits now in one bucket, in percent of the fund
+// side — read from the view's target_actuals, the same rollup the
+// Targets tab measures "actual" on.
+function tgNowPct(facet, level, key){
+  const a = (currentPortfolioView || {}).target_actuals || {};
+  return ((((a[facet] || {})[level] || {})[key]) || 0) * 100;
+}
+
 function _renderTgEditorBody(){
   const root = document.getElementById('targetsEditorBody');
   root.innerHTML = '';
-  let _tgeGroupSeen = null;
-  for (const facet of _TG_ALL_FACETS) {
+  _renderTgRail();
+  if (!_TG_ALL_FACETS.includes(_tgActiveFacet)) _tgActiveFacet = _TG_ALL_FACETS[0];
+  // One category at a time (v0.127.0). Seven stacked sections in one
+  // scrolling dialog put most of the work below the fold, and the
+  // committed figure of each was out of sight while editing another —
+  // the rail now carries those.
+  for (const facet of [_tgActiveFacet]) {
     const grp = _TG_GROUPS.find(g => g.facets.includes(facet));
-    if (grp && grp.key !== _tgeGroupSeen) {
-      _tgeGroupSeen = grp.key;
-      const gh = document.createElement('div');
-      gh.className = 'tg-group-head';
-      gh.innerHTML = `<span class="tg-group-label">${escapeHtml(grp.label)}</span>` +
-                     `<span class="tg-group-note">${escapeHtml(grp.note)}</span>`;
-      root.appendChild(gh);
-    }
     const perLevel  = _tgEditorState[facet] || {};
     const canonical  = _tgCanonical[facet] || [];
     const levels     = tgLevelsOf(facet);
@@ -21796,9 +22064,20 @@ function _renderTgEditorBody(){
                 title="Unfold every level of this category">expand all</button>
         <button class="tge-xall" onclick="tgExpandAll('${facet}', false)"
                 title="Fold back to the top level">collapse</button>
+        <label class="tge-tol"
+               title="How far each ${escapeAttr(facetLabel(facet))} bucket may sit from its target, as a share of that target: 10 lets a 40% target be 4 points off and a 5% target 0.5. Never tighter than 0.5 points. The optimiser aims inside it — tighter categories are worked harder — and the Targets tab grades against it.">
+          allowed miss
+          <input type="number" min="1" max="100" step="1" data-facet="${facet}"
+                 value="${+((_tgTolerances[facet] != null ? _tgTolerances[facet]
+                            : OPT_DEFAULTS.max_error_rel) * 100).toFixed(1)}"
+                 onchange="onTgTolChange(this)">
+          % of target
+        </label>
         <div class="sum"${sumStyle} title="${escapeAttr(TG_COMMITTED_HINT)}">${
           escapeHtml(tgCommittedLabel(facet, sum))}</div>
       </div>
+      ${grp && grp.key !== 'exposure'
+        ? `<div class="tge-gnote">${escapeHtml(grp.note)}</div>` : ''}
       <div class="tge-hint"></div>
       <div class="tge-rows" data-facet="${facet}"></div>
       <div class="tge-add" data-facet="${facet}"></div>
@@ -21938,7 +22217,34 @@ function tgRowHtml(n, depth, open){
   // then reads as the share-of-parent shown beside it. Illegal values are
   // still impossible: tgSetNodeValue clamps, and onTgSlide snaps the
   // thumb back to what was actually applied.
-  const maxv = n.parent ? Math.max(n.parent.value, n.value) : 100;
+  //
+  // Under "others stay put" (v0.127.0) the reach can be longer: nothing
+  // else gives ground, but the ancestors may grow, so the track runs to
+  // the parent's value or to this value plus that headroom, whichever is
+  // further. Never SHORTER than the parent: a track ending at the node's
+  // own value whenever nothing was free put every thumb at the far right
+  // end, which read as broken rather than as full. A drag past what is
+  // free is clamped and the thumb snapped back, exactly as under the
+  // rebalancing rule.
+  const parentLen = n.parent ? Math.max(n.parent.value, n.value) : 100;
+  const maxv = _tgEditMode === 'fixed'
+    ? Math.min(100, Math.max(parentLen, n.value + tgTypedHeadroom(n)))
+    : parentLen;
+  // Where the portfolio sits now, as a dot on the same track and a figure
+  // beside the box. Past the track's end it parks at the end; the figure
+  // still says where.
+  const nowv = tgNowPct(n.facet, n.level, n.key);
+  const nowAt = maxv > 0 ? Math.min(1, nowv / maxv) : 0;
+  const nowMk = `<span class="nowmk" style="left:calc(7px + (100% - 14px) * ${nowAt.toFixed(4)})"
+                       title="Now ${nowv.toFixed(1)}%"></span>`;
+  // A stored 0 says "hold none of this", and the optimiser enforces it —
+  // shown in words, because a 0 in a box reads like an empty one.
+  const zero = n.value === 0
+    ? '<span class="zero" title="A target of 0: hold none of this. Clear the box or press ✕ to remove the target instead.">hold none</span>'
+    : '';
+  const modeTxt = _tgEditMode === 'fixed'
+    ? 'others stay put: nothing else moves, and a parent grows if it must'
+    : 'others make room: siblings give or take, the unclaimed remainder first';
   const ofp  = n.parent && n.parent.value > 0
     ? `${(n.value / n.parent.value * 100).toFixed(1)}% of `
       + `${escapeHtml(n.parent.isRoot ? 'portfolio' : n.parent.label)}`
@@ -21950,23 +22256,28 @@ function tgRowHtml(n, depth, open){
        data-key="${escapeAttr(n.key)}" style="--d:${depth}">
     ${chev}
     <div class="lbl" title="${escapeAttr(n.key + '  ·  ' + lvlName)}">${
-      escapeHtml(n.label)}${inside}</div>
+      escapeHtml(n.label)}${zero}${inside}</div>
     <div class="slide">
       <button class="nudge" onpointerdown="tgNudgeStart(this, -1, event)"
                 onclick="tgNudgeKey(this, -1, event)"
-              title="Step down by ${TG_NUDGE_STEP} — rebalances like the slider. Hold to repeat.">◂</button>
-      <input type="range" min="0" max="${maxv.toFixed(4)}"
-             step="0.1" value="${n.value.toFixed(4)}"
-             onpointerdown="tgSnapshot()" oninput="onTgSlide(this)"
-             onchange="_renderTgEditorBody()">
+              title="Step down by ${TG_NUDGE_STEP} (${escapeAttr(modeTxt)}). Hold to repeat.">◂</button>
+      <div class="trk">
+        <input type="range" min="0" max="${maxv.toFixed(4)}"
+               step="0.1" value="${n.value.toFixed(4)}"
+               title="${escapeAttr('Drag to set — ' + modeTxt + '. The amber dot is where the portfolio sits now.')}"
+               onpointerdown="tgSnapshot()" oninput="onTgSlide(this)"
+               onchange="_renderTgEditorBody()">
+        ${nowMk}
+      </div>
       <button class="nudge" onpointerdown="tgNudgeStart(this, 1, event)"
                 onclick="tgNudgeKey(this, 1, event)"
-              title="Step up by ${TG_NUDGE_STEP} — rebalances like the slider. Hold to repeat.">▸</button>
+              title="Step up by ${TG_NUDGE_STEP} (${escapeAttr(modeTxt)}). Hold to repeat.">▸</button>
     </div>
     <input type="number" min="0" max="100" step="0.1"
            value="${+n.value.toFixed(4)}"
-           title="Percent of the fund side. A typed value moves no other target and pins this row; a parent grows to make room if it has to. Clear the box to remove the target, and every target inside it, altogether — a target of 0 is a different instruction, and means hold none of this."
+           title="${escapeAttr('Percent of the fund side — ' + modeTxt + '. Clear the box to remove the target, and every target inside it; 0 is a different instruction, and means hold none of this.')}"
            onchange="onTgNumber(this)">
+    <span class="now" title="Where the portfolio sits now">now ${nowv.toFixed(1)}</span>
     <span class="ofp">${ofp}</span>
     <button class="pin${n.pinned ? ' on' : ''}" onclick="tgTogglePinEl(this)"
             title="${n.pinned
@@ -21983,7 +22294,7 @@ function tgRowHtml(n, depth, open){
 // only way to change it is to change something that is a target.
 function tgRestHtml(owner, depth){
   const label = owner.isRoot
-    ? 'unclaimed — the optimiser fills this freely'
+    ? "unclaimed — the optimiser's free choice"
     : `rest of ${owner.label}`;
   // At the root the share OF the portfolio is the value itself, so the
   // second column would only repeat the first.
@@ -21991,6 +22302,12 @@ function tgRestHtml(owner, depth){
     ? `${(owner.rest / owner.value * 100).toFixed(1)}% of ${
         escapeHtml(owner.label)}`
     : '';
+  // The held figure of the same remainder: the owner's own, less what its
+  // targeted children hold. Clamped, as `rest` is, since the levels are
+  // measured separately and can disagree by rounding.
+  const restNow = Math.max(0,
+    (owner.isRoot ? 100 : tgNowPct(owner.facet, owner.level, owner.key))
+    - owner.children.reduce((a, c) => a + tgNowPct(c.facet, c.level, c.key), 0));
   return `
   <div class="tge-rest" data-facet="${escapeAttr(owner.facet)}"
        data-level="${escapeAttr(owner.level || '')}"
@@ -22001,6 +22318,8 @@ function tgRestHtml(owner, depth){
             title="Put everything inside ${escapeAttr(owner.isRoot ? 'this category' : owner.label)} and ${escapeAttr(owner.isRoot ? 'the category itself' : owner.label + ' itself')} back exactly as they were when you opened this dialog — buckets you removed return, buckets you added go away, and its siblings give or take the difference. Pinned buckets keep their value."
             >↺ reset these</button></div>
     <span class="val">${owner.rest.toFixed(1)}%</span>
+    <span class="now" title="What the portfolio holds now in the part no target claims">now ${
+      restNow.toFixed(1)}</span>
     <span class="ofp">${ofp}</span>
   </div>`;
 }
@@ -22049,13 +22368,22 @@ function tgDragBaseFor(facet, level, key){
   return _tgDragBase;
 }
 
+// Move one node by the rule "When I change a bucket" names (v0.127.0).
+// Both rules answer {moved, blockers}; the fixed one also says `value`.
+function tgMoveNode(n, want){
+  return _tgEditMode === 'fixed' ? tgTypeNodeValue(n, want)
+                                 : tgSetNodeValue(n, want);
+}
+
+// Measured from the drag base under either rule, so dragging back lands
+// exactly where the gesture started whichever rule is in force.
 function tgApplyDrag(facet, level, key, want){
   const base = tgDragBaseFor(facet, level, key);
   _tgEditorState[facet] = JSON.parse(base.state);
   const root = tgBuildTree(facet);
   const n = tgFindNode(root, level, key);
   if (!n) return null;
-  const res = tgSetNodeValue(n, want);
+  const res = tgMoveNode(n, want);
   tgTreeToState(facet, root);
   return res;
 }
@@ -22152,23 +22480,29 @@ function onTgNumber(el){
   }
   const v = parseFloat(raw);
   // Typed, not dragged: measured from the CURRENT state rather than a
-  // drag base, and nothing but this row and its ancestors moves — see
-  // tgTypeNodeValue.
+  // drag base, by the same rule the slider follows (v0.127.0). No
+  // auto-pin any more — under "others stay put" nothing else moves
+  // anyway, and under "others make room" the user chose that siblings
+  // should; a pin is only ever the user's own.
   tgInvalidateDragBase();
   const root = tgBuildTree(c.facet);
   const n = tgFindNode(root, c.level, c.key);
   if (!n) return;
-  const res = tgTypeNodeValue(n, isNaN(v) ? 0 : Math.max(0, v));
+  const want = isNaN(v) ? 0 : Math.max(0, v);
+  const res = tgMoveNode(n, want);
   tgTreeToState(c.facet, root);
-  // A number the user typed is a number they meant, so the row is pinned:
-  // a later slider on a sibling or a parent must not quietly rewrite it.
-  // The pin is the existing one, so the circle shows it and releases it.
-  _tgPins[c.facet] = _tgPins[c.facet] || {};
-  _tgPins[c.facet][c.level] = _tgPins[c.facet][c.level] || {};
-  _tgPins[c.facet][c.level][c.key] = true;
   _renderTgEditorBody();
-  if (res.blockers.length){
-    tgFlashHint(c.facet, `Set to ${res.value.toFixed(1)}%: ${res.blockers.join(', ')}.`);
+  // Say why the number landed short of what was typed. The fixed rule
+  // names its walls itself; the rebalancing one only names them when it
+  // could not move at all, so the clamp is described here.
+  const got = n.value;
+  if (Math.abs(got - want) > 0.05){
+    const why = (res.blockers || []).length ? res.blockers.join(', ')
+      : (want > got
+          ? `${n.parent.isRoot ? 'the category' : n.parent.label} has no more room `
+            + '(pinned buckets beside it keep theirs) — switch to “others stay put” to let it grow'
+          : 'pinned buckets inside it hold it up');
+    tgFlashHint(c.facet, `Set to ${got.toFixed(1)}%: ${why}.`);
   }
 }
 
@@ -22251,6 +22585,8 @@ function tgUpdateSectionSum(facet){
     sumEl.textContent = tgCommittedLabel(facet, sum);
     sumEl.style.color = (sum > 100.0001) ? 'var(--amber)' : '';
   }
+  // The rail shows the same figure for every category, so it follows.
+  _renderTgRail();
 }
 
 function tgFlashHint(facet, msg){
@@ -22478,9 +22814,17 @@ async function saveTargetsEditor(){
   try {
     const r = await fetch(`${API}/portfolios/${activePid}/targets`, {
       method: 'PUT', headers: {'Content-Type':'application/json'},
+      // Tolerances for the categories that carry targets: a tolerance
+      // on an untargeted category qualifies nothing. One left behind by
+      // a cleared category stays stored, so re-adding targets restores
+      // it (see optimizer_settings_set).
       body: JSON.stringify({targets: _tgEditorState,
                             target_pins: _tgPins,
-                            cash_reserve: _tgReserve}),
+                            cash_reserve: _tgReserve,
+                            tolerances: Object.fromEntries(_TG_ALL_FACETS
+                              .filter(f => Object.values(_tgEditorState[f] || {})
+                                  .some(b => Object.keys(b || {}).length))
+                              .map(f => [f, _tgTolerances[f]]))}),
     });
     const d = await r.json();
     // v0.65.0: a 409 carries the parent/child problems. Listed in full
@@ -22504,10 +22848,10 @@ async function saveTargetsEditor(){
     lastLoadedPid = '';
     await reloadPortfolio(false);
     renderTargetsTile(currentPortfolioView);
-    // The optimiser's tolerance inputs are derived from the targets, so
-    // they are stale the moment targets are saved — and the editor can
-    // now be opened from the optimiser tab, where that is immediately
-    // visible.
+    // The optimiser's tolerance summary reads the targets and the
+    // tolerances just saved, so it is stale the moment they are — and
+    // the editor can be opened from the optimiser tab, where that is
+    // immediately visible.
     renderOptimizerTolerances();
   } catch(e) {
     err.textContent = e.message || String(e);

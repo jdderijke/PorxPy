@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.126.0. This is the fullest architecture write-up;
+*Current as of v0.127.0. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -111,8 +111,15 @@ decide whether to relax a target or go find another fund.
 
 That residual is reported as the **facet tree** (v0.120.0), not a flat
 list: each bucket sits inside the bucket that contains it, with a fold
-arrow per branch and **expand all** / **collapse** per category. It opens
-fully unfolded. Flat, the panel put `technology 30.0% / 28.0%` beside
+arrow per branch and **expand all** / **collapse** per category. Since
+v0.127.0 it is the same table the Targets tab uses, with a **Now** column
+beside **Proposed** so it says what the trades change, a bullet bar per
+row (bar = proposed, tick = target, band = allowed miss, dot = now), and
+a verdict above it — *"11 of 14 targets would be within tolerance —
+outside: Japan, …"*, each name a link to its row. It sits above the trade
+list, because whether a design is worth applying is decided there. A
+small tree opens fully; a large one opens only the branches holding a
+miss. Flat, the panel put `technology 30.0% / 28.0%` beside
 `semiconductors 10.0% / 12.0%` and left you to remember that the second
 is inside the first — and that containment is exactly what decides
 whether a residual is worrying or already accounted for.
@@ -143,9 +150,17 @@ each row carries a slider plus both readings — its share of the
 portfolio and its share of the bucket that contains it. Moving a slider
 redistributes inside its parent, so a bucket can never outgrow the one
 that holds it and the set stays coherent by construction. The arrows
-beside each slider step it by 0.1 for fine tuning. Typing a value
-instead moves no other target — the parents grow to make room if they
-must — and pins the row. A target always carries its parents: adding
+beside each slider step it by 0.1 for fine tuning. What else moves is
+your choice, stated above the tree (v0.127.0): **others make room**
+rebalances the siblings, **others stay put** moves nothing else and lets
+the parents grow if they must — and the slider, its arrows and the number
+box all follow it. Each row also shows where the portfolio sits **now**,
+as a figure and as a dot on the slider track, so a target is set against
+the present rather than blind. A stored 0 is labelled *hold none*. The
+dialog shows one category at a time, chosen from a rail that lists all
+seven with what each commits, and each category carries its own **Allowed
+miss** — the tolerance the optimiser aims at and the Targets tab grades
+against. A target always carries its parents: adding
 a bucket adds any untargeted ones above it, every stored set is
 completed the same way whatever wrote it, and removing a bucket removes
 what is inside it. A greyed
@@ -160,10 +175,14 @@ default and a tilt one slider. **Pin** a row to stop it moving when a
 sibling or its parent does.
 
 You set target allocations per facet (e.g. "40% North America, 25%
-Europe, 20% Asia, 15% emerging markets"). PorxPy compares your
-portfolio against them and shows signed deviation bars — green for
-overweight, red for underweight — so you can see at a glance where
-you're off your plan.
+Europe, 20% Asia, 15% emerging markets"). The Targets tab compares your
+portfolio against them as the same facet tree the optimiser reports in
+(v0.127.0): target, actual and Δ per bucket, a bullet bar showing the
+actual against the target and its allowed miss, and ✓ / ▲ over / ▼ under
+judged against **that bucket's own allowance** — so a 3-point miss reads
+differently on a 5% target than on a 40% one. Greyed rows show what no
+target claims, and a verdict at the top lists every bucket outside
+tolerance, each a link to its row.
 
 A target names a **level** as well as a bucket, so "25% Europe" at
 region level and "10% Germany" at country level are two different
@@ -943,6 +962,6 @@ it does.
 
 ## Version
 
-Current release: **0.126.0** (2026-10-01)
+Current release: **0.127.0** (2026-10-03)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

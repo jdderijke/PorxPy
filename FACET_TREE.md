@@ -1,6 +1,6 @@
 # FACET_TREE.md — the four facet trees
 
-*Current as of v0.126.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.127.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Sections 1–5 describe how the facet trees behave **today**, across all
@@ -857,20 +857,39 @@ per portfolio as `target_pins`, parallel to the targets rather than
 promoting each target's value to a dict, and they are consumed entirely
 by the editor: neither the optimiser nor the deviation report reads them.
 
-**Typing is not dragging (v0.123.0).** The number box beside a slider
-follows a different rule, because a typed value is an exact statement
-about one bucket. It redistributes nothing: no sibling moves, and the
+**Two edit rules, chosen by the user (v0.127.0).** "When I change a
+bucket" above the tree picks between the rule above (*others make room*,
+`tgSetNodeValue`) and the one below (*others stay put*,
+`tgTypeNodeValue`), and the slider, its arrows and the number box all
+follow the choice. From v0.123.0 to v0.126.0 the rule was tied to the
+control instead — sliders rebalanced, a typed number did not and pinned
+its row — so two controls that look alike behaved differently with
+nothing on screen saying so. The auto-pin went with it: a pin is now
+only ever the user's own. Under *others stay put* the slider's track
+runs to the bucket's value plus the room its ancestors can still grow
+into, a sum that does not move while that slider is dragged, so the
+track stays as stable as the parent-length one. The choice is a
+per-viewer preference in browser storage, not part of the portfolio.
+
+The *others stay put* rule, as written for typed values in v0.123.0. It
+redistributes nothing: no sibling moves, and the
 bucket's own children keep their figures, the difference landing in its
 `rest of ...`. When the parent's remainder cannot hold the growth the
 *parent* grows, and so on upward -- parents scale up to fit what is typed
 into them and never down. The climb stops at the portfolio, whose 100%
 is not a target, and at a pinned ancestor; a value past either wall, or
 below what the bucket's own children already commit, is clamped and the
-reason shown. The typed row is then pinned, since a number the user typed
-is one they meant. The sliders are the only control that redistributes
-inside a node -- and the small arrows either side of each slider
-(v0.124.0) are part of the slider: each steps it by 0.1 through the same
-drag path, for the fine tuning a short track cannot do. The invariant above still holds by construction: a parent
+reason shown. The small arrows either side of each slider (v0.124.0) are
+part of the slider: each steps it by 0.1 through the same drag path, for
+the fine tuning a short track cannot do.
+
+Each row also shows where the portfolio sits **now** (v0.127.0), as a
+figure and as a dot on the track. It is read from the view's
+`target_actuals` — `targets.exposure_by_level` over the same fund-side
+rollup the Targets tab measures on — for every bucket at every level,
+targeted or not, so the editor's "now" and the tab's "actual" are one
+number. A stored 0 is labelled *hold none*, because a 0 in a box reads
+like an empty one and the two mean opposite things. The invariant above still holds by construction: a parent
 only ever grows to cover its children.
 
 **A target always carries its ancestors (v0.123.0, enforced in the
@@ -904,10 +923,23 @@ level is now targeted at several levels. That used to make the facet
 count several times in the objective; since v0.126.0 its weight is
 shared between its levels (`OPTIMIZER.md`, Row scaling).
 
-## 16c. Reading the tree back (v0.120.0)
+## 16c. Reading the tree back (v0.120.0, one table since v0.127.0)
 
-The optimiser's **resulting exposure** panel draws the same tree over
-the same vocabulary, from the same builder: `tgBuildTreeFrom(facet,
+Two panels read a target set back: the **Targets tab** (the portfolio as
+held) and the optimiser's **resulting exposure** (the design as
+proposed). Since v0.127.0 both are drawn by one renderer,
+`tgExposureTableHtml`, over the tree below: target, measured value, Δ and
+a fit verdict per bucket, plus a bullet bar (bar = measured, tick =
+target, band = the bucket's allowance). The fit is judged against each
+bucket's own allowance, `config.bucket_allowance` — the rule the solver
+aims at, now also applied by `targets.compute_target_deviations` — so the
+two panels cannot disagree about whether a bucket passed. Before, the
+Targets tab drew a Chart.js chart of bare deviations per level, which
+neither nested nor said whether a miss mattered. A verdict above each
+panel counts the buckets inside tolerance and links to every one that is
+not.
+
+Both panels take the tree from the same builder: `tgBuildTreeFrom(facet,
 perLevel, decorate)`, of which the editor's `tgBuildTree` is now one
 caller. The two panels ask the tree for the same thing -- which bucket
 contains which -- and differ only in what hangs off each node: a slider
@@ -921,11 +953,19 @@ Two asymmetries are deliberate and are marked as such in the code:
 - The optimiser panel draws **no `rest of ...` row**. The remainder is a
   fact about a design being SET -- how much of a bucket is still
   unclaimed -- and this panel reports a design already solved. A
-  remainder row here would have to invent a target nobody stated.
-- It opens **fully unfolded**, where the editor opens folded to the
-  coarsest level. Nothing here is being typed, so there is no long list
-  to keep out of the reader's way, and folding by default would hide the
-  finer misses that are the reason to open the panel.
+  remainder row here would have to invent a target nobody stated. The
+  Targets tab does draw them, with the actual exposure nobody targeted
+  and the largest buckets making it up: that is the "untargeted" line it
+  used to print under each chart, put back where it belongs.
+- The optimiser panel adds a **Now** column and a dot for the held
+  position (`current` in the optimiser's result, measured on the same
+  candidate exposures and fund-side denominator as `achieved`).
+- Both read-back panels open by the same rule,
+  `tgExposureDefaultExpanded`: fully when a facet has 40 buckets or
+  fewer, otherwise only the branches holding a miss. The editor still
+  opens folded to the coarsest level. Before v0.127.0 the optimiser
+  opened fully always, which for a baseline design meant scrolling past
+  hundreds of passing rows to find the three that missed.
 
 The containment itself is still READ, never derived in the browser:
 every canonical entry arrives carrying its `path`, its key at each level
@@ -949,7 +989,7 @@ in v0.89.0.
 Deliberate boundaries are described in the sections above; everything
 here is something that should be fixed.
 
-Re-checked at **v0.126.0** against the code each entry names, rather than
+Re-checked at **v0.127.0** against the code each entry names, rather than
 carried forward: `country_key_at_level`'s docstring still says there is
 no super-region level while its body implements one
 (`porxpy/breakdowns.py:2065`); `rollup_holdings` still emits nine facet

@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.126.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.127.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -134,7 +134,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.126.0 (built 2026-10-01)
+  PorxPy  v0.127.0 (built 2026-10-03)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -354,22 +354,29 @@ A row that has finer targets inside it says so — *technology · 3 inside*
 — and the arrow beside it unfolds them. **expand all** in the category
 heading opens every level at once.
 
-From there, drag a slider and its siblings give ground proportionally:
-the unclaimed remainder first, then the buckets you set. The small
-arrows either side of a slider step it by 0.1 for fine tuning — they
-rebalance exactly as the slider does, and holding one repeats. Drill into a row
-with the arrow to shape what is inside it. **Typing** a number in the box
-instead moves nothing else: siblings and the row's own contents keep
-their figures, and if the bucket above has no room left it grows to make
-some — parents scale up, never down. A typed row is pinned for you.
-Adding a bucket whose parents have no target adds those parents too, so
+Above the tree, **When I change a bucket** decides what else moves, and
+the slider, the small arrows either side of it (0.1 a step; hold one to
+repeat) and the number box all follow it:
+
+- **others make room** — its siblings give ground proportionally, the
+  unclaimed remainder first, then the buckets you set.
+- **others stay put** — nothing else moves: siblings and the row's own
+  contents keep their figures, and if the bucket above has no room left
+  it grows to make some — parents scale up, never down.
+
+Each row shows where the portfolio sits **now**, as a figure beside the
+box and as an amber dot on the slider track, so you can see whether a
+target is a small tilt or a large rebalance. Drill into a row with the
+arrow to shape what is inside it. Adding a bucket whose parents have no target adds those parents too, so
 a sub-sector always appears inside its sector. Clearing a box (or the
 ✕) removes a target and everything inside it; typing **0** is the different instruction "hold none
-of this", and it is enforced. The circle at the end of a row **pins** it,
+of this", and it is enforced — such a row is labelled *hold none*, so
+check for that label after adding buckets: a bucket you add starts at 0. The circle at the end of a row **pins** it,
 so changing a sibling or its parent leaves it — and everything inside it
 — alone. **Undo** steps back through the session's edits.
 
-Below that, one section per facet, in two groups:
+Below that, a rail on the left lists every category with what its
+targets commit; pick one to edit it. The categories come in two groups:
 
 | Group | Facets | What it measures |
 |---|---|---|
@@ -383,8 +390,9 @@ not offered again. The three Fund classification facets are not trees,
 so they keep a plain list. Three things are worth knowing:
 
 - **Targets are sparse.** Set only the buckets you care about.
-  Everything else is reported as "Untargeted", so you can see what you
-  have not accounted for, and the total does not have to reach 100%.
+  Everything else shows on the Targets tab as greyed *not targeted* /
+  *rest of…* rows, so you can see what you have not accounted for, and
+  the total does not have to reach 100%.
 - **Targets are levelled.** A facet is a tree, and you can target at any
   level of it: `technology` at sector level, `semiconductors` at
   sub-sector level, `developed` at super-region level. Every level is
@@ -399,6 +407,14 @@ so they keep a plain list. Three things are worth knowing:
   *commits*, not the levels added up: semiconductors 15% inside
   technology 35% commits 35%, not 50%. Past 100% the figure turns amber,
   because at that point the section really is over-committed.
+- **Each category has an Allowed miss** — how far a bucket may sit from
+  its target, as a share of that target, defaulting to 10%. At 10, a 40%
+  target may be 4 points off and a 5% target only 0.5 — never less than
+  0.5 points, which is finer than whole shares can express. It is
+  relative rather than a fixed number of points because one number
+  cannot mean the same thing at both sizes. The optimiser aims inside it
+  and works hardest where it is smallest, and the Targets tab grades
+  every bucket against it, so spend your precision where it matters.
 
 **Thematic focus** is worth a paragraph of its own, because its list is
 built differently from every other. A theme is free text — nothing can
@@ -419,9 +435,11 @@ A workable first set, if you want one to type in:
 | Asset class | equity 70%, fixed income 30% |
 | Region | north america 55%, europe 25%, asia 20% |
 
-Press **Save**. The Targets tab now shows one section per facet with
-bars reading *actual − target*: positive is overweight, negative
-underweight. On an all-cash portfolio everything is underweight, which
+Press **Save**. The Targets tab now shows a verdict — how many targets
+are within tolerance, and a link to each one that is not — and one table
+per category: target, actual and Δ per bucket, a bar showing the actual
+against the target (the tick) and its allowed miss (the shaded band), and
+✓ / ▲ over / ▼ under. On an all-cash portfolio everything is under, which
 is the honest answer.
 
 ### Keeping and reusing a target set
@@ -459,8 +477,8 @@ The controls, top to bottom:
 | Control | What it does |
 |---|---|
 | **Prefer better funds** | Off by default. When set, the optimiser swaps in higher-ranked funds *after* the targets are met, and only where the swap keeps every category inside its tolerance. Ranking is the peer score — funds compared against others of the same asset class and focus. |
-| **Everything on this panel is remembered** | Per portfolio, saved when you press **Propose design**. The tolerances, Max funds, Min weight, Min trade and the ranking model all reopen where you left them the next time you come back to this portfolio — they are decisions about *this* portfolio, so another portfolio keeps its own. |
-| **Max fit error, per target category** | How much of each target may be missed, **as a share of that target**, per facet, defaulting to 10%. At 10, a 40% target may be 4 points off and a 5% target only 0.5 — never less than 0.5 points, which is finer than whole shares can express. It is relative rather than a fixed number of points because one number cannot mean the same thing at both sizes: 5 points of slack on a 5% target lets it sit at zero and still pass, which is how a fund bought for a small target could be sold with the category still showing a tick. This also *weights* the objective — the solver works hardest where the allowance is smallest — so spend your precision where it matters. |
+| **Everything on this panel is remembered** | Per portfolio, saved when you press **Propose design**. Max funds, Min weight, Min trade and the ranking model all reopen where you left them the next time you come back to this portfolio — they are decisions about *this* portfolio, so another portfolio keeps its own. |
+| **Allowed miss** (shown, not edited) | The tolerance per category, as a share of each target. It is set in **Edit targets** beside the targets it qualifies (since v0.127.0), because the Targets tab grades against it too; this panel reports what the run will use. |
 | **Max funds** | Cap on how many funds the design may use. Ten is a reasonable start; raise it if the optimiser reports it could not reach the error target within the cap. |
 | **Min weight %** | Positions smaller than this are dropped and the problem re-solved, so you do not end up with dust holdings. |
 | **Min trade** | Trades worth less than this amount in base currency are suppressed. 0 means no minimum. |
@@ -469,8 +487,19 @@ Press **⚙ Propose design**. A progress bar runs while every pre-loaded
 fund is read — on a cold cache that takes as long as a portfolio view,
 and for the same reason.
 
-Three panels come back:
+Three panels come back, the fit first:
 
+- **Resulting exposure** — a verdict (*"all 14 targets would be within
+  tolerance"*, or which are not, each a link to its row) over the same
+  table the Targets tab uses, with a **Now** column beside **Proposed**:
+  the dot on each bar is where you are today, the bar where the design
+  puts you, the band what the target allows. Each bucket sits inside the
+  bucket that contains it, so a miss on `semiconductors` can be read
+  against the `technology` target it lives in. A small tree opens fully,
+  a large one only where something misses; the arrow on a branch folds
+  it, and **expand all** / **collapse** do a whole category at once.
+  Large residuals usually mean the targets are not reachable with the
+  funds available, not that the solver failed.
 - **Proposed trades** — one row per fund, with the score, what you hold
   now, what the design wants, the share delta, the amount in base
   currency, and a **Settle from** picker naming the cash position the
@@ -479,17 +508,9 @@ Three panels come back:
   peer would cost in accuracy. Reported, never applied: whether the
   trade-off is worth it varies per portfolio, and the tool does not
   guess.
-- **Resulting exposure** — what the design actually achieves against
-  each target, shown as the facet tree: each bucket sits inside the
-  bucket that contains it, so a miss on `semiconductors` can be read
-  against the `technology` target it lives in rather than beside it. It
-  opens fully unfolded; the arrow on a branch folds it, and **expand
-  all** / **collapse** do a whole category at once. Large residuals
-  usually mean the targets are not reachable with the funds available,
-  not that the solver failed.
 
 If the result disappoints, the fix is usually one of: raise **Max
-funds**, loosen the tolerance on the facet you care least about, or add
+funds**, loosen the Allowed miss (in **Edit targets**) on the category you care least about, or add
 funds to the universe that can actually reach the bucket you targeted.
 The status line names the reason where it can, down to the individual
 bucket that failed and the allowance it broke.
@@ -498,7 +519,8 @@ bucket that failed and the allowance it broke.
 that says *"3 fund(s) have no country data"* lists which three, and each
 ticker is a link to that fund's page — because the fix is per fund: give
 its country card a source, or upload holdings so a look-through exists.
-The same list appears under **Resulting exposure**, where a note says how
+The same list appears under **Resulting exposure**, where a note (folded
+when there are several) says how
 many funds a level was measured on and which ones stayed silent. Until a
 fund can describe itself in a facet you target, the optimiser can only
 use it for the untargeted remainder, and it will rarely be chosen.
