@@ -1451,15 +1451,27 @@ def optimise_portfolio(candidates: list[dict],
     # the frontend is a second place they can drift.
     tolerance: dict[str, dict[str, dict[str, float]]] = {}
     # The same buckets measured on the portfolio AS HELD, before any trade
-    # (v0.127.0). Same exposures, same fund-side denominator, so "now" and
-    # "proposed" differ only by the trades — reading "now" off the Targets
-    # tab instead would compare two numbers built from different candidate
-    # sets and call the difference the design's doing.
+    # (v0.127.0). Same exposures, so "now" and "proposed" differ only by
+    # the trades — reading "now" off the Targets tab instead would compare
+    # two numbers built from different candidate sets and call the
+    # difference the design's doing.
+    #
+    # The DENOMINATOR is the fund side as held today, not `fund_side`
+    # (v0.127.2). `fund_side` is total minus the reserve — the fund side
+    # the design WILL have. Today's fund side is smaller by whatever cash
+    # sits above the reserve, and dividing by the larger number counted
+    # that undeployed cash as exposure to nothing: a portfolio 90% equity
+    # in its funds, with half its money in cash awaiting investment, read
+    # as 48% equity "now". Every target describes the fund side alone
+    # (cash is a reservation off the top since v0.90.0), which is what
+    # the Targets tab measures, so this has to mean the same.
     current: dict[str, dict[str, dict[str, float]]] = {}
-    w_now = [((float(c.get("current_shares") or 0.0)
-               * float(c.get("price_base") or 0.0)) / fund_side
-              if fund_side else 0.0)
-             for c in (usable + frozen)]
+    held_now = [float(c.get("current_shares") or 0.0)
+                * float(c.get("price_base") or 0.0)
+                for c in (usable + frozen)]
+    fund_side_now = sum(held_now)
+    w_now = [(amt / fund_side_now if fund_side_now > 0 else 0.0)
+             for amt in held_now]
     for facet, per_level in (targets or {}).items():
         rel = float(tol_rel.get(facet, DEFAULT_TOL_REL))
         for level, tgt in (per_level or {}).items():

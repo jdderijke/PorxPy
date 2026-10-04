@@ -1,6 +1,6 @@
 # The PorxPy Optimizer — how it works
 
-*Applies to `porxpy/optimizer.py` as of v0.127.1. The full audit — every
+*Applies to `porxpy/optimizer.py` as of v0.127.3. The full audit — every
 claim in the document re-checked against the module — was done at
 v0.91.0; since then the v0.96.0 peer-scoring change was folded into §7b
 and §13's one remaining open issue was re-confirmed by reading
@@ -646,11 +646,15 @@ target.
   also calls, so the Targets tab grades the held portfolio by the same
   allowance.
 - **`current`** (v0.127.0) — the same buckets measured on the portfolio
-  as held, before any trade: same candidate exposures, same fund-side
-  denominator as `achieved`, so the two differ only by the trades. The
-  resulting-exposure table shows it as **Now** beside **Proposed**.
-  Reading "now" off the Targets tab instead would compare numbers built
-  from different candidate sets.
+  as held, before any trade: same candidate exposures as `achieved`, so
+  the two differ only by the trades. The resulting-exposure table shows
+  it as **Now** beside **Proposed**. Reading "now" off the Targets tab
+  instead would compare numbers built from different candidate sets.
+  Its denominator is the fund side **as held today** — the value of the
+  funds now — not `achieved`'s total-minus-reserve (v0.127.2). The two
+  differ by any cash above the reserve, and dividing by the larger one
+  counted undeployed cash as exposure to nothing, so a cash-heavy
+  portfolio read as half the equity the Targets tab showed.
 - **`facets`** — per facet: `max_dev`, the biggest miss anywhere in the
   facet, plus the bucket that DECIDED it — `worst_bucket`, `worst_level`,
   `worst_dev`, that bucket's `tolerance`, and `ratio` = worst_dev over
@@ -854,7 +858,7 @@ Defects specific to the optimiser, as opposed to the deliberate
 boundaries in §12. Each is something that should be fixed rather than
 something someone chose.
 
-None open as of v0.127.1 (re-checked against the code). The two below are kept as records.
+None open as of v0.127.3 (re-checked against the code). The two below are kept as records.
 
 ### ~~A facet targeted at several levels counted several times~~ — fixed in v0.126.0
 

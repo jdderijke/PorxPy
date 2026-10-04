@@ -5707,6 +5707,8 @@ function onPortfolioChange(){
   // Picking a different portfolio must force a reload — the cached view
   // belongs to the previous pid.
   if (activePid !== lastLoadedPid) lastLoadedPid = '';
+  // The optimiser's last proposal belongs to the previous pid too.
+  optForgetIfOtherPortfolio();
   if (currentTab === 'portfolio') renderPortfolioTab();
 }
 
@@ -5976,7 +5978,40 @@ function switchSubTab(name){
 // separate steps: an optimiser that silently rearranged your portfolio
 // would be alarming, and reviewing the trades is the point.
 let optProposal = null;
+// Which portfolio the last run was for — the same pid-stamp pattern as
+// portfolioHoldings / portfolioHoldingsPid. Set when a run STARTS, not
+// when it succeeds: a run that ends in "no targets set" or "not
+// reachable" leaves a status line that is just as much about one
+// portfolio as a proposal is. A proposal is a trade list for ONE
+// portfolio: shown under another it misdescribes it, and applied under
+// another it posts the first portfolio's trades to the second (v0.127.3).
+let optProposalPid = '';
 let optCashPositions = [];
+
+// Drop everything the optimiser holds about the last run: the proposal,
+// the substitutions ticked against it, the exposure tree's expansion and
+// the run's score caption, plus what is on screen for them. The run's
+// SETTINGS are not touched — they are per-portfolio and reloaded with
+// the view by applyOptimizerSettingsToPanel.
+function optForgetProposal(){
+  optProposal      = null;
+  optProposalPid   = '';
+  optSubs          = {};
+  _optExpanded     = new Set();
+  optRunScoreModel = { key: '', label: '' };
+  const result = document.getElementById('optResult');
+  const status = document.getElementById('optStatus');
+  if (result) result.style.display = 'none';
+  if (status) status.textContent = '';
+}
+
+// Called wherever the selected portfolio may have changed. One check
+// rather than a reset at each of the half-dozen places that assign
+// activePid (the selector, create, delete, add-to-portfolio, a vanished
+// pid on refresh), any one of which could be missed.
+function optForgetIfOtherPortfolio(){
+  if (optProposalPid && optProposalPid !== activePid) optForgetProposal();
+}
 
 // Which facets currently carry targets. The optimiser only scores these,
 // so they are also the only ones a tolerance means anything for.
@@ -6095,9 +6130,18 @@ async function runOptimizer(){
   const status = document.getElementById('optStatus');
   const result = document.getElementById('optResult');
 
+  // The portfolio this run is FOR. A solve takes seconds to minutes on a
+  // cold cache, and the user can switch portfolios while it runs; the
+  // answer must then be dropped rather than drawn under the new one.
+  const runPid = activePid;
+  // Substitutions are ticked against a proposal for this portfolio, so
+  // they carry into a re-run of it and nowhere else.
+  if (optProposalPid && optProposalPid !== runPid) optSubs = {};
+
   btn.disabled = true;
   result.style.display = 'none';
   optProposal = null;
+  optProposalPid = runPid;
   status.textContent = 'Solving…';
 
   try {
@@ -6125,6 +6169,12 @@ async function runOptimizer(){
     });
     const d = await r.json();
 
+    // Switched away mid-solve: whatever is on screen now belongs to the
+    // other portfolio, and this answer is not about it.
+    if (activePid !== runPid){
+      optForgetProposal();
+      return;
+    }
     if (!d.ok){
       status.textContent = d.reason || d.error || 'Could not produce a design.';
       return;
@@ -6208,11 +6258,12 @@ async function runOptimizer(){
         + `</div>`;
     }
 
-    // Where each facet's exposure data came from. The optimiser prefers the
-    // holdings look-through and falls back to the issuer card, so a run that
-    // mixes them is worth seeing — the two aren't always on the same basis,
-    // and a fund can win or lose on how it's described rather than what it
-    // holds. Only shown when a facet actually mixes sources.
+    // Where each facet's exposure data came from. The optimiser reads each
+    // fund's card from the source that card is set to, so a run can mix
+    // holdings look-throughs with issuer and factsheet figures — worth
+    // seeing, because the two aren't always on the same basis, and a fund
+    // can win or lose on how it's described rather than what it holds.
+    // Only shown when a facet actually mixes sources.
     const mixBits = Object.entries(d.source_mix || {})
       .filter(([, mix]) => Object.keys(mix).length > 1)
       .map(([f, mix]) => `${facetLabel(f)}: `
@@ -6606,6 +6657,14 @@ function _renderOptExposure(){
 
 async function applyOptimizerTrades(){
   if (!optProposal || !optProposal.trades.length) return;
+  // Never post one portfolio's trades to another. The switch handlers
+  // should already have dropped a foreign proposal; this is the last
+  // line, at the only place a proposal can do harm.
+  if (optProposalPid !== activePid){
+    optForgetProposal();
+    return;
+  }
+  const pid = optProposalPid;
 
   // Attach the chosen cash position to each trade.
   const sels = document.querySelectorAll('#optTradesBody .opt-cash');
@@ -6626,7 +6685,7 @@ async function applyOptimizerTrades(){
   status.textContent = 'Applying…';
 
   try {
-    const r = await fetch(`${API}/portfolios/${activePid}/trades`, {
+    const r = await fetch(`${API}/portfolios/${pid}/trades`, {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({trades}),
     });
@@ -6643,6 +6702,8 @@ async function applyOptimizerTrades(){
 
     document.getElementById('optResult').style.display = 'none';
     optProposal = null;
+    // The substitutions were ticked against the proposal just applied.
+    optSubs = {};
 
     // Reload so the Funds / Cash / X-ray tabs reflect the new positions.
     // The share counts just changed, so the look-through rollup computed
@@ -17565,6 +17626,10 @@ async function doReset(){
 async function renderPortfolioTab(){
   const noState = document.getElementById('noPortfolioState');
   const content = document.getElementById('portfolioContent');
+  // Every path that changes activePid ends here when the Portfolio tab
+  // is showing; onPortfolioChange also calls it directly for when it
+  // is not.
+  optForgetIfOtherPortfolio();
   if (!activePid){
     // Two empty states:
     //  • Zero portfolios:  user has to create one — there's nothing to select.

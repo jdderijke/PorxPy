@@ -1222,28 +1222,22 @@ def create_app() -> Flask:
                     continue
                 fx = rate
 
-            # Look-through exposure, per facet.
+            # Exposure per facet: the fund's breakdown CARD, from whichever
+            # source that card is set to (`breakdown_source.<facet>`, plus
+            # its `breakdown_complete` assertion) — the very block the fund
+            # page shows and the portfolio X-ray and Targets tab roll up.
+            # load_fund_data has already resolved it into fund_breakdowns.
             #
-            # Source preference: the holdings roll-up whenever it exists,
-            # falling back to the fund's resolved breakdown card (issuer or
-            # user upload) otherwise.
-            #
-            # This deliberately does NOT follow the per-card source override.
-            # That override is a *display* choice — you may well want the
-            # issuer's official view on the fund page. But for optimisation
-            # the funds must be described on a comparable basis, and mixing
-            # sources silently biases the result: a fund whose issuer data
-            # sums to 0.85 is charged 15% into the "other" bucket, so it
-            # loses to an identical fund described by a look-through summing
-            # to 1.0 — not for being a worse fund, but for being worse
-            # described.
-            #
-            # Look-through is the sounder basis in both directions: it can't
-            # understate (a shortfall is genuinely un-held) and it can't
-            # overstate (issuer sector weights may be normalised within the
-            # equity sleeve, which would flatter a mixed fund into claiming
-            # sector exposure it doesn't have).
-            # Look-through exposure per (facet, level, key), computed by
+            # An earlier version preferred the holdings roll-up regardless
+            # of the card, on the argument that funds must be described on
+            # a comparable basis. That was reversed once the card source
+            # became a fund-level ASSERTION ("these are this fund's
+            # numbers") rather than a display choice: an optimiser that
+            # overrode it would design against data the user had rejected,
+            # and its "now" could never agree with the Targets tab. The
+            # comparability concern is reported instead, not imposed —
+            # `source_mix` below counts the sources a run mixed.
+            # Exposure per (facet, level, key), computed by
             # breakdowns.candidate_exposures. Lifted out of here in
             # v0.66.3: as an inline block it could not be tested against
             # a real fund block without a live fetch.

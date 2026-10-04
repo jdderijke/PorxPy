@@ -3,6 +3,49 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.127.3] - 2026-10-04
+
+### Fixed - the optimiser carried its last result over to another portfolio
+
+Switching portfolios left the Optimizer tab showing the previous
+portfolio's proposal — its trades, its resulting exposure, its status
+line — under the newly selected one. Worse than confusing: **Apply**
+posted to whichever portfolio was selected, so the first portfolio's
+trade list could be applied to the second. The substitutions ticked
+against a proposal leaked the same way, into the next portfolio's run.
+
+The optimiser now records which portfolio each run is for, from the
+moment it starts. Any change of portfolio — the selector, creating,
+deleting, adding a fund from the fund page — drops the result, the
+status line, the substitutions and the exposure tree's expansion, while
+the per-portfolio settings reload as before. A solve still running
+when the portfolio changes is discarded when it returns, and Apply
+refuses a proposal made for a different portfolio as a last line.
+
+## [0.127.2] - 2026-10-04
+
+### Fixed - the optimiser's Now column halved a cash-heavy portfolio's exposure
+
+The resulting-exposure table's **Now** column (the portfolio as held,
+before any trade) divided today's fund holdings by the fund side the
+*design* will have — total value minus the cash reserve. Today's fund
+side is smaller than that by whatever cash sits above the reserve, so
+that undeployed cash was counted as exposure to nothing. On a portfolio
+holding about 1.26M in cash against a 450k reserve, equity whose funds
+sat at 90.6% on the Targets tab read as 48.2% "now". Now is measured
+against the funds as held, the same fund-side basis every target and
+the Targets tab use; Proposed was always right and is unchanged.
+
+Both screens read each fund's breakdown card from the source that card
+is set to. A comment in the optimise route still claimed the optimiser
+preferred the holdings look-through regardless of the card — a rule
+reversed long ago — and now describes what the code does.
+
+A gap of about a point can remain, and it is not a source difference:
+the Targets tab rescales the portfolio to a 100% distribution, while
+the optimiser does not, so a fund whose card sums to over 100% (here
+one whose asset-class card is 207% `unknown`) moves the two apart.
+
 ## [0.127.1] - 2026-10-03
 
 ### Fixed - the tolerance was hard to find after it left the Optimizer tab
