@@ -504,7 +504,8 @@ UNTARGETABLE_BUCKETS: frozenset[str] = frozenset({"unknown", "n/a"})
 
 def build_baseline_targets(fund_breakdowns: dict, *,
                           min_pct: float = BASELINE_MIN_TARGET_PCT,
-                          facets: tuple[str, ...] = BREAKDOWN_FACETS
+                          facets: tuple[str, ...] = BREAKDOWN_FACETS,
+                          finest_levels: dict[str, str] | None = None
                           ) -> tuple[dict, list[str]]:
     """Turn one fund's breakdown cards into a whole target set.
 
@@ -538,14 +539,17 @@ def build_baseline_targets(fund_breakdowns: dict, *,
       as a fully classified one.
     * **Buckets under ``min_pct`` are dropped.** See
       :data:`~porxpy.config.BASELINE_MIN_TARGET_PCT`.
-    * **A geared fund is expressed as shares of its gross exposure.** A
-      fund that has borrowed against its holdings reports more than 100%
-      of its net assets, which is a fact about the fund and not a broken
-      card. It is divided down here only because
-      :func:`porxpy.breakdowns.rollup_portfolio_fundlevel` already
-      normalises every card to a 100% distribution, so a target above
-      100% could never be met by any portfolio. The note names the
-      gearing so the number is not silently lost.
+    * **A geared fund is copied as it is, above 100%.** A fund that has
+      borrowed against its holdings reports more than 100% of its net
+      assets, which is a fact about the fund and not a broken card.
+      From v0.119.0 to v0.128.0 it was divided down to 100% here, for
+      one reason only: :func:`porxpy.breakdowns.rollup_portfolio_fundlevel`
+      normalised every portfolio card to a 100% distribution, so a
+      target above 100% could never be met. v0.129.0 removed that
+      normalisation — the portfolio side now shows gross exposure too —
+      so the reason went with it. The note still names the gearing,
+      because a target set committing more than 100% can only be met by
+      holding geared funds, and the editor will show it as over-committed.
 
     Dropping a child never breaks the tree. A parent keeps its own
     figure, so whatever its children no longer account for simply stays
@@ -564,6 +568,17 @@ def build_baseline_targets(fund_breakdowns: dict, *,
         facets: Which facets to read. Defaults to the four distribution
             facets; the argument exists so a caller can narrow the set,
             not so a metadata facet can be smuggled into it.
+        finest_levels: ``{facet: level}`` — the finest level to read for
+            that facet; it and every coarser level are written, anything
+            finer is left untargeted (v0.128.0). A facet absent from the
+            map reads from its finest level, which was the only behaviour
+            before. Why it exists: a broad fund's sub-sector or country
+            split pins the design far tighter than "market weight per
+            sector" means to, and once written the finer targets have to
+            be removed one branch at a time. The level must be one of
+            ``FACET_LEVELS[facet]``; the route validates it, and an
+            unknown one here falls back to the finest level rather than
+            dropping the facet.
 
     Returns:
         ``(targets, notes)`` — targets in the stored shape
@@ -580,9 +595,20 @@ def build_baseline_targets(fund_breakdowns: dict, *,
         block = (fund_breakdowns or {}).get(facet) or {}
         per_level: dict[str, dict[str, float]] = {}
         tiny = 0
-        rescaled: list[str] = []
         geared: dict[str, float] = {}
-        for level in (FACET_LEVELS.get(facet) or (facet,)):
+        # FACET_LEVELS is finest-first, so "from this level up" is a
+        # slice starting at it. One rule for all four facets; currency
+        # has one level, so its only choice is the whole facet.
+        levels = tuple(FACET_LEVELS.get(facet) or (facet,))
+        start = (finest_levels or {}).get(facet)
+        if start in levels and levels.index(start) > 0:
+            skipped = levels[:levels.index(start)]
+            levels = levels[levels.index(start):]
+            notes.append(
+                f"{facet}: built from {start.replace('_', ' ')} up — "
+                f"{', '.join(s.replace('_', ' ') for s in skipped)} "
+                f"left untargeted.")
+        for level in levels:
             items = [it for it in facet_items(block, level)
                      if isinstance(it, dict)]
 
@@ -592,38 +618,25 @@ def build_baseline_targets(fund_breakdowns: dict, *,
             # is a real fund in this cache rather than a unit bug. The
             # number is data and must never be read as an error.
             #
-            # It is still divided out HERE, for one narrow reason: the
-            # portfolio side has already normalised it away.
-            # rollup_portfolio_fundlevel computes each item's weight as
-            # `val / bucket_total` on purpose — "the card should still
-            # read as a 100% distribution" — so the ACTUAL that a target
-            # is measured against is always a 100% distribution. A 207%
-            # target could therefore never be met by anything, and the
-            # optimiser would spend every run failing it. A target and its
-            # actual have to live in the same space, and this is what puts
-            # them there. The note says so in the fund's own terms, naming
-            # the gearing, rather than calling the card wrong.
-            #
-            # One-directional, and the two directions are different
-            # phenomena rather than mirror images. A level summing to LESS
-            # than 1 is the ordinary case — `unknown` was dropped and the
-            # shortfall is real unclaimed room — so scaling it up would
-            # dress a half-classified fund as a fully classified one.
+            # Copied as it is since v0.129.0. Until then it was divided
+            # down to 100% here, because the portfolio rollup normalised
+            # every card to a 100% distribution and a 207% target could
+            # never have been met. That rollup now measures gross
+            # exposure against the portfolio's value — the optimiser
+            # always did — so a target and its actual live in the same
+            # space without anything being divided out. Only the note
+            # remains, so a set committing past 100% says why.
             #
             # Threshold at 1% over rather than at any overshoot: a card
-            # summing to 1.003 is rounding, the inflation it causes is
-            # under the optimiser's own tolerance floor, and saying
-            # "geared" about a fund that is not would be worse than the
-            # 0.3pp it corrected.
+            # summing to 1.003 is rounding, and calling a fund "geared"
+            # that is not would be worse than saying nothing.
             total = 0.0
             for it in items:
                 try:
                     total += float(it.get("weight") or 0.0)
                 except (TypeError, ValueError):
                     pass
-            scale = (1.0 / total) if total > 1.01 else 1.0
-            if scale != 1.0:
-                rescaled.append(level)
+            if total > 1.01:
                 geared[level] = total
 
             lvl: dict[str, float] = {}
@@ -632,7 +645,7 @@ def build_baseline_targets(fund_breakdowns: dict, *,
                 if not key or key in UNTARGETABLE_BUCKETS:
                     continue
                 try:
-                    pct = float(it.get("weight") or 0.0) * scale * 100.0
+                    pct = float(it.get("weight") or 0.0) * 100.0
                 except (TypeError, ValueError):
                     continue
                 if pct <= 0:
@@ -646,14 +659,14 @@ def build_baseline_targets(fund_breakdowns: dict, *,
                 lvl[key] = round(pct, 4)
             if lvl:
                 per_level[level] = lvl
-        if rescaled:
-            gross = ", ".join(f"{lv} {geared[lv] * 100:.0f}%" for lv in rescaled)
+        if geared:
+            gross = ", ".join(f"{lv.replace('_', ' ')} {t * 100:.0f}%"
+                              for lv, t in geared.items())
             notes.append(
                 f"{facet}: this fund's exposure adds up to more than its net "
-                f"assets ({gross}) — it is geared. Targets here are written "
-                f"as shares of that exposure, because the portfolio X-ray "
-                f"normalises every fund's card to 100% too, so a target "
-                f"above 100% could never be met.")
+                f"assets ({gross}) — it is geared. Its targets are copied as "
+                f"they are, so they commit more than 100%; only a portfolio "
+                f"holding geared funds can meet them.")
         if per_level:
             # The same chain rule every stored set obeys (v0.125.0). A
             # baseline reads each level off the card independently, so a

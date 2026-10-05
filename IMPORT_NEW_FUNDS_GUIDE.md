@@ -1,6 +1,6 @@
 # IMPORT_NEW_FUNDS_GUIDE.md — importing new funds and ETFs
 
-*Current as of v0.127.3. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.130.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between typing an ISIN into an empty box and having a fully
@@ -82,7 +82,7 @@ version you are looking at:
 
 ```
 =======================================================
-  PorxPy  v0.127.3 (built 2026-10-04)
+  PorxPy  v0.130.0 (built 2026-10-05)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -114,7 +114,9 @@ without showing it; **Forget key** erases it. An `ANTHROPIC_API_KEY`
 environment variable is still honoured when Settings holds no key, and
 a key in Settings takes precedence over it.
 
-Everything else works offline once fetched. The only outbound traffic is
+Everything else works offline once fetched — past their refresh age,
+cached data are shown as they are and marked stale rather than
+refreshed to nothing. The only outbound traffic is
 Yahoo Finance, OpenFIGI for ISIN lookups, and — if you ask for it —
 justETF and the Anthropic API.
 

@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.127.3. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.130.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -58,8 +58,9 @@ wrong.
 - A modern browser — Chrome, Firefox, Safari or Edge from the last few
   years.
 - Internet access for the first fetch of anything new. The pre-loaded
-  set is already fetched, so most of this guide works offline; the
-  optimiser needs FX rates if your funds and your base currency differ.
+  set is already fetched, so most of this guide works offline. Offline,
+  PorxPy shows the last prices and exchange rates it fetched and marks
+  them stale; nothing cached is lost.
 
 Dependencies are installed from `requirements.txt` in the next step:
 Flask and Flask-Cors for the server, `yfinance` and `requests` for the
@@ -134,7 +135,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.127.3 (built 2026-10-04)
+  PorxPy  v0.130.0 (built 2026-10-05)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -334,7 +335,11 @@ Leave it at 0 for a first run, or set aside a buffer if you want one.
 The quickest way to a coherent set is **Start from a fund → Set baseline
 targets**, at the top of the dialog. Pick a broad index fund and its own
 breakdown is read into every bucket of asset class, sector, country and
-currency. Nothing is written until you press Save.
+currency. **Build from**, beside it, sets per category the finest level
+copied — *Sector ↑* targets the sectors and super sectors and leaves sub
+sectors free, *Super class only* targets just equity, fixed income and
+so on. It starts at the finest level of each. Nothing is written until
+you press Save.
 
 This is worth doing even if you mean to change most of it, because of
 what an untargeted bucket means. Targets you do not set are not neutral

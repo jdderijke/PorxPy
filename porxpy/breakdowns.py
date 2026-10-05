@@ -1164,8 +1164,10 @@ def rollup_portfolio_fundlevel(enriched: list[dict],
 
     Each fund contributes ``value_base × facet_item_weight`` to every
     facet bucket, reading the fund's ``data.fund_breakdowns`` block (as
-    produced by :func:`build_fund_breakdowns`). Funds with an empty card
-    on a facet contribute nothing there.
+    produced by :func:`build_fund_breakdowns`). Whatever a fund's card
+    does not account for — an empty card, or one summing short of 100% —
+    is added to ``unknown``, so every fund counts with at least its whole
+    value (v0.129.0).
 
     This is a pure function: it reads only the ``enriched`` list and
     ``total_base``. It does no I/O.
@@ -1194,9 +1196,14 @@ def rollup_portfolio_fundlevel(enriched: list[dict],
               },
             }
 
-        Each item ``weight`` is a fraction of the COVERED portfolio
-        value for that facet; ``value`` is base-currency money. Items
-        are sorted by weight descending.
+        Each item ``weight`` is a fraction of ``total_base`` — the
+        portfolio's value, not the covered part of it — and ``value`` is
+        base-currency money. Until v0.129.0 the weights were divided by
+        the summed bucket money instead, so every card read as a 100%
+        distribution; that hid a geared fund's extra exposure and
+        stretched the funds with data over those without. A level can
+        therefore now sum past 1.0, and that is a fact about the funds
+        held. Items are sorted by weight descending.
 
         v0.28.0: six facets, not four. The last two are the metadata
         facets — one-hot per fund rather than distributions, and read
@@ -1249,19 +1256,38 @@ def rollup_portfolio_fundlevel(enriched: list[dict],
                     # that cannot reach the level contributes unknown
                     # there and its real answer at the levels it can.
                     items = facet_items(fb.get(facet) or {}, level)
-                if not items:
-                    continue
+                # Every fund accounts for AT LEAST its whole value at every
+                # level (v0.129.0). Whatever its card does not say — no card
+                # at all, or one summing short of 100% — lands in `unknown`
+                # as explicit money. Until then a fund with no card simply
+                # contributed nothing and the division below by the bucket
+                # total stretched the funds that DID answer over its share,
+                # so a quarter of the money with no country data made the
+                # other three quarters read as the whole portfolio.
+                #
+                # Only a SHORTFALL is filled. A card summing past 100% is
+                # a fund exposed beyond its net assets — borrowing against
+                # its holdings, derivatives — which is real, so it is kept
+                # as it is rather than divided down.
                 unknown_w = 0.0
+                total_w   = 0.0
                 for it in items:
                     key = (it.get("key") or "").strip() or UNKNOWN_KEY
                     try:
                         w = float(it.get("weight") or 0.0)
                     except (TypeError, ValueError):
                         continue
+                    total_w += w
                     if key == UNKNOWN_KEY:
                         unknown_w += w
                     buckets[facet][level][key] = \
                         buckets[facet][level].get(key, 0.0) + fv * w
+                if total_w < 1.0:
+                    buckets[facet][level][UNKNOWN_KEY] = \
+                        buckets[facet][level].get(UNKNOWN_KEY, 0.0) \
+                        + fv * (1.0 - total_w)
+                if not items:
+                    continue
                 # Coverage measures the share of the portfolio this facet
                 # has been ANSWERED for, so only "unknown" counts against
                 # it. "n/a" is an answer — a cash sleeve has no sector and
@@ -1288,12 +1314,18 @@ def rollup_portfolio_fundlevel(enriched: list[dict],
             if covered <= 0:
                 per_level[level] = []
                 continue
-            # Normalise against the summed bucket money rather than
-            # `covered` directly — issuer fractions may not total 1.0
-            # per fund, and the card should still read as a 100%
-            # distribution.
-            bucket_total = sum(buckets[facet][level].values())
-            denom = bucket_total if bucket_total > 0 else covered
+            # A share of the portfolio's own value, NOT of the summed
+            # bucket money (v0.129.0). Dividing by the bucket total made
+            # every card a 100% distribution, which hid two real things:
+            # a geared fund's exposure above its net assets, and the
+            # money no card describes. The second is now explicit
+            # `unknown` (above); the first is simply left visible. It is
+            # also what the optimiser measures — weight × exposure over
+            # the fund side — so the Targets tab and the optimiser's Now
+            # column are one number by construction rather than a point
+            # apart whenever a geared fund is held.
+            denom = total_base if total_base > 0 else \
+                sum(buckets[facet][level].values()) or 1.0
             items = [{"key": k,
                       "weight": round(val / denom, 6),
                       "value":  round(val, 2)}

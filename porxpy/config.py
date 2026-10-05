@@ -470,6 +470,25 @@ FX_TTL_HOURS = 6
 # appends once a day, so refresh once per day is enough.
 FX_HIST_TTL_HOURS = 24
 
+# Offline detection (v0.130.0). A TTL says when data SHOULD be refreshed,
+# not that the old copy has become worthless — so before any refresh
+# that would replace cached data, utils.network_reachable() asks whether
+# there is a network to refresh from. Without it every extractor, which
+# swallows its own errors, came back empty offline and that emptiness
+# was saved over the good copy.
+#
+# Yahoo is the host probed because it is the one every refresh path
+# depends on; when it cannot be reached the other services (OpenFIGI,
+# justETF) are treated as unreachable too. That is a deliberate
+# approximation: the cost of being wrong is one skipped refresh, retried
+# on the next load. Any HTTP answer at all — a 404, a 429 — counts as
+# reachable; only a failure to connect counts as offline.
+NETWORK_PROBE_URL       = "https://query1.finance.yahoo.com/"
+NETWORK_PROBE_TIMEOUT_S = 3.0
+# Remembered this long, so a portfolio of 60 funds probes once, not 240
+# times. Short enough that reconnecting is noticed within a reload.
+NETWORK_PROBE_CACHE_S   = 30.0
+
 # ISIN→ticker resolutions are extremely stable (an ISIN's ticker on a given
 # exchange essentially never changes). Cache on disk for a long time to
 # avoid hammering OpenFIGI, which rate-limits aggressively.
@@ -1862,6 +1881,11 @@ FACTSHEET_STALE_DAYS: int = 183
 # Sources that can supply data, in the order a fresh fund tries them.
 FIELD_SOURCES: tuple[str, ...] = ("yahoo", "openfigi", "justetf",
                                   "factsheet", "user")
+# The sources an automatic refresh has to go out to the network for
+# (v0.130.0). Offline, a pin to one of these keeps its stored value
+# rather than being refreshed to nothing. `factsheet` reads a document
+# already on disk and `user` is never refetched, so neither is here.
+NETWORK_FIELD_SOURCES: frozenset[str] = frozenset({"yahoo", "openfigi", "justetf"})
 
 SOURCE_LABELS: dict[str, str] = {
     "yahoo":     "Yahoo",

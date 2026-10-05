@@ -1124,6 +1124,11 @@
     color:var(--text);border:1px solid var(--border);border-radius:4px;}
   .tge-baseline .lbl{font-family:var(--mono);font-size:.68rem;
     color:var(--text);}
+  .tge-baselevels{display:flex;gap:.3rem .8rem;flex-wrap:wrap;width:100%;
+    align-items:center;font-family:var(--mono);font-size:.66rem;
+    color:var(--muted);}
+  .tge-baselevels label{display:inline-flex;gap:.3rem;align-items:center;}
+  .tge-baselevels select{flex:0 0 auto;min-width:0;}
   .tge-basenotes{font-family:var(--mono);font-size:.62rem;color:var(--muted);
     line-height:1.5;margin:.35rem 0 0;width:100%;}
   .tge-add{display:flex;gap:.4rem;align-items:center;margin-top:.4rem;}
@@ -1195,6 +1200,8 @@
   .src.cache{background:rgba(52,211,153,.12);color:var(--green);}
   .src.live{background:rgba(79,142,247,.14);color:var(--accent);}
   .src.incremental{background:rgba(251,191,36,.12);color:var(--amber);}
+  .src.stale{background:rgba(248,113,113,.12);color:var(--red);}
+  .pstale{display:block;margin-top:.25rem;color:var(--amber);font-size:.72rem;}
   /* Sector source badge: yahoo metadata vs look-through rollup */
   .src.yahoo-meta{background:rgba(251,191,36,.12);color:var(--amber);}
   .src.look-through{background:rgba(123,97,255,.16);color:var(--accent2);}
@@ -3554,7 +3561,9 @@
           <li><b>Unclaimed room is a blank cheque.</b> Target technology 30%
             and nothing else, and 70% financial services satisfies it
             exactly. <b>Set baseline targets</b> copies a broad fund's own
-            breakdown into every bucket, so a tilt is one slider.</li>
+            breakdown into every bucket, so a tilt is one slider.
+            <i>Build from</i> picks, per category, the finest level it
+            copies; anything finer stays untargeted.</li>
           <li><b>When I change a bucket</b> decides what else moves.
             <i>Others make room</i>: its siblings give or take, the
             unclaimed remainder first. <i>Others stay put</i>: nothing else
@@ -3605,6 +3614,9 @@
                   onclick="applyTgBaseline()">Set baseline targets</button>
           <button class="btn btn-s" id="tgUndoBtn" onclick="tgUndoStep()"
                   title="Step back through this session's edits">Undo</button>
+          <!-- Build from which level (v0.128.0): one choice per exposure
+               facet, filled by tgFillBaselineLevels. -->
+          <div class="tge-baselevels" id="tgBaselineLevels"></div>
           <div class="tge-basenotes" id="tgBaselineNotes"></div>
         </div>
       </div>
@@ -8635,6 +8647,16 @@ function setSrcBadge(elId, meta){
   } else if (src === 'live'){
     el.textContent = 'LIVE';
     el.className = 'src live';
+  } else if (src === 'stale'){
+    // v0.130.0: past its refresh age, and the refresh could not reach the
+    // network, so the cached copy is shown as it was rather than replaced
+    // with nothing. The age is the real one — the timestamp is not bumped.
+    const age = meta.age_days != null ? `${meta.age_days.toFixed(1)}d` : '';
+    el.textContent = `STALE${age?' · '+age:''}`;
+    el.title       = `Could not refresh (offline) — showing the copy fetched `
+                   + `${meta.fetched_at ? new Date(meta.fetched_at).toLocaleString() : 'earlier'}. `
+                   + `It is retried on the next load.`;
+    el.className   = 'src stale';
   } else if (src === 'incremental'){
     // Incremental: cache + small top-up. Surface how many rows were added
     // when the backend tells us, otherwise just say "INCR".
@@ -19813,6 +19835,20 @@ function renderPortfolioHeader(view){
     }
     html += `<span class="pvalue">Total value: ${fmtMoney(view.total_value_base, cur)}</span>`;
   }
+  // v0.130.0: funds valued from data that could not be refreshed. Offline,
+  // every refresh keeps its cached copy instead of wiping it, so the
+  // numbers above stay usable — but a value built on last week's prices
+  // must say so, here where the value is.
+  const stale = view.stale_data || [];
+  if (stale.length){
+    const oldest = Math.max(...stale.map(s => s.age_days || 0));
+    const detail = stale.map(s => `${s.ticker}: ${s.what.join(', ')}`
+                     + (s.age_days != null ? ` (${s.age_days}d old)` : '')).join('\n');
+    html += `<span class="pstale" title="${escapeAttr(detail)}">⚠ Could not refresh — `
+          + `${stale.length} fund${stale.length===1?'':'s'} shown from cached data`
+          + `${oldest > 0 ? `, oldest ${oldest.toFixed(1)} days` : ''}. Offline? `
+          + `It is retried on the next load.</span>`;
+  }
   document.getElementById('pSub').innerHTML = html;
 }
 
@@ -20706,8 +20742,6 @@ function _tgTabTree(view, facet){
 function _tgTabRest(view, facet, owner){
   const block = (((view.target_deviations || {}).facets || {})[facet]) || {};
   const kids  = owner.children;
-  const got   = Math.max(0, (owner.isRoot ? 1 : (owner.got || 0))
-                            - kids.reduce((a, c) => a + (c.got || 0), 0));
   const pathOf = tgPathOf(facet);
   const levels = [...new Set(kids.map(c => c.level))];
   const items  = [];
@@ -20723,6 +20757,14 @@ function _tgTabRest(view, facet, owner){
     }
   }
   items.sort((a, b) => b.actual - a.actual);
+  // At the top the rest is the untargeted buckets themselves, summed —
+  // not "1 − what the targets hold". The portfolio's exposure stopped
+  // being a 100% distribution in v0.129.0 (a geared fund adds to it), so
+  // 1 − Σ would understate the rest by exactly the gearing. Inside a
+  // bucket the parent's own figure is still the right whole.
+  const got = owner.isRoot
+    ? items.reduce((a, it) => a + (it.actual || 0), 0)
+    : Math.max(0, (owner.got || 0) - kids.reduce((a, c) => a + (c.got || 0), 0));
   const SHOW = 4;
   const detail = items.slice(0, SHOW)
     .map(it => `${tgKeyLabel(facet, it.key)} ${(it.actual * 100).toFixed(1)}%`)
@@ -20996,6 +21038,7 @@ async function openTargetsEditor(){
   await Promise.all(_TG_ALL_FACETS.map(_tgFetchCanonical));
   tgCaptureRef();
   tgFillBaselineFunds();
+  tgFillBaselineLevels();
   _renderTgEditorBody();
 }
 
@@ -21961,6 +22004,53 @@ async function tgFillBaselineFunds(){
       escapeHtml((r.name || r.ticker) + '  ·  ' + r.ticker)}</option>`).join('');
 }
 
+// Build-from level per exposure facet (v0.128.0). A broad fund's
+// sub-sector or country split pins a design far tighter than "market
+// weight per sector" means to, so the user picks the finest level to
+// copy; it and every coarser level are written, finer ones are left
+// untargeted. All four facets get the same control from one loop —
+// currency included, though its single level leaves one choice —
+// so no facet reads as forgotten. The choice is a per-viewer
+// convenience, hence localStorage; the default is the finest level,
+// which is what a baseline did before the choice existed.
+const _TG_BASELINE_FACETS = (_TG_GROUPS.find(g => g.key === 'exposure') || {}).facets || [];
+let _tgBaselineLevels = (() => {
+  try { return JSON.parse(localStorage.getItem('porxpy.tgBaselineLevels') || '{}') || {}; }
+  catch(e){ return {}; }
+})();
+
+function tgFillBaselineLevels(){
+  const host = document.getElementById('tgBaselineLevels');
+  if (!host) return;
+  host.innerHTML = `<span>Build from:</span>` + _TG_BASELINE_FACETS.map(f => {
+    const levels = tgLevelsOf(f);           // finest first
+    const cur = levels.includes(_tgBaselineLevels[f]) ? _tgBaselineLevels[f] : levels[0];
+    return `<label title="Copy ${escapeAttr(facetLabel(f).toLowerCase())} targets from this level up; finer levels are left untargeted">${
+      escapeHtml(facetLabel(f))}
+      <select data-facet="${escapeAttr(f)}" onchange="setTgBaselineLevel(this.dataset.facet, this.value)">${
+        levels.map(l => `<option value="${escapeAttr(l)}"${l === cur ? ' selected' : ''}>${
+          escapeHtml(LEVEL_LABELS_LONG[l] || l)}${l === levels[levels.length - 1] && levels.length > 1 ? ' only' : ' ↑'}</option>`).join('')}
+      </select></label>`;
+  }).join('');
+}
+
+function setTgBaselineLevel(facet, level){
+  _tgBaselineLevels[facet] = level;
+  try { localStorage.setItem('porxpy.tgBaselineLevels', JSON.stringify(_tgBaselineLevels)); }
+  catch(e){}
+}
+
+// The levels to send: only those the current vocabulary actually has,
+// so a stale stored choice can never earn a 400 from the route.
+function tgBaselineLevelsPayload(){
+  const out = {};
+  for (const f of _TG_BASELINE_FACETS){
+    const levels = tgLevelsOf(f);
+    if (levels.includes(_tgBaselineLevels[f])) out[f] = _tgBaselineLevels[f];
+  }
+  return out;
+}
+
 async function applyTgBaseline(){
   const sel = document.getElementById('tgBaselineFund');
   const btn = document.getElementById('tgBaselineBtn');
@@ -21983,7 +22073,7 @@ async function applyTgBaseline(){
     const r = await fetch(
       `${API}/portfolios/${encodeURIComponent(activePid)}/targets/baseline`,
       {method: 'POST', headers: {'Content-Type': 'application/json'},
-       body: JSON.stringify({ticker})});
+       body: JSON.stringify({ticker, levels: tgBaselineLevelsPayload()})});
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
 

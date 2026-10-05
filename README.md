@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.127.3. This is the fullest architecture write-up;
+*Current as of v0.130.0. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -171,7 +171,9 @@ It exists because a sparse target set cannot say *and the rest at market
 weight*: target technology at 30% alone and the optimiser is only asked
 for "30% technology, 70% not-technology", which 70% financial services
 satisfies exactly. Starting from a broad fund makes market weight the
-default and a tilt one slider. **Pin** a row to stop it moving when a
+default and a tilt one slider. **Build from** chooses, per category,
+the finest level copied (say sector rather than sub sector); coarser
+levels always come with it. **Pin** a row to stop it moving when a
 sibling or its parent does.
 
 You set target allocations per facet (e.g. "40% North America, 25%
@@ -777,7 +779,12 @@ A portfolio X-ray goes through `/api/portfolios/<pid>/view` and is
 much the same, but adds a final aggregation pass in `breakdowns.py`
 that weighs every fund's facet breakdown by its allocation in the
 portfolio — once per level, since a fund contributes to each level
-independently.
+independently. Each bucket is a share of the portfolio's value, not a
+re-scaled 100% distribution: whatever a fund's card does not describe
+is counted as `unknown`, and a geared fund that reports more than 100%
+of its net assets is counted in full, so a level can sum past 100%
+(v0.129.0). That is the same measure the optimiser uses, so the Targets
+tab and the optimiser's **Now** column agree.
 
 ### External services
 
@@ -797,6 +804,17 @@ are the exception: they are
 never expired on a clock, because a fund's holdings only change when you
 ask for them — "Reload fund data" on the fund page, or "Refresh all" on
 the portfolio.
+
+**Offline, a TTL never empties the cache** (v0.130.0). Before any refresh
+that would replace cached data, PorxPy checks that Yahoo can be reached.
+If it cannot, the cached copy is served as it is — prices, profile,
+sectors, asset allocation, asset class, the Yahoo top-10 and pinned
+fields — nothing is written, and the timestamp keeps its real age so the
+next load tries again. Exchange rates fall back to the last rate held
+rather than to none, so foreign-currency funds stay valued. The fund
+page marks such data **STALE** with its age, and the portfolio header
+names the funds it was valued from cache. Before this, an expired entry
+refreshed offline was replaced by an empty one.
 
 ### TLS interception (antivirus and corporate proxies)
 
@@ -876,7 +894,8 @@ freshness indicators and the per-field re-source controls read.
 - A modern browser (Chrome, Firefox, Safari, Edge — anything from the
   last few years)
 - Internet access (for Yahoo Finance / OpenFIGI lookups; once cached,
-  PorxPy works offline)
+  PorxPy works offline, showing the last data it fetched and marking it
+  stale)
 
 Dependencies (see `requirements.txt`):
 
@@ -962,6 +981,6 @@ it does.
 
 ## Version
 
-Current release: **0.127.3** (2026-10-04)
+Current release: **0.130.0** (2026-10-05)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

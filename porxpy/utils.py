@@ -69,6 +69,9 @@ from porxpy.config import (
     holdings_source_of,
     ISIN_MAP_FP,
     ISIN_MAP_TTL_DAYS,
+    NETWORK_PROBE_CACHE_S,
+    NETWORK_PROBE_TIMEOUT_S,
+    NETWORK_PROBE_URL,
     OVERRIDES_FP,
     REPLICATION_METHODS,
     PENCE_CURRENCIES,
@@ -786,6 +789,87 @@ def cache_get(key: str, category: str, cache_cfg: dict
         "fetched_at": entry.get("fetched_at"),
         "age_days":   round(age, 3),
         "ttl_days":   ttl,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Offline: serve what is cached rather than overwrite it with nothing
+# ---------------------------------------------------------------------------
+_NET_PROBE: dict = {"ok": None, "at": 0.0}
+
+
+def network_reachable(*, fresh: bool = False) -> bool:
+    """Whether the data sources can be reached at all right now.
+
+    Why this exists
+    ---------------
+    Every Yahoo extractor swallows its own errors and returns an empty
+    result, which is right for "this fund has no sector data" and wrong
+    for "there is no network". The two were indistinguishable, so going
+    offline past a TTL wrote an empty profile, an empty sector list or an
+    empty price history over the good copy — and with a fresh timestamp,
+    so the emptiness outlived the outage. A refresh path asks this BEFORE
+    replacing anything it holds; see :data:`porxpy.config.NETWORK_PROBE_URL`
+    for what is probed and why one host stands for all of them.
+
+    Args:
+        fresh: Ignore the remembered answer and probe now. Used after a
+            fetch came back empty, which is when an outage that began
+            seconds ago would otherwise slip past the remembered "yes".
+
+    Returns:
+        True when the probe host answered anything at all.
+    """
+    import time as _t
+    import urllib.error
+    import urllib.request
+    now = _t.time()
+    if (not fresh and _NET_PROBE["ok"] is not None
+            and now - _NET_PROBE["at"] < NETWORK_PROBE_CACHE_S):
+        return bool(_NET_PROBE["ok"])
+    try:
+        req = urllib.request.Request(NETWORK_PROBE_URL, method="HEAD",
+                                     headers={"User-Agent": "Mozilla/5.0"})
+        urllib.request.urlopen(req, timeout=NETWORK_PROBE_TIMEOUT_S).close()
+        ok = True
+    except urllib.error.HTTPError:
+        ok = True          # it answered; the status is not our question
+    except Exception:
+        ok = False
+    if ok != _NET_PROBE["ok"]:
+        print(f"[Network] {'reachable' if ok else 'OFFLINE — serving cached data'}")
+    _NET_PROBE.update(ok=ok, at=now)
+    return ok
+
+
+def has_content(value: Any) -> bool:
+    """Whether a cached or fetched value carries anything worth keeping."""
+    if value is None:
+        return False
+    if isinstance(value, (list, dict, str)):
+        return bool(value)
+    return True
+
+
+def stale_cache_meta(entry: dict, ttl_days: Any = None) -> dict:
+    """The ``meta`` block for a cached value served past its TTL.
+
+    One shape for every path that falls back to its cache when offline,
+    so the badge that reads it does not care which path it was.
+    ``source`` is ``"stale"`` — a third answer beside ``cache`` and
+    ``live`` — and the timestamp is the one the data was FETCHED at,
+    never bumped: the age is the honest thing to show, and an unbumped
+    timestamp is what makes the next load try again.
+    """
+    age = age_days((entry or {}).get("fetched_at", ""))
+    return {
+        "source":        "stale",
+        "stale":         True,
+        "cache_enabled": True,
+        "fetched_at":    (entry or {}).get("fetched_at"),
+        "age_days":      round(age, 3) if age is not None else None,
+        "ttl_days":      ttl_days,
+        "reason":        "offline — could not refresh",
     }
 
 
@@ -2341,6 +2425,11 @@ def fx_rate(from_cur: str, to_cur: str) -> tuple[float | None, str]:
         age = age_days(entry.get("fetched_at", ""))
         if age is not None and age <= (FX_TTL_HOURS / 24.0):
             return entry.get("value"), f"cache (age {age*24:.1f}h)"
+        # Offline: skip the two live attempts below, which fail slowly,
+        # once per fund, and go straight to the held rate at the end.
+        if entry.get("value") and not network_reachable():
+            when = f"{age * 24:.0f}h old" if age is not None else "age unknown"
+            return entry.get("value"), f"stale cache ({when}) — offline"
 
     # Live lookup via Yahoo's FX ticker (e.g. EURUSD=X)
     sym = f"{from_cur}{to_cur}=X"
@@ -2368,6 +2457,17 @@ def fx_rate(from_cur: str, to_cur: str) -> tuple[float | None, str]:
                 return rate, f"live via inverse ({inv_sym})"
     except Exception as exc:
         print(f"[FX] {inv_sym} error: {exc}")
+
+    # Past its TTL and nothing live (v0.130.0): the last rate held beats
+    # none. Without this, six hours offline left every fund and cash pot
+    # in a foreign currency unvalued — the most visible failure of all —
+    # even though a rate a day old is off by a fraction of a percent. The
+    # note starts with "stale" so a caller can tell, and the cache is not
+    # rewritten, so the rate is retried on every call until one answers.
+    if entry and entry.get("value"):
+        age = age_days(entry.get("fetched_at", ""))
+        when = f"{age * 24:.0f}h old" if age is not None else "age unknown"
+        return entry.get("value"), f"stale cache ({when}) — could not refresh"
 
     return None, f"no rate for {from_cur}→{to_cur}"
 
@@ -2450,6 +2550,8 @@ def fx_history(from_cur: str, to_cur: str) -> dict[str, float]:
             val = entry.get("value") or {}
             if val:
                 return val
+        if entry.get("value") and not network_reachable():
+            return entry.get("value")
 
     def _fetch(sym: str) -> dict[str, float]:
         """Pull a Yahoo FX series and convert it into a date→rate dict."""
@@ -2482,7 +2584,11 @@ def fx_history(from_cur: str, to_cur: str) -> dict[str, float]:
     if series:
         blob["series"] = {"fetched_at": now_iso(), "value": series}
         cache_write(pair_key, "_fx", blob)
-    return series
+        return series
+    # Nothing live: serve the series held, however old (v0.130.0) — the
+    # same rule as fx_rate. Missing only its newest days, it still values
+    # every earlier point of the chart correctly.
+    return (entry or {}).get("value") or {}
 
 
 # ---------------------------------------------------------------------------

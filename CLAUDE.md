@@ -156,6 +156,13 @@ Concretely, before finishing a change, sweep the parallel set it belongs to:
   work when there is no API key or the Settings toggle is off. Both are
   ordinary states, not errors: gate on `ai_unavailable()` and report a SKIP
   with the fix, never a failure that aborts the operation around it.
+- Add or change anything that **refreshes cached data from the network**
+  → ask `utils.network_reachable()` before replacing what is held, and
+  serve the held copy with `utils.stale_cache_meta` when it answers no.
+  Extractors swallow their errors and return empty, so an offline
+  refresh is indistinguishable from "this fund has no data" by its
+  result alone; until v0.130.0 every path wrote that emptiness over the
+  good copy. Never bump a timestamp on a refresh that did not happen.
 
 Naming, so a sweep looks in the right place: **X-ray** is the Portfolio
 sub-tab holding the four breakdown cards (`pSubXray`) and has no table of its

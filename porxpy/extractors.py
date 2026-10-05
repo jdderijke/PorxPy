@@ -3369,9 +3369,26 @@ def get_category(yf_sym: str, isin: str, category: str, cache_cfg: dict,
         if cached is not None:
             return cached, {"source": "cache", "cache_enabled": True, **meta}
 
+    # Offline (v0.130.0): keep what is held rather than refresh it into
+    # nothing. Applies to a forced Reload too — "refetch now" cannot be
+    # honoured without a network, and wiping the cache would be the
+    # opposite of what was asked. Asked before the fetch because an
+    # offline fetch is also slow (seconds per category, per fund), and
+    # again after an empty one in case the outage began in between.
+    from porxpy.utils import (has_content, network_reachable,
+                              stale_cache_meta)
+    held = (_cache_read(key, category).get(category) or {}) if enabled else {}
+    have_held = has_content(held.get("value"))
+    if have_held and not network_reachable():
+        print(f"[Offline] {yf_sym}/{category}: serving cached copy")
+        return held.get("value"), stale_cache_meta(held, cat_cfg.get("ttl_days"))
+
     t0 = time.time()
     value = extractor()
     print(f"[Live] {yf_sym}/{category} in {time.time() - t0:.2f}s")
+    if have_held and not has_content(value) and not network_reachable(fresh=True):
+        print(f"[Offline] {yf_sym}/{category}: fetch came back empty; kept cached copy")
+        return held.get("value"), stale_cache_meta(held, cat_cfg.get("ttl_days"))
 
     # Decide whether to persist. Write if the caller explicitly
     # committed, if this entry already exists on disk (refresh of an
@@ -3498,11 +3515,29 @@ def get_price_history_cached(yf_sym: str, ticker: yf.Ticker,
     elif age > PRICE_HISTORY_FULL_REFRESH_DAYS:
         full_refresh_reason = f"cache age {age:.1f}d > {PRICE_HISTORY_FULL_REFRESH_DAYS}d threshold"
 
+    # Offline (v0.130.0). Any path below that would touch the network is
+    # skipped while there is cached history to show: the last known close
+    # is a far better answer than none, which is what an offline full
+    # refresh used to write over it — dropping the fund out of every
+    # valuation. Nothing is written, so the timestamp keeps the real age
+    # and the next load tries again. The same rule as get_category.
+    from porxpy.utils import network_reachable, stale_cache_meta
+    needs_network = bool(full_refresh_reason) or age is None or age > ttl
+    if cached and needs_network and not network_reachable():
+        print(f"[Offline] {yf_sym} price_history: serving cached copy")
+        rows = list(cached) if isinstance(cached, list) else []
+        return rows, {**stale_cache_meta(entry, ttl),
+                      "row_count": len(rows), "mode": "offline"}
+
     if full_refresh_reason:
         print(f"[Price/cache] {yf_sym} full refresh ({full_refresh_reason})")
         t0 = time.time()
         value = extract_price_history(ticker)
         print(f"[Live] {yf_sym} price_history in {time.time() - t0:.2f}s ({len(value)} rows)")
+        if cached and not value and not network_reachable(fresh=True):
+            rows = list(cached) if isinstance(cached, list) else []
+            return rows, {**stale_cache_meta(entry, ttl),
+                          "row_count": len(rows), "mode": "offline"}
         if should_write:
             meta  = cache_put(yf_sym, "price_history", value)
         else:
@@ -3594,6 +3629,15 @@ def get_price_history_cached(yf_sym: str, ticker: yf.Ticker,
     new_rows = _fetch_history_since(ticker, start_str)
     print(f"[Live] {yf_sym} price_history incremental in {time.time() - t0:.2f}s "
           f"({len(new_rows)} new rows)")
+    # No new bars is normal over a weekend, so emptiness alone proves
+    # nothing; only a failed probe turns it into "offline", and then the
+    # timestamp must NOT be bumped below — that bump is what used to make
+    # days-old prices read as fetched a moment ago. The REMEMBERED probe,
+    # not a fresh one: an empty top-up is every fund on every weekend, and
+    # a fresh probe each would add seconds to a portfolio load.
+    if not new_rows and not network_reachable():
+        return base_rows, {**stale_cache_meta(entry, ttl),
+                           "row_count": len(base_rows), "mode": "offline"}
 
     # De-dup defensively in case Yahoo's start= was inclusive of our last_date
     seen = {r["date"] for r in real_rows}
@@ -3894,6 +3938,16 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
     # endpoint, which sets the flag.
     yahoo_edited = bool((holdings_store.get("yahoo") or {}).get("user_edited"))
     refetch = (not have_cached) or (force_refresh and not yahoo_edited)
+    # Offline (v0.130.0): a Reload cannot reach Yahoo, and refetching
+    # would replace the stored top-10 with the empty list an unreachable
+    # endpoint returns. Keep the slot; the same rule as every other
+    # refresh path. A fund with no Yahoo slot yet still tries — there is
+    # nothing to lose, and an empty answer is what it would store anyway.
+    from porxpy.utils import network_reachable as _net_ok
+    holdings_offline = refetch and have_cached and not _net_ok()
+    if holdings_offline:
+        print(f"[Offline] {yf_sym} holdings: kept the stored Yahoo top-10")
+        refetch = False
 
     # Enrichment metadata surfaced to the UI. ``applied`` reflects the
     # blob actually in effect after this block, whatever its origin.
@@ -3927,6 +3981,9 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
             "age_days":   round(hold_age, 3) if hold_age is not None else None,
             "ttl_days":   None,   # manual_refresh_only — no expiry
         }
+        if holdings_offline:
+            hmeta.update(source="stale", stale=True,
+                         reason="offline — could not refresh")
     else:
         # Refetch from Yahoo: pull the top-10 and shape it into the
         # unified schema. With no threshold gate, every top-10 we get
@@ -4018,7 +4075,18 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
         # or the fund being saved at all.
         from porxpy.utils import (cache_has_category as _has_cat2,
                                   listing_is_saved as _saved2)
-        if commit or _has_cat2(isin, "holdings") or _saved2(yf_sym):
+        # The outage can also begin between the probe above and the fetch;
+        # an empty answer over a stored top-10 is then checked once more.
+        prev_rows = (holdings_store.get("yahoo") or {}).get("rows") or []
+        lost_to_outage = (not rows and prev_rows
+                          and not _net_ok(fresh=True))
+        if lost_to_outage:
+            print(f"[Offline] {yf_sym} holdings: fetch came back empty; kept the stored top-10")
+            holdings_blob = holdings_store["yahoo"]
+            blob_source   = holdings_blob.get("source") or blob_source
+            hmeta = {"source": "stale", "stale": True, "ttl_days": None,
+                     "reason": "offline — could not refresh"}
+        elif commit or _has_cat2(isin, "holdings") or _saved2(yf_sym):
             meta = holdings_put(isin, holdings_blob, "yahoo",
                                 store=holdings_store)
             hmeta = {

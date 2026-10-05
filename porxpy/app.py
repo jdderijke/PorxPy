@@ -2038,7 +2038,10 @@ def create_app() -> Flask:
         Body (JSON):
             ``{"ticker": "IWDA.AS"}`` — the fund to read. ``min_pct``
             optionally overrides
-            :data:`~porxpy.config.BASELINE_MIN_TARGET_PCT`.
+            :data:`~porxpy.config.BASELINE_MIN_TARGET_PCT`. ``levels``
+            optionally maps a facet to the finest level to build from,
+            e.g. ``{"sector": "sector"}`` to skip sub sectors (v0.128.0);
+            an omitted facet reads from its finest level.
 
         Returns:
             ``{ticker, isin, name, targets, notes}`` — ``targets`` in the
@@ -2067,6 +2070,20 @@ def create_app() -> Flask:
         except (TypeError, ValueError):
             min_pct = BASELINE_MIN_TARGET_PCT
 
+        # Rejected rather than ignored: a level the facet does not have
+        # is a client bug, and silently building from the finest level
+        # would hand back the very granularity the user asked to skip.
+        finest_levels: dict[str, str] = {}
+        levels_in = body.get("levels")
+        if levels_in is not None and not isinstance(levels_in, dict):
+            return jsonify({"error": "levels must be an object"}), 400
+        for facet, level in (levels_in or {}).items():
+            if facet not in BREAKDOWN_FACETS:
+                return jsonify({"error": f"not a breakdown facet: {facet!r}"}), 400
+            if level not in (FACET_LEVELS.get(facet) or (facet,)):
+                return jsonify({"error": f"{facet} has no level {level!r}"}), 400
+            finest_levels[facet] = level
+
         rows      = holdings_get(isin)[0].get("rows") or []
         sect_blob = cache_read(isin, "sectors")
         fund_breakdowns = build_fund_breakdowns(
@@ -2078,7 +2095,8 @@ def create_app() -> Flask:
             _bd_completed(isin))
 
         targets, notes = build_baseline_targets(fund_breakdowns,
-                                                min_pct=min_pct)
+                                                min_pct=min_pct,
+                                                finest_levels=finest_levels)
         if not targets:
             notes.insert(0, "This fund has no breakdown data at all yet — "
                             "nothing could be read from it.")
@@ -2513,6 +2531,44 @@ def create_app() -> Flask:
     # view failed to load. See the v0.81.0 CHANGELOG entry.
     VIEW_OMITTED_FUND_DATA_KEYS = ("price_history", "holdings_rows")
 
+    def _stale_data_report(enriched: list[dict]) -> list[dict]:
+        """Which funds are being shown from a cache that could not refresh.
+
+        The portfolio-level counterpart of the fund page's STALE badge
+        (v0.130.0). Offline, every refresh path serves its cached copy
+        rather than overwrite it — but a portfolio valued on week-old
+        prices without saying so would be the same silent failure in a
+        new place, so the view names each fund and what was stale.
+
+        Read off each fund's per-category ``meta`` (``source == "stale"``)
+        and its valuation's ``fx_note`` (``fx_rate`` prefixes a held rate
+        with "stale"). Cash positions are not listed: they are valued
+        from ``fx_history``'s newest point, which carries no note, and
+        a deposit moves with the rate alone — the funds beside it say
+        the same thing whenever it matters.
+
+        Returns:
+            ``[{ticker, what: [...], age_days}]`` — ``age_days`` is the
+            oldest stale item's age, ``None`` when unknown.
+        """
+        out: list[dict] = []
+        for e in enriched:
+            if e.get("is_cash"):
+                continue
+            meta = ((e.get("data") or {}).get("meta") or {})
+            what, ages = [], []
+            for cat, m in meta.items():
+                if isinstance(m, dict) and m.get("source") == "stale":
+                    what.append(cat.replace("_", " "))
+                    if m.get("age_days") is not None:
+                        ages.append(float(m["age_days"]))
+            if str((e.get("valuation") or {}).get("fx_note") or "").startswith("stale"):
+                what.append("FX rate")
+            if what:
+                out.append({"ticker": e.get("ticker"), "what": what,
+                            "age_days": round(max(ages), 1) if ages else None})
+        return out
+
     def _slim_fund_data_for_view(enriched: list[dict]) -> list[dict]:
         """Copy ``enriched`` with the /view-unused ``data`` keys removed.
 
@@ -2737,6 +2793,9 @@ def create_app() -> Flask:
             # computed from the full ``enriched`` before this point.
             "funds":                 _slim_fund_data_for_view(enriched),
             "unvalued_funds":        unvalued_funds,
+            # Funds shown from a cache that could not be refreshed —
+            # offline, normally. See _stale_data_report.
+            "stale_data":            _stale_data_report(enriched),
             # Fund/ETF-level breakdown cards — the six facets aggregated
             # from each fund's data.fund_breakdowns (issuer data + any
             # per-card holdings override), as levelled BLOCKS of the same
@@ -4845,7 +4904,8 @@ def create_app() -> Flask:
         Unpinned fields are not touched here either — they follow the
         ordinary profile cache, which has its own freshness rules.
         """
-        from porxpy.config import field_spec
+        from porxpy.config import NETWORK_FIELD_SOURCES, field_spec
+        from porxpy.utils import network_reachable
 
         isin = listing_identity_lookup_isin(ticker)
         if not isin:
@@ -4871,6 +4931,12 @@ def create_app() -> Flask:
                     skipped[field] = (f"{age:.0f}d old, limit {ttl}d"
                                       if age is not None else "no timestamp")
                     continue
+            # Offline (v0.130.0): the fetch below would answer None, and
+            # storing that would replace a good value with "unknown". The
+            # same keep-what-is-held rule as every cache refresh path.
+            if src in NETWORK_FIELD_SOURCES and not network_reachable():
+                skipped[field] = "offline — kept the stored value"
+                continue
             try:
                 value, note = fetch_field_from_source(ticker, isin, field, src)
             except (RuntimeError, ValueError) as exc:

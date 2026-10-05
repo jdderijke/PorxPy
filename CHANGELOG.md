@@ -3,6 +3,104 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.130.0] - 2026-10-05
+
+### Fixed - going offline emptied the cache instead of serving it
+
+Every Yahoo extractor swallows its own errors and returns an empty
+result. That is right for "this fund has no sector data" and wrong for
+"there is no network", and nothing told the two apart. So once an entry
+passed its refresh age while offline:
+
+- **Profile, sectors, asset allocation and asset class** were replaced by
+  the empty result, with a fresh timestamp — so they stayed empty after
+  the connection came back, until the next expiry or a Reload. An empty
+  profile loses the fund's name, TER and trading currency.
+- **Prices** between one and thirty days old were kept, but their
+  timestamp was bumped, so days-old prices read as just fetched. Past
+  thirty days an empty history was written over the cached one and the
+  fund dropped out of every valuation.
+- **Exchange rates** gave up after six hours: with no live rate there
+  was no rate, and every fund and cash pot in a foreign currency became
+  unvalued.
+- **A forced Reload** emptied the fund's Yahoo top-10 holdings the same way.
+
+Each refresh path now asks `utils.network_reachable()` first — one probe
+of Yahoo, remembered for 30 seconds, so a portfolio costs one check and
+an offline load takes seconds rather than minutes of failing calls. If
+Yahoo cannot be reached, the cached copy is served as it is, nothing is
+written, and the timestamp keeps its real age so the next load tries
+again. A fetch that comes back empty over cached data is checked once
+more, for an outage that began mid-load. Exchange rates and their
+history fall back to the last values held. Pinned fields sourced from
+Yahoo, OpenFIGI or justETF keep their stored value
+(`config.NETWORK_FIELD_SOURCES`).
+
+The fund page's source badge reads **STALE · 3.2d** for such data, and
+the portfolio view carries a `stale_data` list that the header turns
+into a one-line note naming how many funds were valued from cache.
+
+## [0.129.0] - 2026-10-05
+
+### Changed - portfolio exposure is no longer rescaled to 100%
+
+The Targets tab and the optimiser's **Now** column disagreed by about a
+point on a portfolio holding 0P0000I5UI.F (equity 90.6% against 91.7%).
+Both read the same cards; they differed in arithmetic. The portfolio
+rollup (`breakdowns.rollup_portfolio_fundlevel`) divided every bucket by
+the summed bucket money, so each card read as a 100% distribution, while
+the optimiser divides weight × exposure by the fund side. A fund whose
+card sums past 100% pulls the two apart, and that is not bad data: a
+fund that borrows against its holdings, or holds derivatives, really is
+exposed beyond its net assets.
+
+The rollup now measures every bucket as a share of the portfolio's
+value, the way the optimiser does, so the two screens agree by
+construction and a geared fund shows its full exposure on the X-ray and
+the Targets tab. A level can therefore sum past 100%.
+
+The old division also did a second, quieter thing: it stretched the
+funds that have a card over the funds that do not. If a quarter of the
+money had no country data, the other three quarters read as the whole
+portfolio. That money is now explicit — whatever a fund's card does not
+account for, an empty card or one summing short of 100%, is counted as
+`unknown`, visible on the card and in the Targets tab's untargeted
+summary. Coverage figures are unchanged.
+
+Two readers followed:
+
+- **Set baseline targets** stops dividing a geared fund down to 100%.
+  It did so only because the portfolio side was rescaled; now it copies
+  the card as it is and its note says the set commits more than 100%.
+- **The Targets tab's top "rest" row** sums the untargeted buckets
+  instead of taking 1 − the targeted ones, which understated it by
+  exactly the gearing.
+
+## [0.128.0] - 2026-10-05
+
+### Added - choose the level a baseline is built from
+
+**Set baseline targets** copied every level a fund's cards carry, so a
+broad index fund landed as some fifty sub-sector targets, a dozen
+countries and every sub class. That is far tighter than "market weight
+per sector" means, and the finer targets then had to be removed one
+branch at a time.
+
+The baseline row in the targets editor now carries **Build from**, one
+choice per exposure category: asset class (sub class / asset class /
+super class), sector (sub sector / sector / super sector), country
+(country / region / developed-emerging) and currency (its one level, so
+that category reads the same as the others). The chosen level and
+every coarser one are copied; anything finer stays untargeted, and the
+notes say which levels were skipped. The default is the finest level,
+so a baseline is unchanged until a choice is made, and the choice is
+remembered in the browser.
+
+`POST /api/portfolios/<pid>/targets/baseline` takes an optional
+`levels` map (`{facet: level}`) and rejects a level the facet does not
+have rather than quietly building from the finest one;
+`build_baseline_targets` takes the same map as `finest_levels`.
+
 ## [0.127.3] - 2026-10-04
 
 ### Fixed - the optimiser carried its last result over to another portfolio
