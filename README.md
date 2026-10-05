@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.130.0. This is the fullest architecture write-up;
+*Current as of v0.132.0. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -193,8 +193,9 @@ parent is held to at least the sum of its targeted children — that rule
 is enforced when you save, not discovered later as an unmeetable brief.
 
 One setting is not a target at all. **Cash held by me** is an amount, not
-a percentage, and it is reserved before anything is designed: the
-optimiser leaves exactly that much in your own accounts, selling
+a percentage — one per currency your cash accounts are held in — and it
+is reserved before anything is designed: the optimiser leaves exactly
+that much in your accounts in each currency, selling
 positions to raise it if you currently hold less and investing the
 difference if you hold more. Every percentage target is then a share of
 what remains — reserve 50,000 of 100,000 and "50% equity" means 25,000.
@@ -981,6 +982,6 @@ it does.
 
 ## Version
 
-Current release: **0.130.0** (2026-10-05)
+Current release: **0.132.0** (2026-10-05)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

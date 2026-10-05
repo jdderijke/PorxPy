@@ -1181,7 +1181,8 @@ FACET_NOT_APPLICABLE: dict[str, frozenset[str]] = {
 # "cash I hold myself" a percentage target the optimiser could satisfy
 # separately from a fund's own cash sleeve. It was removed in v0.90.0
 # when that target became an AMOUNT reserved off the top instead (see
-# `cash_reserve` on the portfolio). A reservation needs no facet: the
+# `cash_reserves` on the portfolio — one amount per currency of its cash
+# accounts since v0.132.0). A reservation needs no facet: the
 # reserved money is simply not in the optimiser's matrix, so no fund can
 # occupy it by construction, and the funds/cash/total figures on the
 # portfolio overview already state the split in money. The facet was the

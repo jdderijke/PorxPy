@@ -1201,6 +1201,8 @@
   .src.live{background:rgba(79,142,247,.14);color:var(--accent);}
   .src.incremental{background:rgba(251,191,36,.12);color:var(--amber);}
   .src.stale{background:rgba(248,113,113,.12);color:var(--red);}
+  #optTradesBody tr.opt-bad td{background:rgba(248,113,113,.14);}
+  #optTradesBody tr.opt-bad td:first-child{box-shadow:inset 3px 0 0 var(--red);}
   .pstale{display:block;margin-top:.25rem;color:var(--amber);font-size:.72rem;}
   /* Sector source badge: yahoo metadata vs look-through rollup */
   .src.yahoo-meta{background:rgba(251,191,36,.12);color:var(--amber);}
@@ -1457,8 +1459,13 @@
     margin:0 0 1rem;background:var(--surface2);}
   .tge-reserve-h{display:flex;align-items:baseline;justify-content:space-between;
     margin-bottom:6px;}
-  .tge-reserve-h label{font-family:var(--mono);font-size:.72rem;color:var(--text);
+  .tge-reserve-h .tge-reserve-title{font-family:var(--mono);font-size:.72rem;color:var(--text);
     text-transform:uppercase;letter-spacing:.06em;}
+  .tge-reserve-row{display:grid;grid-template-columns:3.2rem 1fr;gap:.2rem .5rem;
+    align-items:center;margin-bottom:6px;}
+  .tge-reserve-row label{font-family:var(--mono);font-size:.72rem;color:var(--text);}
+  .tge-reserve-row .tge-reserve-sub{grid-column:2;font-family:var(--mono);
+    font-size:.62rem;color:var(--muted);}
   .tge-reserve-cur{font-family:var(--mono);font-size:.66rem;color:var(--muted);}
   .tge-reserve input{width:100%;box-sizing:border-box;background:var(--surface);
     color:var(--text);border:1px solid var(--border2);border-radius:4px;
@@ -3590,15 +3597,15 @@
       <div class="tge-top">
         <!-- Cash reserve (v0.90.0). An AMOUNT, not a percentage: it is
              taken off the top, and everything below is a percentage of
-             what remains. -->
+             what remains. One field per currency your cash accounts are
+             held in (v0.132.0), each in that currency — filled by
+             renderTgReserveFields. -->
         <div class="tge-reserve">
           <div class="tge-reserve-h">
-            <label for="tgCashReserve"
-                   title="An amount, not a percentage, reserved before anything else: the optimiser leaves exactly this much in your own accounts, selling positions to raise it if you hold less.">Cash held by me</label>
-            <span class="tge-reserve-cur" id="tgReserveCur"></span>
+            <span class="tge-reserve-title"
+                  title="Amounts, not percentages, reserved before anything else — one per currency your cash accounts are held in. The optimiser leaves exactly this much in that currency's accounts, selling positions to raise it if you hold less.">Cash held by me</span>
           </div>
-          <input type="number" min="0" step="any" id="tgCashReserve"
-                 placeholder="0" oninput="onTgReserveChange()">
+          <div id="tgReserveFields"></div>
           <div class="tge-reserve-note" id="tgReserveNote"></div>
         </div>
 
@@ -6481,10 +6488,18 @@ function renderOptimizerResult(d){
 
   // Trades. Each row gets a cash-position dropdown — the user picks what
   // settles it, since a portfolio can hold several pots in different
-  // currencies and the right one is a judgement call.
-  const opts = optCashPositions.map(c =>
-    `<option value="${escapeAttr(c.id)}">${escapeHtml(c.name || c.id)} `
-    + `(${fmtP(c.amount, c.currency)})</option>`).join('');
+  // currencies and the right one is a judgement call. The DEFAULT comes
+  // from the server, planned for the whole batch (trades.plan_settlement):
+  // own-currency pot when its running balance covers the trade, otherwise
+  // the pot with the most left, sells first. Planned there rather than
+  // here because it needs every pot's value in base currency, and because
+  // one trade at a time it stranded the money (v0.131.1).
+  const optsFor = (t) => {
+    const pick = t.settle_cash_id;
+    return optCashPositions.map(c =>
+      `<option value="${escapeAttr(c.id)}"${c.id === pick ? ' selected' : ''}>`
+      + `${escapeHtml(c.name || c.id)} (${fmtP(c.amount, c.currency)})</option>`).join('');
+  };
 
   document.getElementById('optTradeCount').textContent =
     `${d.trades.length} trade${d.trades.length === 1 ? '' : 's'}`;
@@ -6492,15 +6507,21 @@ function renderOptimizerResult(d){
   document.getElementById('optTradesBody').innerHTML = d.trades.length
     ? d.trades.map((t, i) => {
         const buy = t.action === 'buy';
-        return `<tr>
+        // A split trade (v0.132.0) is one purchase paid from two accounts
+        // so each currency's reserve lands exactly; say so, or the same
+        // fund twice reads as a mistake.
+        const split = t.split
+          ? ` · <span title="Paid from two accounts so the cash you keep in each currency stays where it should">part ${escapeHtml(t.split)}</span>`
+          : '';
+        return `<tr data-idx="${i}">
           <td><span class="src ${buy ? 'buy' : 'sell'}">${buy ? 'BUY' : 'SELL'}</span></td>
-          <td>${escapeHtml(t.name)}<div class="sub tk">${escapeHtml(t.ticker)}</div></td>
+          <td>${escapeHtml(t.name)}<div class="sub tk">${escapeHtml(t.ticker)}${split}</div></td>
           <td class="r tk">${optScoreCell(t)}</td>
           <td class="r tk">${t.current_shares.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
           <td class="r tk">${t.target_shares.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
           <td class="r tk ${buy ? 'pos' : 'neg'}">${t.shares_delta > 0 ? '+' : ''}${t.shares_delta.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
           <td class="r tk ${buy ? 'neg' : 'pos'}">${fmtP(Math.abs(t.amount_base), cur)}</td>
-          <td><select class="opt-cash" data-idx="${i}">${opts}</select></td>
+          <td><select class="opt-cash" data-idx="${i}" onchange="optClearBadTrades()">${optsFor(t)}</select></td>
         </tr>`;
       }).join('')
     : `<tr><td colspan="8" style="color:var(--muted);padding:1rem">
@@ -6667,6 +6688,22 @@ function _renderOptExposure(){
   host.innerHTML = notesHtml + blocks.join('');
 }
 
+// Highlight the trade rows a refused Apply names, and bring the first
+// into view. Cleared as soon as any account is changed, since the change
+// is usually the fix and a stale highlight would say otherwise.
+function optMarkBadTrades(idxs){
+  optClearBadTrades();
+  const rows = (idxs || []).map(i =>
+    document.querySelector(`#optTradesBody tr[data-idx="${i}"]`)).filter(Boolean);
+  rows.forEach(r => r.classList.add('opt-bad'));
+  if (rows[0]) rows[0].scrollIntoView({block: 'center', behavior: 'smooth'});
+}
+
+function optClearBadTrades(){
+  document.querySelectorAll('#optTradesBody tr.opt-bad')
+    .forEach(r => r.classList.remove('opt-bad'));
+}
+
 async function applyOptimizerTrades(){
   if (!optProposal || !optProposal.trades.length) return;
   // Never post one portfolio's trades to another. The switch handlers
@@ -6703,9 +6740,12 @@ async function applyOptimizerTrades(){
     });
     const d = await r.json();
     if (!d.ok){
-      // Nothing was applied — surface every reason, not just the first.
+      // Nothing was applied — surface every reason, not just the first,
+      // and mark the rows they are about (v0.132.0), so "trade 27" does
+      // not have to be counted down to.
       status.textContent = 'Rejected — nothing applied: '
                          + (d.errors || [d.error || 'unknown']).join('; ');
+      optMarkBadTrades(d.bad_trades || []);
       return;
     }
     status.textContent = `Applied ${d.applied.length} trade`
@@ -20514,11 +20554,12 @@ const _TG_ALL_FACETS = _TG_GROUPS.flatMap(g => g.facets);
 const _TG_META_FACETS = (_TG_GROUPS.find(g => g.key === 'style') || {}).facets || [];
 
 
-// The cash reserve being edited, in base currency. Kept beside
-// _tgEditorState because it is saved by the same button in the same
+// The cash reserves being edited, {currency: amount in that currency}
+// (v0.132.0; one base-currency number before). Kept beside
+// _tgEditorState because they are saved by the same button in the same
 // call — a partial save would leave the screen describing a portfolio
 // that does not exist.
-let _tgReserve = 0;
+let _tgReserves = {};
 
 // Editor state — populated in openTargetsEditor, written by saveTargetsEditor.
 // Shape: {asset_class: {key: pct, ...}, sector: {...}, country: {...}, currency: {...}}
@@ -20814,27 +20855,34 @@ function renderTargetsTile(view){
   const out = [];
   if (reserve > 0){
     // Read the view's figures in the reserve's own terms: what it is,
-    // what is held, and what the optimiser would have to do about it.
+    // what is held, and what the optimiser would have to do about it —
+    // one line per currency (v0.132.0), since each is kept in its own
+    // accounts, then the total the design takes off the top.
     const cur   = view.base_currency || view.portfolio?.base_currency || '';
-    const held  = Number(view.cash_value_base || 0);
     const total = Number(view.total_value_base || 0);
-    const diff  = reserve - held;
     const rest  = Math.max(0, total - reserve);
     const over  = total > 0 && reserve > total + 0.005;
-    const state = over
-      ? `<span style="color:var(--red)">more than the portfolio is now worth `
-        + `(${escapeHtml(fmtMoney(total, cur))}) — lower it before optimising</span>`
-      : Math.abs(diff) < 0.005
-      ? `<span style="color:var(--green)">on target</span>`
-      : (diff > 0
-          ? `<span style="color:var(--amber)">${escapeHtml(fmtMoney(diff, cur))} short — the optimiser sells to raise it</span>`
-          : `<span style="color:var(--accent)">${escapeHtml(fmtMoney(-diff, cur))} above — the optimiser invests the difference</span>`);
+    const held  = view.cash_by_currency || {};
+    const lines = Object.entries(view.cash_reserves || {}).map(([c, amt]) => {
+      const diff  = Number(amt) - Number(held[c] || 0);
+      const state = Math.abs(diff) < 0.005
+        ? `<span style="color:var(--green)">on target</span>`
+        : (diff > 0
+            ? `<span style="color:var(--amber)">${escapeHtml(fmtMoney(diff, c))} short — the optimiser sells to raise it</span>`
+            : `<span style="color:var(--accent)">${escapeHtml(fmtMoney(-diff, c))} above — the optimiser invests the difference</span>`);
+      return `<div><b>${escapeHtml(fmtMoney(Number(amt), c))}</b> kept in ${escapeHtml(c)} · `
+        + `holding ${escapeHtml(fmtMoney(Number(held[c] || 0), c))} · ${state}</div>`;
+    });
+    if (over){
+      lines.push(`<div><span style="color:var(--red)">${escapeHtml(fmtMoney(reserve, cur))} in all — `
+        + `more than the portfolio is now worth (${escapeHtml(fmtMoney(total, cur))}). `
+        + `Lower it before optimising.</span></div>`);
+    }
     out.push(`<div class="tg-group-head"><span class="tg-group-label">Cash held by me</span>`
-      + `<span class="tg-group-note">Reserved before anything else. Every percentage `
-      + `below is a share of the ${escapeHtml(fmtMoney(rest, cur))} that remains.</span></div>`
+      + `<span class="tg-group-note">Reserved before anything else, ${escapeHtml(fmtMoney(reserve, cur))} `
+      + `in all. Every percentage below is a share of the ${escapeHtml(fmtMoney(rest, cur))} that remains.</span></div>`
       + `<div class="tg-facet" style="font-family:var(--mono);font-size:.72rem;padding:6px 0 10px">`
-      + `<b>${escapeHtml(fmtMoney(reserve, cur))}</b> reserved · `
-      + `holding ${escapeHtml(fmtMoney(held, cur))} · ${state}</div>`);
+      + lines.join('') + `</div>`);
   }
 
   const trees = [];
@@ -21009,18 +21057,12 @@ async function openTargetsEditor(){
   document.querySelectorAll('#targetsEditorModal input[name=tgMode]')
     .forEach(r => { r.checked = (r.value === _tgEditMode); });
 
-  _tgReserve = Number(currentPortfolioView.cash_reserve || 0);
-  const _resEl = document.getElementById('tgCashReserve');
-  if (_resEl) _resEl.value = _tgReserve > 0 ? _tgReserve : '';
-  const _curEl = document.getElementById('tgReserveCur');
-  if (_curEl) _curEl.textContent =
-    currentPortfolioView.base_currency || currentPortfolioView.portfolio?.base_currency || '';
+  _tgReserves = {...(currentPortfolioView.cash_reserves || {})};
+  renderTgReserveFields();
   renderTgReserveNote();
   // A reserve saved when the portfolio was worth more can be out of
   // range now without anyone having touched it — markets move. So the
   // check runs on open, not only on edit.
-  const _resInput = document.getElementById('tgCashReserve');
-  if (_resInput) _resInput.max = Number(currentPortfolioView.total_value_base || 0) || '';
   updateTgReserveValidity();
 
   document.getElementById('targetsEditorTitle').textContent =
@@ -22897,16 +22939,62 @@ function removeTgEditorRow(facet, level, key){
   _renderTgEditorBody();
 }
 
-function onTgReserveChange(){
-  const el = document.getElementById('tgCashReserve');
-  const v  = parseFloat(el ? el.value : '');
+// The currencies a reserve can be set for: the ones the cash accounts are
+// held in, as the view reports them (v0.132.0). A currency with no
+// account has nowhere to keep cash, so it is not offered.
+function tgReserveCurrencies(){
+  return Object.keys(currentPortfolioView?.cash_by_currency || {});
+}
+
+// One field per currency, each in that currency, with what the accounts
+// in it hold now beneath — "450,000" means nothing until it sits beside
+// "you hold 906,753".
+function renderTgReserveFields(){
+  const host = document.getElementById('tgReserveFields');
+  if (!host) return;
+  const curs = tgReserveCurrencies();
+  if (!curs.length){
+    host.innerHTML = `<div class="tge-reserve-note">No cash accounts yet — add one on the `
+      + `Cash sub-tab to keep cash aside.</div>`;
+    return;
+  }
+  const held = currentPortfolioView?.cash_by_currency || {};
+  host.innerHTML = curs.map(c => {
+    const v = Number(_tgReserves[c] || 0);
+    return `<div class="tge-reserve-row">
+        <label for="tgReserve_${escapeAttr(c)}">${escapeHtml(c)}</label>
+        <input type="number" min="0" step="any" id="tgReserve_${escapeAttr(c)}"
+               data-cur="${escapeAttr(c)}" placeholder="0" value="${v > 0 ? v : ''}"
+               oninput="onTgReserveChange(this)">
+        <span class="tge-reserve-sub">you hold ${escapeHtml(fmtMoney(Number(held[c] || 0), c))}</span>
+      </div>`;
+  }).join('');
+}
+
+function onTgReserveChange(el){
+  const cur = el && el.dataset.cur;
+  if (!cur) return;
+  const v = parseFloat(el.value);
   // Never negative. Clamped rather than rejected, because a negative
   // reserve has no reading at all — there is no such thing as holding
   // less than no cash — so there is nothing to ask the user about.
-  _tgReserve = (isNaN(v) || v < 0) ? 0 : v;
-  if (el && v < 0) el.value = 0;
+  if (isNaN(v) || v <= 0) delete _tgReserves[cur];
+  else _tgReserves[cur] = v;
+  if (v < 0) el.value = 0;
   renderTgReserveNote();
   updateTgReserveValidity();
+}
+
+// The reserves as one amount in base currency — what the optimiser takes
+// off the top. Converted at the rates the view carries, which are the
+// ones the server totals with, so this figure and the saved one agree.
+function tgReserveTotalBase(){
+  const fx = currentPortfolioView?.cash_fx_to_base || {};
+  let total = 0;
+  for (const [c, v] of Object.entries(_tgReserves)){
+    if (fx[c]) total += Number(v) * Number(fx[c]);
+  }
+  return total;
 }
 
 // The reserve cannot exceed the portfolio. Enforced by blocking Save
@@ -22916,52 +23004,57 @@ function onTgReserveChange(){
 // asked for more than they own.
 function tgReserveTooLarge(){
   const total = Number(currentPortfolioView?.total_value_base || 0);
-  return total > 0 && _tgReserve > total + 0.005;
+  return total > 0 && tgReserveTotalBase() > total + 0.005;
 }
 
 function updateTgReserveValidity(){
   const bad = tgReserveTooLarge();
-  const el  = document.getElementById('tgCashReserve');
-  if (el) el.style.borderColor = bad ? 'var(--red)' : '';
+  document.querySelectorAll('#tgReserveFields input')
+    .forEach(el => { el.style.borderColor = bad ? 'var(--red)' : ''; });
   const btn = document.getElementById('targetsEditorSaveBtn');
   if (btn){
     btn.disabled = bad;
     btn.title = bad
-      ? 'The cash reserve is more than the portfolio is worth.'
+      ? 'The cash you keep is more than the portfolio is worth.'
       : '';
   }
 }
 
-// Say what the reserve will DO, in money, against the cash actually
-// held. "50,000" on its own does not tell the user whether that means
-// selling something; "30,000 to raise" does.
+// Say what the reserves will DO, in money, against the cash actually
+// held — per currency, since that is where the money has to be found.
+// "50,000" on its own does not tell the user whether that means selling
+// something; "30,000 to raise" does.
 function renderTgReserveNote(){
   const note = document.getElementById('tgReserveNote');
   if (!note || !currentPortfolioView) return;
-  const cur   = currentPortfolioView.base_currency
+  const base  = currentPortfolioView.base_currency
              || currentPortfolioView.portfolio?.base_currency || '';
-  const held  = Number(currentPortfolioView.cash_value_base || 0);
+  const heldB = Number(currentPortfolioView.cash_value_base || 0);
   const total = Number(currentPortfolioView.total_value_base || 0);
-  if (!_tgReserve){
-    note.textContent = held > 0
-      ? `Nothing reserved — the ${fmtMoney(held, cur)} you hold is treated as investable.`
+  const held  = currentPortfolioView.cash_by_currency || {};
+  const curs  = Object.keys(_tgReserves).filter(c => Number(_tgReserves[c]) > 0);
+  if (!curs.length){
+    note.textContent = heldB > 0
+      ? `Nothing reserved — the ${fmtMoney(heldB, base)} you hold is treated as investable.`
       : 'Nothing reserved.';
     return;
   }
-  if (_tgReserve > total && total > 0){
-    note.innerHTML = `<span style="color:var(--red)">More than the whole portfolio `
-      + `(${escapeHtml(fmtMoney(total, cur))}) — nothing would be left to invest.</span>`;
+  const resB = tgReserveTotalBase();
+  if (resB > total && total > 0){
+    note.innerHTML = `<span style="color:var(--red)">${escapeHtml(fmtMoney(resB, base))} `
+      + `in total — more than the whole portfolio (${escapeHtml(fmtMoney(total, base))}). `
+      + `Nothing would be left to invest.</span>`;
     return;
   }
-  const diff = _tgReserve - held;
-  const rest = Math.max(0, total - _tgReserve);
-  const move = Math.abs(diff) < 0.005
-    ? 'matches the cash you already hold'
-    : (diff > 0
-        ? `${fmtMoney(diff, cur)} to raise by selling`
-        : `${fmtMoney(-diff, cur)} freed to invest`);
-  note.textContent = `${move}. Percentages below are shares of the `
-    + `${fmtMoney(rest, cur)} that remains.`;
+  const parts = curs.map(c => {
+    const diff = Number(_tgReserves[c]) - Number(held[c] || 0);
+    return Math.abs(diff) < 0.005
+      ? `${c}: matches what you hold`
+      : (diff > 0 ? `${c}: ${fmtMoney(diff, c)} to raise by selling`
+                  : `${c}: ${fmtMoney(-diff, c)} freed to invest`);
+  });
+  note.textContent = `${parts.join(' · ')}. ${fmtMoney(resB, base)} kept in all; `
+    + `percentages below are shares of the ${fmtMoney(Math.max(0, total - resB), base)} that remains.`;
 }
 
 async function saveTargetsEditor(){
@@ -22972,7 +23065,7 @@ async function saveTargetsEditor(){
   if (tgReserveTooLarge()){
     const cur = currentPortfolioView?.base_currency || '';
     err.textContent =
-      `Cash held by me (${fmtMoney(_tgReserve, cur)}) is more than the whole `
+      `Cash held by me (${fmtMoney(tgReserveTotalBase(), cur)} in all) is more than the whole `
       + `portfolio (${fmtMoney(Number(currentPortfolioView?.total_value_base || 0), cur)}). `
       + `It is reserved before anything is invested, so it cannot exceed what you own.`;
     err.style.display = '';
@@ -22988,7 +23081,11 @@ async function saveTargetsEditor(){
       // it (see optimizer_settings_set).
       body: JSON.stringify({targets: _tgEditorState,
                             target_pins: _tgPins,
-                            cash_reserve: _tgReserve,
+                            // Only currencies an account is held in: one
+                            // whose last account went is dropped here.
+                            cash_reserves: Object.fromEntries(tgReserveCurrencies()
+                              .filter(c => Number(_tgReserves[c]) > 0)
+                              .map(c => [c, Number(_tgReserves[c])])),
                             tolerances: Object.fromEntries(_TG_ALL_FACETS
                               .filter(f => Object.values(_tgEditorState[f] || {})
                                   .some(b => Object.keys(b || {}).length))

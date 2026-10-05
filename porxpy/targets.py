@@ -737,8 +737,9 @@ def prune_pins(targets: dict, pins: dict) -> dict:
 # meaningless without the target it is a share of ("within 10% of it"),
 # so a file carrying one without the other would describe half a design.
 #
-# The cash reserve deliberately does NOT travel. It is an amount in base
-# currency saying how much of THIS portfolio stays liquid — the one
+# The cash reserve deliberately does NOT travel. It is a set of amounts,
+# one per currency of THIS portfolio's cash accounts (v0.132.0; a single
+# base-currency amount before), saying how much stays liquid — the one
 # number on the Targets tab that is per-portfolio rather than
 # per-design, and importing someone else's would be importing their bank
 # balance.

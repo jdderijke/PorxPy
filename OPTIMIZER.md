@@ -1,6 +1,6 @@
 # The PorxPy Optimizer — how it works
 
-*Applies to `porxpy/optimizer.py` as of v0.130.0. The full audit — every
+*Applies to `porxpy/optimizer.py` as of v0.132.0. The full audit — every
 claim in the document re-checked against the module — was done at
 v0.91.0; since then the v0.96.0 peer-scoring change was folded into §7b
 and §13's one remaining open issue was re-confirmed by reading
@@ -221,8 +221,11 @@ not error.
 ## 4b. Cash is a reservation, not a column (v0.90.0)
 
 The user states how much of the portfolio must stay as cash they hold —
-**an amount in base currency, not a percentage** (`cash_reserve` on the
-portfolio). That amount is taken off the top before anything is designed:
+**amounts, not a percentage: one per currency their cash accounts are
+held in**, each in that currency (`cash_reserves` on the portfolio since
+v0.132.0; one base-currency `cash_reserve` before, still read as that
+amount in base currency). Their total in base currency is taken off the
+top before anything is designed:
 
 ```
 portfolio = held + frozen + cash_on_hand
@@ -241,6 +244,16 @@ than needing a branch:
 |---|---|
 | cash on hand **above** the reserve | the difference is in `free_base`, so it gets invested |
 | cash on hand **below** the reserve | `free_base` is smaller than the funds are worth, so the trade list sells the shortfall |
+
+The solver only knows the total. Keeping each currency's share in that
+currency's accounts is settlement's job, not the design's:
+`trades.plan_settlement` picks the account each trade settles against for
+the batch as a whole, converting exactly as `apply_trades` does, and
+splits one purchase across two accounts when whole trades cannot land a
+reserve exactly. `apply_trades` refuses a purchase that takes a currency
+below its reserve, within `trades.reserve_tolerance` — a tenth of a
+percent, because Yahoo quotes the two directions of a currency pair
+separately.
 
 ### Why it used to be a column, and why that was wrong
 
@@ -632,7 +645,14 @@ target.
 
 ## 10. What you get back
 
-- **`trades`** — the buy/sell list, sorted by size.
+- **`trades`** — the buy/sell list: sells first, then buys, each by
+  size — the order `apply_trades` applies a batch in, so the cash a
+  rebalance raises is there before it is spent (v0.131.0). Each trade
+  carries the fund's trading `currency` (canonical, so `GBp` reads
+  `GBP`), and a `settle_cash_id`: the cash account it settles against
+  by default, planned for the whole batch by `trades.plan_settlement`
+  (see §4b). A purchase split across two accounts arrives as two trades
+  of the same fund, each carrying `split` ("1 of 2").
 - **`positions`** — the resulting portfolio, frozen ones flagged.
 - **`achieved`** / **`deviation`** / **`tolerance`** — `{facet: {level:
   {bucket: value}}}`, all three mirroring the shape of `targets`. What the
@@ -861,7 +881,7 @@ Defects specific to the optimiser, as opposed to the deliberate
 boundaries in §12. Each is something that should be fixed rather than
 something someone chose.
 
-None open as of v0.130.0 (re-checked against the code). The two below are kept as records.
+None open as of v0.132.0 (re-checked against the code). The two below are kept as records.
 
 ### ~~A facet targeted at several levels counted several times~~ — fixed in v0.126.0
 

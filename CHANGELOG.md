@@ -3,6 +3,95 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.132.0] - 2026-10-05
+
+### Changed - "Cash held by me" is set per currency, and stays in that currency
+
+The reserve was one amount in base currency. It said how much cash to
+keep but not where, so a rebalance could meet it in total while the
+trades emptied the euro account and left the reserve sitting in dollars.
+
+It is now one amount per currency your cash accounts are held in — five
+accounts in euros and dollars ask for two numbers, each in its own
+currency, with what you hold in that currency shown beneath it. A
+currency with no account is not offered, and an amount left for a
+currency whose last account was deleted is ignored. Stored as
+`cash_reserves` (`{currency: amount}`); the old single `cash_reserve` is
+read as that amount in the base currency, and replaced on the next save.
+The optimiser still takes one total off the top, converted to base
+currency; the Targets tab lists each currency against what it holds.
+
+Settlement keeps each currency's reserve in that currency's accounts.
+`trades.plan_settlement` now works in each account's own currency,
+converting a leg exactly as `apply_trades` does, and moves shortfalls to
+accounts with money to spare — a whole purchase, then a whole sale paid
+elsewhere, and when no whole trade fits, one purchase **split** across
+two accounts. A split trade shows twice in the list, *part 1 of 2* and
+*part 2 of 2*. On the portfolio that found the problem the batch now
+applies, the dollar account ending at 1.99 and the euro account at
+449,919 of its 450,000 — the 81 being Yahoo's two directions of the
+EUR/USD pair disagreeing by about 0.01% over 705k of conversion.
+
+`apply_trades` refuses a purchase that would take a currency below its
+reserve, beyond `trades.reserve_tolerance` (a tenth of a percent), and
+names the trade. Every per-trade refusal, overdrafts included, now
+returns `bad_trades`, and the trade table highlights those rows and
+scrolls to the first.
+
+## [0.131.1] - 2026-10-05
+
+### Fixed - the default cash positions could refuse a rebalance the money covered
+
+v0.131.0 defaulted every trade to the largest cash position in its own
+currency, one trade at a time. On a portfolio selling dollar funds to buy
+euro funds that paid every sale into the dollar account and every
+purchase out of the euro account: the batch came out 255k short in euros
+while the dollar account held 700k, and the whole rebalance was refused,
+although the cash across both accounts covered it with the 450k reserve
+to spare. The sells-first rule was being applied; the money was simply
+in the wrong account.
+
+The defaults are now planned for the batch as a whole, server-side, by
+`trades.plan_settlement`, walking the trades in the order `apply_trades`
+applies them with a running balance per account. A sale pays into the
+largest account in its own currency. A purchase draws on the largest
+account in its own currency while that still covers it, and otherwise on
+the account holding the most, compared in base currency. Each trade
+carries the result as `settle_cash_id`, which the table preselects; the
+browser's own copy of the rule is gone, since the plan needs every
+account's value in base currency. On the portfolio that found it, the
+planned batch now applies, ending with 1.7k in euros and 502k in dollars.
+
+## [0.131.0] - 2026-10-05
+
+### Changed - the cash position each trade settles against is chosen by currency
+
+Every trade in the optimiser's list defaulted to the first cash position
+listed, whatever its currency — so with a dollar and a euro account, a
+euro buy could default to the dollar account and be converted for no
+reason. The default is now chosen per trade:
+
+1. the largest cash position in the fund's own trading currency;
+2. failing that, the largest in the portfolio's base currency;
+3. failing that, the largest of all.
+
+Every trade in one currency therefore settles against the same pot, so
+the sells in a rebalance fund the buys in it. The trades now carry their
+`currency` from the optimiser for this.
+
+The list is also ordered **sells first, then buys**, each by size. That
+was already the order a batch is applied in (`trades.apply_trades` raises
+the cash before it spends it); the list used to be by size alone, which
+put a large buy above the sells that pay for it.
+
+### Fixed - a fund quoted in pence would have been priced 100x too high
+
+The optimiser's pricing and the trade settlement both upper-cased the
+fund's currency, turning `GBp` into `GBP` without dividing the pence
+price by 100 — the valuation always did, through `normalise_currency`,
+and now all three do. No fund in the current cache is quoted in pence,
+so nothing was affected yet.
+
 ## [0.130.0] - 2026-10-05
 
 ### Fixed - going offline emptied the cache instead of serving it

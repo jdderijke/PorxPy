@@ -3851,7 +3851,7 @@ def upsert_portfolio(portfolio: dict) -> None:
 # design, and a clone is asked for precisely to get the design.
 #
 # A DENYLIST, deliberately, rather than a list of fields to copy. A
-# portfolio dict grows fields over time (``cash_reserve``, ``targets``,
+# portfolio dict grows fields over time (``cash_reserves``, ``targets``,
 # ``target_pins``, ``optimizer_settings`` each arrived in a different
 # release), and with an allowlist every future one would have to
 # remember to add itself here or be silently dropped from clones -
@@ -4633,86 +4633,144 @@ def optimizer_settings_set(pid: str, settings: dict) -> dict:
     raise KeyError(f"portfolio {pid!r} not found")
 
 
-def cash_reserve_get(pid: str) -> float:
-    """How much of the portfolio must stay as cash the user holds.
+def _cash_account_currencies(p: dict) -> list[str]:
+    """The currencies the portfolio's cash accounts are held in, sorted.
 
-    A single amount in the portfolio's base currency — **not** a
-    percentage (v0.90.0). It is a reservation taken off the top before
-    anything else is designed: the optimiser leaves exactly this much in
-    the user's own accounts and distributes what remains across funds,
-    selling positions to raise it when the cash on hand falls short.
+    An account with no currency stated is in the base currency — the
+    same reading ``apply_trades`` and the optimiser give it.
+    """
+    base = (p.get("base_currency") or "").upper()
+    out = set()
+    for c in p.get("cash_positions") or []:
+        if isinstance(c, dict):
+            out.add((c.get("currency") or base).upper())
+    return sorted(out)
 
-    Why an amount rather than a percentage. The optimiser has no
-    instrument that buys a bank deposit, so a percentage of the whole
-    portfolio behaved like a target competing in the least-squares fit —
-    satisfied approximately, and pulling every other target off as it
-    went. Stated as an amount and taken off the top, it is exact by
-    construction, and every remaining target becomes a percentage of what
-    is left, which is what the user is actually deciding: "50,000 stays
-    liquid; design the other 50,000."
+
+def cash_reserves_get(pid: str) -> dict[str, float]:
+    """How much cash the user keeps, per currency of their cash accounts.
+
+    One amount per CURRENCY, each in that currency (v0.132.0) — five
+    accounts in euros and dollars ask for two numbers, not five and not
+    one. It is still an amount rather than a percentage, and still taken
+    off the top before anything is designed (v0.90.0): every target is a
+    percentage of what is left.
+
+    Why per currency. A single base-currency amount said how much cash to
+    keep but not where, so the optimiser could meet it in total while the
+    trades emptied the euro account and left the reserve sitting in
+    dollars — or the reverse, refusing a rebalance the money covered
+    because the dollars it raised were in the wrong account. Stating it
+    per currency makes it a promise about each currency the user holds,
+    which is what trade settlement can actually keep.
+
+    Only currencies some cash account is held in are returned. An amount
+    stored for a currency whose last account was deleted has no account
+    to sit in, so it is ignored rather than counted toward a total that
+    no trade could ever honour; the editor drops it on its next save.
+
+    The pre-v0.132.0 field — one ``cash_reserve`` number in base currency
+    — is read as that amount in the base currency, which is where it was
+    assumed to sit. Nothing is rewritten until the user next saves.
 
     Args:
         pid: Portfolio UUID.
 
     Returns:
-        The reserve in base currency; ``0.0`` when unset, when the stored
-        value is malformed, or for an unknown portfolio.
+        ``{currency: amount}`` with positive amounts only; ``{}`` when
+        nothing is reserved or the portfolio is unknown.
     """
     p = find_portfolio(pid)
     if not p:
-        return 0.0
-    try:
-        v = float(p.get("cash_reserve") or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
-    return v if v > 0 else 0.0
+        return {}
+    raw = p.get("cash_reserves")
+    if not isinstance(raw, dict):
+        legacy = p.get("cash_reserve")
+        base = (p.get("base_currency") or "").upper()
+        raw = {base: legacy} if legacy and base else {}
+    held = set(_cash_account_currencies(p))
+    out: dict[str, float] = {}
+    for cur, amt in raw.items():
+        try:
+            v = float(amt or 0.0)
+        except (TypeError, ValueError):
+            continue
+        cur = str(cur or "").upper()
+        if v > 0 and cur in held:
+            out[cur] = round(v, 2)
+    return out
 
 
-def cash_reserve_set(pid: str, amount: float) -> float:
-    """Set the cash reserve for portfolio ``pid``, in base currency.
+def cash_reserves_set(pid: str, reserves: dict) -> dict[str, float]:
+    """Store the per-currency cash reserves for ``pid``.
 
     Args:
         pid: Portfolio UUID.
-        amount: The amount to reserve. Negative is clamped to zero — a
-            reserve below nothing has no reading, so there is nothing to
-            ask the user about. Non-positive clears it, and the field is
-            dropped from ``portfolios.json`` rather than stored as zero,
-            so a portfolio nobody has set one on stays clean.
-
-            The UPPER bound is deliberately not enforced here. It is
-            "no more than the portfolio is worth", and this function
-            cannot know that without a full valuation pass over every
-            fund — and the bound would not stay enforced anyway, because
-            the portfolio's value moves with the market: a reserve that
-            was legal when saved can exceed the total a week later with
-            nobody having touched it. So the check lives where it can
-            actually be true — the editor blocks a save above the value
-            on screen, the Targets tile says so when it has drifted, and
-            the optimiser refuses to design against it.
+        reserves: ``{currency: amount}``, each amount in its own currency.
+            Negative or non-positive amounts clear that currency — there
+            is no reading for holding less than nothing. The upper bound
+            ("no more than the portfolio is worth") is not enforced here,
+            for the reason it never was: the portfolio's value moves with
+            the market. The editor blocks it on save and the optimiser
+            refuses to design against it.
 
     Returns:
-        The persisted amount (``0.0`` when cleared).
+        What was stored, as :func:`cash_reserves_get` reads it back.
 
     Raises:
-        ValueError: If ``pid`` does not match any portfolio, or the
-            amount is not a number.
+        ValueError: If ``pid`` matches no portfolio, ``reserves`` is not
+            an object, or an amount is not a number.
     """
-    try:
-        val = float(amount or 0.0)
-    except (TypeError, ValueError):
-        raise ValueError("cash_reserve must be a number")
-    if val < 0:
-        val = 0.0
+    if not isinstance(reserves, dict):
+        raise ValueError("cash_reserves must be an object of currency: amount")
+    clean: dict[str, float] = {}
+    for cur, amt in reserves.items():
+        try:
+            v = float(amt or 0.0)
+        except (TypeError, ValueError):
+            raise ValueError(f"cash reserve for {cur} must be a number")
+        if v > 0 and str(cur or "").strip():
+            clean[str(cur).strip().upper()] = round(v, 2)
     portfolios = load_portfolios()
     for p in portfolios:
         if p.get("id") == pid:
-            if val > 0:
-                p["cash_reserve"] = round(val, 2)
+            # The single pre-v0.132.0 number goes with the first save in
+            # the new shape: two fields saying one thing could disagree.
+            p.pop("cash_reserve", None)
+            if clean:
+                p["cash_reserves"] = clean
             else:
-                p.pop("cash_reserve", None)
+                p.pop("cash_reserves", None)
             save_portfolios(portfolios)
-            return round(val, 2) if val > 0 else 0.0
+            return cash_reserves_get(pid)
     raise ValueError(f"no portfolio with id {pid!r}")
+
+
+def cash_reserves_in_base(reserves: dict[str, float],
+                          base_cur: str) -> tuple[float, list[str]]:
+    """The per-currency reserves as one amount in base currency.
+
+    The optimiser still designs against a single budget — the reserve
+    comes off the top of it — so this is the one conversion every reader
+    of that total shares: the optimiser, the Targets tab and the editor's
+    figures come from the view, which calls it.
+
+    Returns:
+        ``(total, missing)`` — ``missing`` names currencies with no FX
+        rate, left out of the total rather than counted as zero silently.
+    """
+    base = (base_cur or "").upper()
+    total, missing = 0.0, []
+    for cur, amt in (reserves or {}).items():
+        if cur == base:
+            total += float(amt)
+            continue
+        rate, _note = fx_rate(cur, base)
+        if rate:
+            total += float(amt) * rate
+        else:
+            missing.append(cur)
+    return round(total, 2), missing
 
 
 def normalise_cache_config(cfg: dict | None) -> dict:

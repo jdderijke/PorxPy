@@ -946,6 +946,8 @@ def optimise_portfolio(candidates: list[dict],
               "ticker":         "VWRL.AS",
               "name":           "Vanguard FTSE All-World",
               "price_base":     102.34,   # per share, in BASE currency
+              "currency":       "EUR",    # trading currency; passed through
+                                          # to the trade, never priced with
               "current_shares": 0.0,      # what's held right now
               "include":        True,     # may the optimiser trade it?
               # look-through, fractions 0–1, per (facet, LEVEL, key)
@@ -1025,8 +1027,9 @@ def optimise_portfolio(candidates: list[dict],
               "reason":       str,          # populated when ok is False
               "total_base":   float,        # investable value (funds + cash)
               "trades":       [{"ticker", "shares_delta", "amount_base",
-                                "action", "price_base",
+                                "action", "price_base", "currency",
                                 "current_shares", "target_shares"}, ...],
+                              # sells first, then buys, each by size
               "positions":    [{"ticker", "name", "weight",
                                 "target_shares", "amount_base"}, ...],
               "cash_weight":  float,        # of the WHOLE portfolio
@@ -1380,6 +1383,8 @@ def optimise_portfolio(candidates: list[dict],
             "score_all":      _sc.get("score_all"),
             "score_peer":     _sc.get("score_peer"),
             "action":         "buy" if delta > 0 else "sell",
+            # Which cash pot settles it is chosen by currency (v0.131.0).
+            "currency":       c.get("currency") or "",
             "shares_delta":   round(delta, 6),
             "price_base":     round(price, 6),
             "amount_base":    round(delta * price, 2),
@@ -1404,7 +1409,11 @@ def optimise_portfolio(candidates: list[dict],
         })
 
     positions.sort(key=lambda p: -p["weight"])
-    trades.sort(key=lambda x: -abs(x["amount_base"]))
+    # Sells first, then buys, each by size (v0.131.0) — the order the
+    # batch is applied in (trades.apply_trades raises the cash before it
+    # spends it), so the list reads in the order it will happen. It was
+    # by size alone, which put a large buy above the sells that fund it.
+    trades.sort(key=lambda x: (x["action"] == "buy", -abs(x["amount_base"])))
 
     # Price the better-scoring peers of every chosen fund. Reported, never
     # applied: the user decides whether the accuracy is worth the quality.

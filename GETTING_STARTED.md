@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.130.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.132.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -135,7 +135,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.130.0 (built 2026-10-05)
+  PorxPy  v0.132.0 (built 2026-10-05)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -315,12 +315,14 @@ optimiser's entire brief — without them it has nothing to solve for.
 
 ### Cash held by me
 
-At the top of the editor is **Cash held by me**, an *amount* in base
-currency rather than a percentage. It is reserved before anything else:
-the optimiser leaves exactly that much in your own accounts, selling
-positions to raise it if you hold less. Every percentage below is then a
-share of what remains — reserve 50,000 of 100,000 and "50% equity" means
-25,000.
+At the top of the editor is **Cash held by me**: an *amount* rather than
+a percentage, one per currency your cash accounts are held in — five
+accounts in euros and dollars ask for two numbers, each in its own
+currency, with what you hold in that currency shown beneath it. It is
+reserved before anything else: the optimiser leaves exactly that much in
+your accounts in each currency, selling positions to raise it if you
+hold less. Every percentage below is then a share of what remains —
+reserve 50,000 of 100,000 and "50% equity" means 25,000.
 
 It is an amount and not a percentage on purpose. The optimiser cannot
 buy a bank deposit, so a cash *target* would only ever be satisfied
@@ -457,8 +459,8 @@ three Optimizer numbers (Max funds, Min weight, Min trade) — which you
 can keep, diff, edit in a spreadsheet, and **Import CSV** into another
 portfolio.
 
-Two things stay behind on purpose. Your **cash reserve** is an amount in
-your own currency describing *this* portfolio, not the design, so it is
+Two things stay behind on purpose. Your **cash reserve** is a set of
+amounts in your own currencies describing *this* portfolio, not the design, so it is
 never exported or overwritten. And your holdings are untouched: importing
 a target set changes what you are aiming at, never what you own.
 
@@ -536,6 +538,22 @@ use it for the untargeted remainder, and it will rarely be chosen.
 ## 9. Apply the trades
 
 Press **✓ Apply these trades** and confirm.
+
+The list shows the sells first, then the buys — the order they are
+applied in, so the cash the sells raise is there before the buys spend
+it. Each trade has a **cash position** that settles it, and the defaults
+are planned for the batch as a whole so that the cash you keep in each
+currency stays in that currency's accounts. A sale pays into an account
+in the fund's own currency, and so does a purchase while that currency
+has money to spare above what you keep; otherwise the purchase is paid
+from an account in another currency that does. When no whole trade fits
+exactly, one purchase is **split** across two accounts and the fund
+appears twice, marked *part 1 of 2* and *part 2 of 2*.
+
+Change any of them before applying. A choice that would overdraw an
+account, or take a currency below the cash you keep in it, is refused
+with nothing applied — the message names the trade, and its row is
+highlighted in the list.
 
 The batch is applied atomically: every leg is validated and priced
 first, and if any one fails, none are applied. A half-applied proposal

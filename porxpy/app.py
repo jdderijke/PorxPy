@@ -1113,7 +1113,8 @@ def create_app() -> Flask:
         from porxpy.optimizer import optimise_portfolio, DEFAULT_TOL_REL
         from porxpy.utils import optimizer_settings_set
         # Local imports, matching the pattern used by the other endpoints.
-        from porxpy.utils import cash_positions_get, cash_reserve_get
+        from porxpy.utils import (cash_positions_get, cash_reserves_get,
+                                  cash_reserves_in_base)
         # Country targets are region-keyed while fund breakdowns are
         # country-keyed; this maps one to the other.
         from porxpy.resources import MSTAR_TO_REGION
@@ -1211,8 +1212,13 @@ def create_app() -> Flask:
                 skipped.append({"ticker": tk, "reason": "no price"})
                 continue
 
-            # Into base currency, so the solver is unit-consistent.
-            fund_cur = ((data.get("profile") or {}).get("currency") or "").upper()
+            # Into base currency, so the solver is unit-consistent. Through
+            # normalise_currency, as the valuation does (v0.131.0): a fund
+            # quoted in pence (GBp) has its price in pence, and upper-casing
+            # the code to GBP without dividing priced it 100x too high.
+            fund_cur, _divisor = normalise_currency(
+                (data.get("profile") or {}).get("currency") or "")
+            price = price / _divisor
             fx = 1.0
             if fund_cur and fund_cur != base_cur:
                 rate, _n = fx_rate(fund_cur, base_cur)
@@ -1251,6 +1257,10 @@ def create_app() -> Flask:
                 "ticker":         tk,
                 "name":           (data.get("profile") or {}).get("longName") or tk,
                 "price_base":     price * fx,
+                # The fund's trading currency, canonical (GBp -> GBP). The
+                # trade table matches it against the cash pots to choose
+                # which one settles the trade by default (v0.131.0).
+                "currency":       fund_cur or base_cur,
                 "current_shares": held.get(tk, 0.0),
                 # Per-fund opt-out. Unchecked funds are frozen rather
                 # than removed: a held position the user has ring-fenced
@@ -1300,8 +1310,12 @@ def create_app() -> Flask:
                 fx = rate
             cash_total += amt * fx
 
-        # How much of the portfolio must stay as cash the user holds.
-        cash_reserve = cash_reserve_get(pid)
+        # How much of the portfolio must stay as cash the user holds — per
+        # currency since v0.132.0, but the design still takes ONE amount
+        # off the top, so the solver gets the total in base currency. Where
+        # each currency's share ends up is the settlement plan's job below.
+        cash_reserves = cash_reserves_get(pid)
+        cash_reserve, _res_no_fx = cash_reserves_in_base(cash_reserves, base_cur)
 
         # A targeted facet for which NO candidate has any exposure data is a
         # different failure from "targets unreachable", and needs a different
@@ -1462,6 +1476,9 @@ def create_app() -> Flask:
         # the budget before the solver runs — so it never appears in the
         # deviation table, and without a line here the user would have no
         # confirmation that the number they set was the number applied.
+        if _res_no_fx:
+            _warn(f"No exchange rate for {', '.join(_res_no_fx)}, so the cash "
+                  f"you keep in it is left out of the reserve taken off the top.")
         if cash_reserve > 0:
             shortfall = cash_reserve - cash_total
             # No facet and no funds: this one is about money, not data.
@@ -1543,6 +1560,40 @@ def create_app() -> Flask:
         # (and link each one) rather than re-deriving the set from
         # `source_mix` counts it cannot turn back into names.
         result["facet_gaps"]      = facet_gaps
+        # Which cash account each trade settles against unless the user
+        # picks another — planned for the batch as a whole, keeping each
+        # currency's reserve in that currency (trades.plan_settlement).
+        # A trade the plan SPLIT across two accounts becomes two rows,
+        # each a leg of the same fund with its share of the shares and
+        # money; `split` says "1 of 2" so the table can say why the fund
+        # appears twice, and apply_trades treats the legs as two trades.
+        from porxpy.trades import plan_settlement
+        _plan, _notes = plan_settlement(
+            result.get("trades") or [], cash_positions_get(pid), base_cur,
+            lambda a, b: fx_rate(a, b)[0], cash_reserves)
+        _rows: list[dict] = []
+        for _t, _legs in zip(result.get("trades") or [], _plan):
+            if len(_legs) <= 1:
+                _t["settle_cash_id"] = _legs[0][0] if _legs else None
+                _rows.append(_t)
+                continue
+            _sh_left = _t["shares_delta"]
+            for _k, (_cid, _frac) in enumerate(_legs):
+                _leg = dict(_t)
+                _last = _k == len(_legs) - 1
+                # The last leg takes the remainder, so the legs add up to
+                # the trade exactly however the fractions round.
+                _leg["shares_delta"] = (round(_sh_left, 6) if _last
+                                        else round(_t["shares_delta"] * _frac, 6))
+                _sh_left -= _leg["shares_delta"]
+                _leg["amount_base"] = round(_t["amount_base"]
+                                            * _leg["shares_delta"] / _t["shares_delta"], 2)
+                _leg["settle_cash_id"] = _cid
+                _leg["split"] = f"{_k + 1} of {len(_legs)}"
+                _rows.append(_leg)
+        result["trades"] = _rows
+        for _n in _notes:
+            _warn(_n)
         return jsonify(result)
 
     @app.route("/api/portfolios/<pid>/trades", methods=["POST"])
@@ -1823,17 +1874,18 @@ def create_app() -> Flask:
         # The cash reserve travels with the targets: it is set in the same
         # dialog and saved by the same button, and returning it separately
         # would let the screen show a stale one beside fresh targets.
-        from porxpy.utils import cash_reserve_get, portfolio_target_pins_get
-        return jsonify({"targets":      portfolio_targets_get(pid),
-                        "target_pins":  portfolio_target_pins_get(pid),
-                        "cash_reserve": cash_reserve_get(pid)})
+        from porxpy.utils import cash_reserves_get, portfolio_target_pins_get
+        return jsonify({"targets":       portfolio_targets_get(pid),
+                        "target_pins":   portfolio_target_pins_get(pid),
+                        "cash_reserves": cash_reserves_get(pid)})
 
     @app.route("/api/portfolios/<pid>/targets", methods=["PUT"])
     def api_portfolio_targets_put(pid: str) -> Response:
         """Replace the stored targets for ``pid``.
 
         Body (JSON): ``{"targets": {<facet>: {<key>: percent, ...}, ...}}``,
-        optionally with ``target_pins``, ``cash_reserve`` and
+        optionally with ``target_pins``, ``cash_reserves`` (``{currency:
+        amount}``, v0.132.0) and
         ``tolerances`` (``{facet: fraction of each target}``, merged into
         the portfolio's Optimizer settings). Replace semantics for the
         targets — the whole dict is overwritten. Pass an
@@ -1871,11 +1923,11 @@ def create_app() -> Flask:
             # describing a portfolio that does not exist. Absent from the
             # body means "leave it alone", which is what a client that
             # predates the field sends.
-            from porxpy.utils import cash_reserve_get, cash_reserve_set
-            if "cash_reserve" in body:
-                reserve = cash_reserve_set(pid, body.get("cash_reserve") or 0.0)
+            from porxpy.utils import cash_reserves_get, cash_reserves_set
+            if "cash_reserves" in body:
+                reserve = cash_reserves_set(pid, body.get("cash_reserves") or {})
             else:
-                reserve = cash_reserve_get(pid)
+                reserve = cash_reserves_get(pid)
             # Tolerances are part of the design and are edited beside the
             # targets they qualify (v0.127.0) — they were on the Optimizer
             # tab, while the CSV export already treated them as part of
@@ -1890,7 +1942,7 @@ def create_app() -> Flask:
         except (ValueError, KeyError) as exc:
             return jsonify({"error": str(exc)}), 404
         return jsonify({"targets": persisted, "target_pins": pins,
-                        "cash_reserve": reserve, "tolerances": tolerances})
+                        "cash_reserves": reserve, "tolerances": tolerances})
 
     @app.route("/api/portfolios/<pid>/targets/csv", methods=["GET"])
     def api_portfolio_targets_csv_get(pid: str) -> Response:
@@ -2531,6 +2583,25 @@ def create_app() -> Flask:
     # view failed to load. See the v0.81.0 CHANGELOG entry.
     VIEW_OMITTED_FUND_DATA_KEYS = ("price_history", "holdings_rows")
 
+    def _cash_by_currency(enriched: list[dict], base_cur: str) -> dict:
+        """What the cash accounts hold now, per currency, in that currency.
+
+        Read off the same synthetic cash entries the totals are built from
+        (accrued value, own currency), so the editor's "you hold" beside
+        each currency's reserve agrees with the portfolio's cash total.
+        Every currency an account is held in appears, at 0 when empty —
+        it is the list of currencies the editor offers a reserve for.
+        """
+        out: dict[str, float] = {}
+        for e in enriched:
+            if not e.get("is_cash"):
+                continue
+            val = e.get("valuation") or {}
+            cur = (val.get("native_currency") or base_cur or "").upper()
+            out[cur] = round(out.get(cur, 0.0)
+                             + float(val.get("value_native") or 0.0), 2)
+        return dict(sorted(out.items()))
+
     def _stale_data_report(enriched: list[dict]) -> list[dict]:
         """Which funds are being shown from a cache that could not refresh.
 
@@ -2736,7 +2807,8 @@ def create_app() -> Flask:
         # reporting a shortfall on a design the optimiser called met.
         # The cash reserve rides along with the targets it belongs to, so
         # the Targets tab and its editor can render without a second call.
-        from porxpy.utils import cash_reserve_get, optimizer_settings_get
+        from porxpy.utils import (cash_reserves_get, cash_reserves_in_base,
+                                  optimizer_settings_get)
         # Read before the deviations since v0.127.0: each targeted bucket
         # is now judged against its own allowance, from the same
         # per-facet tolerance the optimiser aims at.
@@ -2749,7 +2821,11 @@ def create_app() -> Flask:
         # "now" beside each row (v0.127.0).
         from porxpy.targets import exposure_by_level
         target_actuals = exposure_by_level(fundlevel_breakdowns_ex_cash)
-        cash_reserve = cash_reserve_get(p.get("id") or "")
+        # Per currency (v0.132.0), plus the same total in base currency the
+        # optimiser takes off the top — the Targets tab states both.
+        cash_reserves = cash_reserves_get(p.get("id") or "")
+        cash_reserve, _ = cash_reserves_in_base(cash_reserves, base_cur)
+        _cash_by_currency_now = _cash_by_currency(enriched, base_cur)
         # The Optimizer panel's saved settings ride along too (v0.117.0),
         # for the same reason the reserve does: the panel is rendered from
         # this payload, and a second round-trip to fill in four inputs
@@ -2783,10 +2859,20 @@ def create_app() -> Flask:
             # are for display, never a denominator.
             "funds_value_base":      round(total_base - cash_total_base, 2),
             "cash_value_base":       round(cash_total_base, 2),
-            # How much of the portfolio must stay as cash the user holds
-            # (base currency). Read by the Targets tab; the optimiser
-            # reads it from storage directly.
+            # How much of the portfolio must stay as cash the user holds:
+            # the total in base currency (what comes off the top) and, since
+            # v0.132.0, the per-currency amounts it is made of, beside what
+            # the accounts in each currency hold now. The editor shows one
+            # field per currency in `cash_by_currency`.
             "cash_reserve":          round(cash_reserve, 2),
+            "cash_reserves":         cash_reserves,
+            "cash_by_currency":      _cash_by_currency_now,
+            # Each of those currencies' rate to base, so the editor can
+            # total the reserves it is editing before they are saved —
+            # the same fx_rate the total above was converted with.
+            "cash_fx_to_base":       {c: (1.0 if c == base_cur
+                                          else fx_rate(c, base_cur)[0])
+                                      for c in _cash_by_currency_now},
             "optimizer_settings":    optimizer_settings,
             # Slimmed: price_history and holdings_rows are dropped here
             # (see _slim_fund_data_for_view). Every aggregate above was
