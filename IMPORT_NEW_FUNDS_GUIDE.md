@@ -1,6 +1,6 @@
 # IMPORT_NEW_FUNDS_GUIDE.md — importing new funds and ETFs
 
-*Current as of v0.132.3. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.133.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between typing an ISIN into an empty box and having a fully
@@ -82,7 +82,7 @@ version you are looking at:
 
 ```
 =======================================================
-  PorxPy  v0.132.3 (built 2026-10-20)
+  PorxPy  v0.133.0 (built 2026-10-20)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -286,7 +286,7 @@ header:
 
 | Control | What it does |
 |---|---|
-| **★ Save to pre-loaded** | Shown when the fund is **not** saved. Clicking it re-requests the fund with a commit flag, which persists profile, holdings, sectors, asset class and price history to the cache. **Until you press it, nothing about the fund is on disk** — the tiles, the price chart and Yahoo's top-10 holdings are all in the page and nowhere else. That is why a breakdown card cannot be switched to **Holdings** on an unsaved fund even when the holdings are visible: everything server-side reads the stored rows, and there are none yet. The card says so, and your choice is remembered and takes effect once you save. |
+| **★ Save to pre-loaded** | Shown when the fund is **not** saved. Clicking it re-requests the fund with a commit flag, which persists profile, holdings, sectors, asset class and price history to the cache. **Until you press it, nothing is written to disk at all** — the tiles, the price chart and Yahoo's top-10 holdings (and what PorxPy looked up about each of them) are all in the page and nowhere else. That is why a breakdown card cannot be switched to **Holdings** on an unsaved fund even when the holdings are visible: everything server-side reads the stored rows, and there are none yet. The card says so, and your choice is remembered and takes effect once you save. |
 | **✓ Saved** | Shown once it is on disk. Adding the fund to a portfolio saves it implicitly, so this often appears without you pressing anything. |
 | **⚙ In optimizer / ⃠ Excluded** | Only shown for a saved fund. Flips whether the optimiser may buy or sell it. Stored per fund by ISIN, so it covers every listing. |
 | **+ Add to portfolio** | Adds this listing to the active portfolio, and shows which portfolios already hold it. Membership is by ticker — two listings of one ETF are two holdings. |

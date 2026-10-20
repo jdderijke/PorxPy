@@ -17,6 +17,7 @@ Routes are grouped (in order):
 
 from __future__ import annotations
 
+import contextlib
 import json
 from datetime import datetime
 import math
@@ -150,7 +151,11 @@ from porxpy.utils import (
     listing_identity_get,
     listing_identity_lookup_isin,
     listing_identities_for_isin,
+    listing_blob_is_saved,
+    listing_is_saved,
     network_reachable,
+    saved_listing_tickers,
+    symbol_caches_in_memory,
     listing_identity_put,
     load_overrides,
     load_isin_map,
@@ -846,21 +851,27 @@ def create_app() -> Flask:
         print(f"{'='*55}")
 
         # Was this listing already in the pre-loaded set? Read now,
-        # because load_fund_data creates the file that answers it. Used
-        # only by the field-source defaults below, which must not reach
-        # a fund the user already has.
-        listing_was_saved = bool(
-            resolved_tkr and (LISTINGS_DIR / f"{resolved_tkr}.json").exists())
+        # because load_fund_data's commit writes the data that answers it.
+        # Used only by the field-source defaults below, which must not
+        # reach a fund the user already has. The saved marker, not the
+        # file: a fund only viewed before has a file and is not saved, so
+        # the file test kept its first real save from getting defaults.
+        listing_was_saved = listing_is_saved(resolved_tkr)
 
         # Load with the fully-resolved ticker (known_ticker bypasses the
         # resolver's own OpenFIGI path — we have already resolved).
         progress_phase(_f_tok, f"loading {resolved_tkr or resolved_isin} "
                                f"from Yahoo")
-        data = load_fund_data(
-            resolved_isin, resolved_mic, cache_cfg,
-            force_refresh=force, known_ticker=resolved_tkr,
-            commit=commit,
-        )
+        # An unsaved fund's holdings lookups stay in memory too, so the
+        # fetch leaves nothing on disk at all (see symbol_caches_in_memory).
+        # The Save click re-runs this with commit=1 and writes normally.
+        with (contextlib.nullcontext() if (commit or listing_was_saved)
+              else symbol_caches_in_memory()):
+            data = load_fund_data(
+                resolved_isin, resolved_mic, cache_cfg,
+                force_refresh=force, known_ticker=resolved_tkr,
+                commit=commit,
+            )
 
         # ── Backfill the identity quad ─────────────────────────────────
         # Both modes resolve all four fields before loading, so the quad
@@ -906,9 +917,16 @@ def create_app() -> Flask:
             if seeded:
                 data["field_defaults_applied"] = seeded
 
+        # Only a SAVED fund leaves anything on disk (v0.133.0). These two
+        # writes ran on every fetch, so a fund only looked at gained a
+        # listing file and an isin_map entry — and the pre-loaded list,
+        # which enumerated listing files, showed it as saved. The Save
+        # button re-requests with commit=1, which is when they happen.
+        persist_identity = (commit or listing_was_saved) and not identity_from_cache
+
         # Persist the resolution so the fund is identity-complete on the
         # next fetch without another OpenFIGI round-trip.
-        if resolved_isin and resolved_tkr and not identity_from_cache:
+        if resolved_isin and resolved_tkr and persist_identity:
             isin_map_put(resolved_isin, resolved_mic, resolved_tkr,
                          resolved_mic, resolved_note)
 
@@ -919,7 +937,7 @@ def create_app() -> Flask:
         # is a top-level sibling of the TTL'd Yahoo categories, never
         # ages out, never needs refreshing — it's an output of the
         # resolver, stamped here once.
-        if resolved_tkr and not identity_from_cache:
+        if resolved_tkr and persist_identity:
             try:
                 listing_identity_put(resolved_tkr, {
                     "isin":      resolved_isin,
@@ -1209,14 +1227,12 @@ def create_app() -> Flask:
         if wanted:
             universe = {t.upper() for t in wanted} | set(held)
         else:
-            # Every pre-loaded fund = every file in cache/listings/.
-            # The listing file's existence IS the "saved" marker
-            # (v0.21.0 explicit-save model), so this is exactly the
-            # set of funds the user has committed to.
+            # Every pre-loaded fund: the SAVED listings, not every file
+            # in cache/listings/ — viewing a fund creates its file too
+            # (see saved_listing_tickers), and the optimiser must not
+            # propose a fund the user never chose to keep.
             universe = set(held)
-            if LISTINGS_DIR.exists():
-                universe |= {fp.stem.upper()
-                             for fp in LISTINGS_DIR.glob("*.json")}
+            universe |= {t.upper() for t in saved_listing_tickers()}
 
         candidates, skipped = [], []
         # The candidate pass loads every pre-loaded fund, so on a cold
@@ -4543,6 +4559,8 @@ def create_app() -> Flask:
             except (OSError, ValueError):
                 print(f"[Scoring] skipping unreadable cache file {fp.name}")
                 continue
+            if not listing_blob_is_saved(blob):
+                continue                    # viewed, never saved
             prof  = ((blob.get("profile") or {}).get("value")) or {}
             ident = blob.get("identity") if isinstance(blob.get("identity"), dict) else {}
             ticker = (prof.get("symbol") or ident.get("ticker") or fp.stem).upper()
@@ -4667,6 +4685,8 @@ def create_app() -> Flask:
             except (OSError, ValueError):
                 print(f"[Quality] skipping unreadable cache file {fp.name}")
                 continue
+            if not listing_blob_is_saved(blob):
+                continue                    # viewed, never saved
             prof   = ((blob.get("profile") or {}).get("value")) or {}
             ident  = blob.get("identity") if isinstance(blob.get("identity"), dict) else {}
             ticker = (prof.get("symbol") or ident.get("ticker") or fp.stem).upper()
@@ -6941,7 +6961,11 @@ def create_app() -> Flask:
         for fp in sorted(LISTINGS_DIR.glob("*.json")):
             ticker = fp.stem
             listing_blob = cache_read(ticker, "profile")
-            if not listing_blob:
+            # The pre-loaded list is the SAVED set. A listing holding only
+            # its identity block was looked at and never saved — the file
+            # exists because every fetch writes the identity — so it is
+            # not listed (v0.133.0; see saved_listing_tickers).
+            if not listing_blob_is_saved(listing_blob):
                 continue
 
             ident      = listing_blob.get("identity") or {}

@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.132.3. This is the fullest architecture write-up;
+*Current as of v0.133.0. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -982,6 +982,6 @@ it does.
 
 ## Version
 
-Current release: **0.132.3** (2026-10-20)
+Current release: **0.133.0** (2026-10-20)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

@@ -3,6 +3,54 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.133.0] - 2026-10-20
+
+### Fixed - A fund you only looked at appeared in the pre-loaded list, and left files on disk
+
+Fetching a fund by ISIN or ticker put it straight into the pre-loaded
+list, without Save being pressed. The data writes were already gated on
+Save (v0.21.0, made watertight in v0.95.2), but two writes in
+`/api/fund` were not. Every fetch stamped the listing's identity block
+into `cache/listings/<ticker>.json` and wrote an `isin_map.json` entry,
+so a fund only viewed gained a listing file. Five readers still treated
+"a listing file exists" as "saved", although v0.95.3 had already
+introduced `listing_is_saved` because of this exact identity write:
+
+- the pre-loaded list;
+- the optimiser's candidate universe, so a fund you never kept could be
+  proposed;
+- the scoring universe, so it was ranked against;
+- the fund-quality pass;
+- the check that keeps default field sources off a fund already saved.
+  A fund once viewed was treated as saved, so its real first save never
+  got the defaults.
+
+Both halves are fixed:
+
+- **Nothing is written for an unsaved fund.** The identity block and
+  the ISIN map entry are written only on Save (`commit=1`) or for a
+  fund already saved. The Save button re-requests the fund with
+  `commit=1`, so saving writes them as before.
+- **One enumeration of the saved set.** `utils.saved_listing_tickers()`
+  and `listing_blob_is_saved()` answer "which funds are pre-loaded" on
+  the `listing_is_saved` marker, and all five readers use them. A
+  listing file left behind by a view before this release is no longer
+  listed.
+
+- **Holdings lookups stay in memory too.** Showing an unsaved fund's
+  top-10 holdings still asks Yahoo about each company, but the answers
+  no longer go to the shared symbol caches (`cache/_symbol_info.json`,
+  `_symbol_aliases.json`). `utils.symbol_caches_in_memory()` holds them
+  for that one request and drops them afterwards. It is a context
+  variable, so another request running at the same time still writes
+  normally. Reopening an unsaved fund means entering its ISIN or ticker
+  again anyway, so all that is lost is a repeat lookup. Save fetches
+  again with `commit=1`, outside the overlay, and writes them.
+
+Fetching a fund and not saving it now changes no file at all: checked
+against every file under `cache/` plus `portfolios.json`,
+`settings.json`, `overrides.json` and `isin_map.json`.
+
 ## [0.132.3] - 2026-10-20
 
 ### Fixed - A fund PorxPy already had would not open offline: "Yahoo did not return live data"

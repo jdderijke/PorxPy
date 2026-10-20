@@ -163,6 +163,16 @@ Concretely, before finishing a change, sweep the parallel set it belongs to:
   refresh is indistinguishable from "this fund has no data" by its
   result alone; until v0.130.0 every path wrote that emptiness over the
   good copy. Never bump a timestamp on a refresh that did not happen.
+- Ask **whether a fund is saved** (in the pre-loaded list) → through
+  `utils.listing_is_saved` / `listing_blob_is_saved`, and enumerate the
+  saved set with `utils.saved_listing_tickers()`. Never glob
+  `cache/listings/` or test a listing file's existence: an older build
+  wrote an identity block on every view, so a file proves nothing.
+  Equally, nothing may be written for a fund that has not been saved —
+  `/api/fund` writes only when `commit=1` or the fund is already saved,
+  and runs an unsaved load inside `utils.symbol_caches_in_memory()` so
+  even the shared holdings lookups stay off disk (v0.133.0). Five readers used the file test after v0.95.3 had already
+  replaced it, and a viewed fund showed up as saved in all of them.
 
 Naming, so a sweep looks in the right place: **X-ray** is the Portfolio
 sub-tab holding the four breakdown cards (`pSubXray`) and has no table of its

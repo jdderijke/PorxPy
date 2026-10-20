@@ -25,6 +25,8 @@ hit the local disk / cache.
 from __future__ import annotations
 
 import copy
+import contextlib
+import contextvars
 import json
 import math
 import re
@@ -596,12 +598,49 @@ def listing_is_saved(ticker: str) -> bool:
     """
     if not ticker:
         return False
-    from porxpy.config import CACHE_CATEGORIES, FUND_CATEGORIES
-    blob = cache_read(ticker, "profile")
+    return listing_blob_is_saved(cache_read(ticker, "profile"))
+
+
+def listing_blob_is_saved(blob: Any) -> bool:
+    """:func:`listing_is_saved` for a listing blob the caller already read.
+
+    The loops that walk every listing file read each blob anyway; this
+    lets them ask the save question of it without a second read, and
+    keeps one definition of "saved" for both.
+    """
     if not isinstance(blob, dict):
         return False
+    from porxpy.config import CACHE_CATEGORIES, FUND_CATEGORIES
     listing_cats = [c for c in CACHE_CATEGORIES if c not in FUND_CATEGORIES]
     return any(c in blob for c in listing_cats)
+
+
+def saved_listing_tickers() -> list[str]:
+    """Every listing in the pre-loaded list: the saved ones, not every file.
+
+    Why this exists: "every file in cache/listings/" was the pre-loaded
+    set under v0.21.0 and was still how the pre-loaded list, the
+    optimiser's candidate universe, the scoring universe and the quality
+    pass enumerated it — long after v0.95.3 found that merely viewing a
+    fund creates its file (the identity block). So a fund fetched by ISIN
+    or ticker and never saved appeared in the pre-loaded list at once,
+    was offered by the optimiser and was ranked against (v0.133.0). One
+    enumeration, on the one marker, for every caller.
+
+    Returns:
+        Tickers (file stems) whose listing holds real cached data.
+    """
+    if not LISTINGS_DIR.exists():
+        return []
+    out = []
+    for fp in sorted(LISTINGS_DIR.glob("*.json")):
+        try:
+            blob = json.loads(fp.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if listing_blob_is_saved(blob):
+            out.append(fp.stem)
+    return out
 
 
 def cache_read(key: str, category: str) -> dict:
@@ -2210,6 +2249,62 @@ def cash_position_delete(pid: str, position_id: str) -> bool:
 # AAPL benefits from a single lookup. Top-level keys are symbols; each
 # value is a {fetched_at, value: {...}} entry shaped like the per-ticker
 # category entries so age_days() works the same way.
+# ---------------------------------------------------------------------------
+# In-memory overlay for the two shared symbol caches (v0.133.0)
+# ---------------------------------------------------------------------------
+# A fund that has not been saved leaves NOTHING on disk — not its own
+# data, and not what its holdings taught the shared symbol caches either.
+# Fetching one still has to look its top-10 holdings up on Yahoo to show
+# them, so those answers are held here for the length of the request and
+# dropped with it. Reopening an unsaved fund is a fresh fetch anyway (the
+# user re-enters the ISIN or ticker), so nothing is lost but a repeat
+# lookup; pressing Save fetches again with commit=1, outside the overlay,
+# and that pass writes to disk as normal.
+#
+# A context variable, not a module flag: the dev server is threaded, and
+# a flag set by one request would silence another's writes. Reads see
+# disk with the overlay on top, so a lookup made earlier in the same
+# request is not repeated.
+_SYMBOL_OVERLAY: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "symbol_cache_overlay", default=None)
+_OVERLAY_DELETED = object()
+
+
+@contextlib.contextmanager
+def symbol_caches_in_memory():
+    """Within this block, symbol-cache writes stay in memory and vanish."""
+    token = _SYMBOL_OVERLAY.set({SYMBOL_INFO_CACHE_NAME: {},
+                                 SYMBOL_ALIAS_CACHE_NAME: {}})
+    try:
+        yield
+    finally:
+        _SYMBOL_OVERLAY.reset(token)
+
+
+def _symbol_cache_blob(name: str) -> dict:
+    """One shared symbol cache as this request sees it: disk + overlay."""
+    blob = cache_read(name, name)
+    overlay = _SYMBOL_OVERLAY.get()
+    if overlay is None:
+        return blob
+    merged = {**blob, **overlay[name]}
+    return {k: v for k, v in merged.items() if v is not _OVERLAY_DELETED}
+
+
+def _symbol_cache_set(name: str, key: str, entry: Any) -> None:
+    """Write (or, with ``_OVERLAY_DELETED``, remove) one entry."""
+    overlay = _SYMBOL_OVERLAY.get()
+    if overlay is not None:
+        overlay[name][key] = entry
+        return
+    blob = cache_read(name, name)
+    if entry is _OVERLAY_DELETED:
+        blob.pop(key, None)
+    else:
+        blob[key] = entry
+    cache_write(name, name, blob)
+
+
 def symbol_info_get(symbol: str) -> dict | None:
     """Read a non-stale symbol-info entry from the shared cache.
 
@@ -2226,7 +2321,7 @@ def symbol_info_get(symbol: str) -> dict | None:
     """
     if not symbol:
         return None
-    blob  = cache_read(SYMBOL_INFO_CACHE_NAME, "_symbol_info")
+    blob  = _symbol_cache_blob(SYMBOL_INFO_CACHE_NAME)
     entry = blob.get(symbol)
     if not entry or not isinstance(entry, dict):
         return None
@@ -2275,9 +2370,8 @@ def symbol_info_put(symbol: str, info: dict) -> None:
     """
     if not symbol:
         return
-    blob = cache_read(SYMBOL_INFO_CACHE_NAME, "_symbol_info")
-    blob[symbol] = {"fetched_at": now_iso(), "value": info}
-    cache_write(SYMBOL_INFO_CACHE_NAME, "_symbol_info", blob)
+    _symbol_cache_set(SYMBOL_INFO_CACHE_NAME, symbol,
+                      {"fetched_at": now_iso(), "value": info})
 
 
 # ---------------------------------------------------------------------------
@@ -2337,7 +2431,7 @@ def alias_get(raw: str) -> tuple[bool, str | None]:
     """
     if not raw:
         return False, None
-    blob = cache_read(SYMBOL_ALIAS_CACHE_NAME, "_symbol_aliases")
+    blob = _symbol_cache_blob(SYMBOL_ALIAS_CACHE_NAME)
     if raw not in blob:
         return False, None
     val = blob[raw]
@@ -2367,7 +2461,7 @@ def alias_put(raw: str, resolved: str | None) -> None:
     """
     if not raw:
         return
-    blob = cache_read(SYMBOL_ALIAS_CACHE_NAME, "_symbol_aliases")
+    blob = _symbol_cache_blob(SYMBOL_ALIAS_CACHE_NAME)
     entry = {"resolved": resolved, "stamped_at": now_iso()}
     if resolved is None:
         # Consecutive misses drive the escalating TTL. A hit clears the
@@ -2376,8 +2470,7 @@ def alias_put(raw: str, resolved: str | None) -> None:
         prev = blob.get(raw)
         prior = prev.get("misses", 0) if isinstance(prev, dict) else 0
         entry["misses"] = int(prior or 0) + 1
-    blob[raw] = entry
-    cache_write(SYMBOL_ALIAS_CACHE_NAME, "_symbol_aliases", blob)
+    _symbol_cache_set(SYMBOL_ALIAS_CACHE_NAME, raw, entry)
 
 
 def alias_delete(raw: str) -> bool:
@@ -2398,11 +2491,9 @@ def alias_delete(raw: str) -> bool:
     """
     if not raw:
         return False
-    blob = cache_read(SYMBOL_ALIAS_CACHE_NAME, "_symbol_aliases")
-    if raw not in blob:
+    if raw not in _symbol_cache_blob(SYMBOL_ALIAS_CACHE_NAME):
         return False
-    del blob[raw]
-    cache_write(SYMBOL_ALIAS_CACHE_NAME, "_symbol_aliases", blob)
+    _symbol_cache_set(SYMBOL_ALIAS_CACHE_NAME, raw, _OVERLAY_DELETED)
     return True
 
 
