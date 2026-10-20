@@ -4563,6 +4563,31 @@ def progress_update(token: str, done: int, total: int, elapsed: float) -> None:
         rec["updated_at"] = _time.time()
 
 
+# The progress token of the request being served, so code far below the
+# route — the Yahoo extractors — can name a fetch on the right bar without
+# every signature in between growing a token argument. A context variable
+# for the same reason as the symbol-cache overlay: the dev server is
+# threaded, and a module global would put one request's fetch on
+# another's bar.
+_PROGRESS_TOKEN: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "progress_token", default="")
+
+
+@contextlib.contextmanager
+def progress_context(token: str):
+    """Within this block, :func:`progress_live` reports onto ``token``."""
+    reset = _PROGRESS_TOKEN.set(token or "")
+    try:
+        yield
+    finally:
+        _PROGRESS_TOKEN.reset(reset)
+
+
+def progress_live(what: str) -> None:
+    """Rename the current request's phase to a fetch that is happening now."""
+    progress_phase(_PROGRESS_TOKEN.get(), what)
+
+
 def progress_finish(token: str, note: str = "") -> None:
     """Close a run out. The record stays readable for _PROGRESS_TTL_S."""
     if not token:

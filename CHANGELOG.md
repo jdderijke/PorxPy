@@ -3,6 +3,35 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.133.1] - 2026-10-20
+
+### Fixed - The fund page's progress bar said "from Yahoo" when nothing was fetched
+
+Opening a fund from a portfolio showed *loading <ticker> from Yahoo*
+on every load. The text was a fixed label in `/api/fund`, set before
+the load, so it said the same whether the fund came wholly from the
+cache or had several categories past their TTL. Since v0.132.3 a known
+fund's identity is never looked up again, and each data category
+(profile, sectors, asset class, price history, ...) is fetched only
+when it is older than its TTL. The label hid both.
+
+The bar now says *loading <ticker> from cache* for a saved fund, and
+*fetching <ticker> from Yahoo* for one not saved, where nothing is
+cached. Each fetch that really goes out renames the phase itself as it
+starts: *refreshing <ticker> price history from Yahoo*, *refreshing
+<ticker> sectors from Yahoo*, *fetching <ticker> top-10 holdings from
+Yahoo*, *looking up holding <symbol> on Yahoo*. The hooks sit inside the
+Yahoo fetch functions themselves (`extract_price_history`,
+`_fetch_history_since`, `extract_holdings`, `extract_symbol_info`) and
+in `get_category`, so no path can fetch without saying so. The token
+reaches them through `utils.progress_context()`, a context variable for
+the same reason as the v0.133.0 symbol-cache overlay: the dev server is
+threaded.
+
+What is fetched has not changed. A category past its TTL is still
+refreshed when the fund is opened; for most funds that is the price
+history, whose TTL is one day.
+
 ## [0.133.0] - 2026-10-20
 
 ### Fixed - A fund you only looked at appeared in the pre-loaded list, and left files on disk

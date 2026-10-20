@@ -78,6 +78,20 @@ from porxpy.utils import (
 )
 
 
+def _progress_live(what: str) -> None:
+    """Put a network fetch that is really happening on the progress bar.
+
+    The fund page's bar used to say "loading <ticker> from Yahoo" for
+    every load, including one served wholly from the cache (v0.133.1).
+    It now says "from cache" by default, and each fetch that actually
+    goes out names itself here at the moment it starts — so the label is
+    true whichever categories happen to be past their TTL. A no-op
+    outside a request that opened a progress context.
+    """
+    from porxpy.utils import progress_live
+    progress_live(what)
+
+
 # ---------------------------------------------------------------------------
 # Price history — period fallback + live-quote synthesis
 # ---------------------------------------------------------------------------
@@ -200,6 +214,7 @@ def extract_price_history(ticker: yf.Ticker) -> list[dict]:
         List of bars sorted oldest-first. Empty if neither history nor a
         live quote was obtainable.
     """
+    _progress_live(f"refreshing {getattr(ticker, 'ticker', '')} price history from Yahoo")
     hist, period_used = _fetch_history_with_fallback(ticker)
 
     out: list[dict] = []
@@ -256,6 +271,7 @@ def _fetch_history_since(ticker: yf.Ticker, start_date: str) -> list[dict]:
     Returns:
         List of bars, oldest-first. Empty on any failure or no data.
     """
+    _progress_live(f"refreshing {getattr(ticker, 'ticker', '')} price history from Yahoo (since {start_date})")
     try:
         df = ticker.history(start=start_date, auto_adjust=True)
     except Exception as exc:
@@ -479,6 +495,7 @@ def extract_holdings(ticker: yf.Ticker) -> list[dict]:
         ``[{"symbol": ..., "name": ..., "weight": <fraction>}, ...]``
         sorted by weight descending. Empty on missing/invalid data.
     """
+    _progress_live(f"fetching {getattr(ticker, 'ticker', '')} top-10 holdings from Yahoo")
     try:
         df = ticker.funds_data.top_holdings
         if df is not None and not df.empty:
@@ -2053,6 +2070,7 @@ def extract_symbol_info(symbol: str) -> dict:
         "sub_sector", "name", "quote_type"}``. Empty strings indicate
         "Yahoo had nothing useful for this symbol".
     """
+    _progress_live(f"looking up holding {symbol} on Yahoo")
     # Local import — resources depends only on config, no circular risk.
     from porxpy.resources import country_to_mstar
 
@@ -3384,6 +3402,7 @@ def get_category(yf_sym: str, isin: str, category: str, cache_cfg: dict,
         return held.get("value"), stale_cache_meta(held, cat_cfg.get("ttl_days"))
 
     t0 = time.time()
+    _progress_live(f"refreshing {yf_sym} {category.replace('_', ' ')} from Yahoo")
     value = extractor()
     print(f"[Live] {yf_sym}/{category} in {time.time() - t0:.2f}s")
     if have_held and not has_content(value) and not network_reachable(fresh=True):

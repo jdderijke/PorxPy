@@ -156,6 +156,7 @@ from porxpy.utils import (
     network_reachable,
     saved_listing_tickers,
     symbol_caches_in_memory,
+    progress_context,
     listing_identity_put,
     load_overrides,
     load_isin_map,
@@ -860,12 +861,17 @@ def create_app() -> Flask:
 
         # Load with the fully-resolved ticker (known_ticker bypasses the
         # resolver's own OpenFIGI path — we have already resolved).
-        progress_phase(_f_tok, f"loading {resolved_tkr or resolved_isin} "
-                               f"from Yahoo")
-        # An unsaved fund's holdings lookups stay in memory too, so the
-        # fetch leaves nothing on disk at all (see symbol_caches_in_memory).
-        # The Save click re-runs this with commit=1 and writes normally.
-        with (contextlib.nullcontext() if (commit or listing_was_saved)
+        # Honest by default (v0.133.1): a saved fund is read from the cache,
+        # and only the categories past their TTL go to Yahoo — each of
+        # those renames this phase itself as it starts (progress_live), so
+        # the bar says "from Yahoo" exactly when something is fetched. An
+        # unsaved fund has nothing cached, so everything is a fetch.
+        _what = resolved_tkr or resolved_isin
+        progress_phase(_f_tok, f"loading {_what} from cache"
+                       if listing_was_saved else f"fetching {_what} from Yahoo")
+
+        with (progress_context(_f_tok),
+              contextlib.nullcontext() if (commit or listing_was_saved)
               else symbol_caches_in_memory()):
             data = load_fund_data(
                 resolved_isin, resolved_mic, cache_cfg,
