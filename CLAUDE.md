@@ -293,7 +293,10 @@ External services: Yahoo Finance (always), OpenFIGI (ISIN→ticker), justETF (op
 ## Conventions
 
 - **Version lives only in `porxpy/__init__.py`** (`NAME`/`VERSION`/`BUILD_DATE`), exposed via `/api/meta`. Bump `0.x.0` for features/refactors, `0.0.x` for fixes (a batch containing both takes the minor bump), and add a matching `CHANGELOG.md` entry (Keep a Changelog-ish, newest first, prose that explains the cause rather than just the symptom). Bump once per batch of work handed over, not once per session — a follow-up round reusing the previous round's number leaves "which build am I running?" unanswerable.
-- **A version bump updates EVERY `.md` file.** This is a standing rule, not a
+- **A version bump updates EVERY `.md` file** — except the two design
+  proposals, `DATA_FEED_ARCHITECTURE.md` and `FUND_PERFORMANCE_INDICATORS.md`,
+  which describe what is not built yet and carry their own version and
+  version history (see Design docs). This is a standing rule, not a
   best-effort. When the version in `porxpy/__init__.py` moves, walk the whole
   set of Markdown files and either update each one or confirm it is still
   correct: `README.md` (top stamp, the `Version` section at the bottom, the
@@ -346,6 +349,19 @@ and design a first portfolio: cash, targets, optimiser) and `IMPORT_NEW_FUNDS_GU
 carry the same version stamp as the design docs, and the installation
 procedure lives in the first of them alone — README and the import guide
 point at it rather than repeating it.
+
+`DATA_FEED_ARCHITECTURE.md` and `FUND_PERFORMANCE_INDICATORS.md` are
+design PROPOSALS, written in Dutch: how fund data should be fetched and
+maintained (fallback chains, validation, pins, scheduler) and how
+performance indicators should be classified and coloured. They are not
+descriptions of the running code, so they do not carry a release stamp.
+Each has its own version number, a version history table at the top, and
+— in the architecture document — a decision log (B1, B2, …) whose entries
+are also worked into the body. Edit them by adding a version history row
+and, for a decision, a B-entry with its reasoning; mark anything proposed
+but not yet confirmed by the user as such. They also have to stay in
+step with each other: the indicators document holds what is specific to
+indicators and refers back for everything else.
 
 `WISHLIST.md` holds possible future enhancements — things worth doing that
 nobody has promised. It is deliberately not a defect list: add an idea there

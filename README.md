@@ -16,7 +16,7 @@ justETF).
 
 ## The documentation, and which document answers what
 
-Six documents, each owning one question, so nothing is explained twice
+Eight documents, each owning one question, so nothing is explained twice
 and there is one place to correct when something changes. In reading
 order for a new user:
 
@@ -27,13 +27,17 @@ order for a new user:
 | **README.md** (this file) | What is PorxPy, what does it do, and how is it built? | For the feature tour and the architecture — module roles, the cache layout, the request flow, external services, privacy. |
 | **[FACET_TREE.md](FACET_TREE.md)** | How do facets actually work? | When a breakdown reads oddly, or before changing anything that touches one. The four trees, why every level travels together, what `unknown` means against `n/a`, what is deliberately *not* a facet, and §17's verified defects. |
 | **[OPTIMIZER.md](OPTIMIZER.md)** | How does the solver decide? | When a design surprises you. The exposure matrix, why cash is a reservation rather than a column, greedy selection and swap refinement, why a tolerance is a share of its target rather than a distance, how that same allowance weights the objective, and §13's verified defects. |
+| **[DATA_FEED_ARCHITECTURE.md](DATA_FEED_ARCHITECTURE.md)** | How *should* PorxPy fetch and maintain fund data? | Design proposal, not yet built (in Dutch). Fallback chains per data item, validation, pinning, provenance, automatic refresh, the securities register. Versioned on its own, with a decision log at the top. |
+| **[FUND_PERFORMANCE_INDICATORS.md](FUND_PERFORMANCE_INDICATORS.md)** | How *should* PorxPy classify a fund and colour its performance indicators? | Design proposal, not yet built (in Dutch). Split off from the data-feed architecture: indicators are data items like any other; this covers only the classification, the context they are stored with, and the colour rules per fund type. |
 | **[CHANGELOG.md](CHANGELOG.md)** · **[WISHLIST.md](WISHLIST.md)** | What changed, and what might change? | The changelog explains the cause behind each release, not just the symptom. The wishlist is deferred ideas — deliberately not a defect list; defects live in the owning document's *Known open issues*. |
 
 The two guides are the *user* path — how to work the app. The three
 reference documents are the *why* path — the reasoning behind the
 behaviour, kept because that is the part that does not age. Each carries
 a version stamp naming the release it describes; check it against
-`porxpy/__init__.py` before trusting a claim.
+`porxpy/__init__.py` before trusting a claim. The two design proposals
+are the exception: they describe what is not built yet, so they carry a
+version of their own and a version history instead.
 
 ---
 
