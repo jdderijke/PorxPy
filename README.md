@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.133.1. This is the fullest architecture write-up;
+*Current as of v0.133.2. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -891,6 +891,39 @@ not change), structure yearly, operational figures like TER, fund
 size and the valuation ratios quarterly, trading data daily. That is what the field-level
 freshness indicators and the per-field re-source controls read.
 
+### Antivirus scanning PorxPy's own page (localhost)
+
+A web shield can also get between your browser and PorxPy itself. Avast
+Web Guard scans plain HTTP to `localhost` too, and holds up a large
+**JSON** response, then cuts the connection before it is complete. The
+same bytes served as text or HTML pass in a fraction of a second, so the
+page itself loads normally and only the data calls suffer. What you see:
+
+- **"The operation was aborted"** (or a JSON parse error) on screens that
+  load a lot of data: the portfolio view, the **History** tab, the
+  holdings table;
+- those screens taking ~20 seconds or more even when nothing is fetched,
+  which looks like PorxPy re-reading everything from Yahoo. The server
+  console shows the request answered within seconds; the rest of the wait
+  is the scanner.
+
+To check, time one large call. Clean, it takes as long as the server
+needs (a few seconds) and curl exits 0; intercepted, it takes ~20 s and
+ends with `curl: (56) Recv failure: Connection was reset`:
+
+```bash
+curl -sS -o /dev/null -w "%{http_code} %{time_total}s %{size_download} bytes\n" \
+  http://127.0.0.1:5000/api/portfolios/<portfolio-id>/price_history
+```
+
+**No fix from the Avast side yet.** The obvious one, a **Website /
+Domain** exception under **☰ Menu ▸ Settings ▸ General ▸ Exceptions**,
+is refused for `localhost`. What is known: the scanner holds up
+`application/json` at any size (even 200 KB is cut off), but lets the
+same JSON through instantly when it is **gzip-compressed**, and lets
+text and HTML through untouched. Found on v0.133.1; see CHANGELOG 0.133.2.
+
+
 ---
 
 ## Requirements
@@ -986,6 +1019,6 @@ it does.
 
 ## Version
 
-Current release: **0.133.1** (2026-10-20)
+Current release: **0.133.2** (2026-10-20)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

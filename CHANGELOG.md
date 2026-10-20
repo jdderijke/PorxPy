@@ -3,6 +3,37 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.133.2] - 2026-10-20
+
+### Changed - "↻ Live refresh all" asks before it starts
+
+The button bypasses every cache for every fund in the portfolio:
+profile, prices, sectors and the Yahoo top-10 with its enrichment, one
+fund after another. On a 25-fund portfolio that is minutes of Yahoo
+traffic, and the rest of PorxPy waits on the server meanwhile. It fired
+on a single click, and it is the button people reach for when the page
+seems stuck, which is exactly when a long refresh makes things worse. It
+now names the number of funds and asks first (`confirmLiveRefreshAll`).
+The single-fund reload on the fund page is unchanged; it is one fund and
+takes seconds.
+
+### Documented - Avast Web Guard holds up and truncates PorxPy's JSON over localhost
+
+The "operation was aborted" errors and the 20-second loads on the
+portfolio view and the History tab did not come from PorxPy. Measured
+on the machine that reported them, the portfolio price history was
+computed in 6.4 s, but took about 25 s to arrive and was cut off before
+the end (`curl: (56) Recv failure: Connection was reset`). A bare
+10-line Flask app showed the same behaviour: a 1.7 MB body served as
+`application/json` took 19 s and was reset, while the same bytes as
+`text/plain` or `text/html` took under 0.1 s. Avast Antivirus was the
+active scanner. README "Antivirus scanning PorxPy's own page" describes
+the symptom and the one-line check. Avast refuses `localhost` as a
+website exception, so there is no fix from that side yet. Measured
+since: the scanner cuts off `application/json` at any size (a 200 KB
+body too), and lets the same JSON through in 0.02 s when it is
+gzip-compressed. No code change in this release.
+
 ## [0.133.1] - 2026-10-20
 
 ### Fixed - The fund page's progress bar said "from Yahoo" when nothing was fetched

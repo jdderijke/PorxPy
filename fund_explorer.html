@@ -1805,7 +1805,7 @@
           <div class="psub" id="pSub"></div>
         </div>
         <div class="pactions">
-          <button class="btn btn-s" onclick="reloadPortfolio(true)" title="Force live refresh of every fund (profile, prices, sectors, and Yahoo top-10 holdings). Manually uploaded holdings lists are not affected — re-upload to refresh those.">↻ Live refresh all</button>
+          <button class="btn btn-s" onclick="confirmLiveRefreshAll()" title="Force live refresh of every fund (profile, prices, sectors, and Yahoo top-10 holdings). Manually uploaded holdings lists are not affected — re-upload to refresh those.">↻ Live refresh all</button>
           <button class="btn btn-s" onclick="openEditPortfolioModal()">⚙ Settings</button>
           <button class="btn btn-d" onclick="deleteCurrentPortfolio()">Delete</button>
         </div>
@@ -19680,6 +19680,26 @@ function ufIsCanonical(facet, text){
 // buttons, matching the by-row tab. They answer different questions —
 // the alias says the vocabulary was incomplete, the row change says
 // this source was wrong — and a user may well mean both at once.
+// "↻ Live refresh all" bypasses every cache for every fund in the
+// portfolio: profile, prices, sectors and the Yahoo top-10 with its
+// enrichment, one fund after another. On a 25-fund portfolio that is
+// minutes of Yahoo traffic, during which the server is busy and every
+// other screen waits, so it asks first (v0.133.2). It used to fire on a
+// single click, and it is the button someone reaches for when the page
+// seems stuck, which is exactly when a long refresh makes things worse.
+function confirmLiveRefreshAll(){
+  const p = (portfolios || []).find(x => x.id === activePid);
+  const n = ((p && p.funds) || []).length;
+  const what = n ? `all ${n} fund${n === 1 ? '' : 's'}` : 'every fund';
+  if (!confirm(`Live refresh ${what} in this portfolio?\n\n` +
+               'This ignores the cache and fetches profile, prices, sectors ' +
+               'and the Yahoo top-10 holdings again for each fund, one after ' +
+               'another. It can take several minutes, and the rest of PorxPy ' +
+               'is slow until it finishes.\n\n' +
+               'A normal load already refreshes anything past its TTL.')) return;
+  reloadPortfolio(true).catch(e => console.warn('portfolio refresh:', e));
+}
+
 async function reloadPortfolio(forceRefresh, isSwitch = false){
   if (!activePid) return;
   // Distinguish "I'm switching to a different portfolio" from "the
