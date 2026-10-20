@@ -332,7 +332,14 @@ def committed_pct(facet: str, per_level: dict) -> float:
             here[key] = max(here.get(key, 0.0), own)
         carried = here
 
-    return round(sum(carried.values()), 4)
+    return round(sum(carried.values()), TARGET_PCT_DECIMALS)
+
+
+# Decimal places a target percent is stored to. One number, because the
+# save-time check below must know how much rounding the writers can
+# introduce — two places that round and one that compares were three
+# chances to disagree.
+TARGET_PCT_DECIMALS = 4
 
 
 def validate_target_levels(targets: dict) -> list[str]:
@@ -399,7 +406,17 @@ def validate_target_levels(targets: dict) -> list[str]:
                 except (TypeError, ValueError):
                     own = 0.0
                 child_sum = here.get(key, 0.0)
-                if child_sum > own + 1e-9:
+                # Tolerance of the stored precision, not of float noise
+                # (v0.132.2). Every target is stored rounded to
+                # TARGET_PCT_DECIMALS, each bucket on its own — a baseline
+                # reads each level off the card independently — so n
+                # children can legitimately sum up to (n + 1) half-units
+                # above their parent. A 1e-9 tolerance reported developed
+                # 97.3652% against children 97.3653% as a contradiction
+                # the user could not have caused and cannot see.
+                n_kids = len(here_from.get(key, []))
+                slack = (n_kids + 1) * 0.5 * 10 ** -TARGET_PCT_DECIMALS
+                if child_sum > own + slack + 1e-9:
                     # Named with the IMMEDIATE children only. Listing every
                     # descendant made the message unreadable and implied
                     # they were all being added together, which is the very
@@ -476,7 +493,7 @@ def complete_target_ancestors(facet: str, per_level: dict) -> dict:
         blk = out.get(level) or {}
         for key, need in here.items():
             if key not in blk:
-                blk[key] = round(need, 4)
+                blk[key] = round(need, TARGET_PCT_DECIMALS)
         if blk:
             out[level] = blk
         carried = {}
@@ -656,7 +673,7 @@ def build_baseline_targets(fund_breakdowns: dict, *,
                 # 4dp: the editor stores what the user drags to, and a
                 # baseline arriving at full float precision shows as
                 # 14.000000000000002 the first time anything sums it.
-                lvl[key] = round(pct, 4)
+                lvl[key] = round(pct, TARGET_PCT_DECIMALS)
             if lvl:
                 per_level[level] = lvl
         if geared:

@@ -3,6 +3,82 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.132.3] - 2026-10-20
+
+### Fixed - A fund PorxPy already had would not open offline: "Yahoo did not return live data"
+
+Clicking a portfolio fund while offline reported *Yahoo did not return
+live data for 0P0000X83P.F. Enter the full ticker including its exchange
+suffix*. That message blamed the ticker for an outage. Every `/api/fund`
+request resolved the listing's identity live before it loaded anything:
+a ticker went to Yahoo for its currency, and an ISIN with an exchange
+went to OpenFIGI and then Yahoo. A failed lookup ended the request, so
+the cached data that v0.130.0 taught the loaders to serve offline was
+never reached.
+
+For a listing PorxPy has loaded before, which covers every fund in the
+pre-loaded list and in a portfolio, that lookup also bought nothing
+online: the listing cache already holds the ISIN, exchange and currency
+the listing was confirmed under. Both routes now read that identity
+first (`utils.listing_identities_for_isin` for ISIN + exchange) and
+resolve live only for a listing never seen before. An identity read
+from the cache is not written back, so `resolved_at` is not re-stamped
+for a resolution that did not happen, and the recorded sources are not
+re-credited to a service nobody asked. A listing never loaded before,
+requested while offline, now gets a 503 that says so, instead of the
+message about the ticker.
+
+The trade-off, also noted in IMPORT_NEW_FUNDS_GUIDE.md §6: a share class
+added on an exchange after the fund was first imported is not offered
+under its ISIN until it has been fetched once by ticker.
+
+## [0.132.2] - 2026-10-20
+
+### Fixed - Saving a baseline target set failed on rounding: "a parent cannot be smaller than what it contains"
+
+A target set built from a fund's breakdown could refuse to save with,
+for example, *developed is targeted at 97.3652%, but the buckets inside
+it already commit 97.3653%*. The baseline reads each level of the card
+on its own and stores every bucket rounded to four decimals, so a
+parent and the children that make it up are each rounded once. Four
+children can then add up to a couple of ten-thousandths more than their
+parent, and the save-time check compared them with a tolerance of
+`1e-9`.
+
+The check now allows the rounding the stored precision can introduce,
+half a unit in the last place for the parent and for each child, so a
+real contradiction (a parent set below what its children commit) is
+still reported, and a rounding difference no longer is. The precision is
+one constant, `targets.TARGET_PCT_DECIMALS`, used by the writers that
+round and by the check that compares.
+
+## [0.132.1] - 2026-10-20
+
+### Fixed - Importing a bundle deleted GBP and the blank rows of hand-edited resource files
+
+After a bundle import with the resource action on merge (or overwrite),
+the British pound was gone: no GBP in any currency dropdown, and
+sterling values no longer resolving to it. The merge indexed the local
+resource file by `(type, name)` with the name lower-cased, and then
+wrote the file back from that index. GBP and GBp (the penny) both fold
+to `gbp`, so the penny row replaced the pound and the rewritten file
+held only one of them. The same collapse removed every blank separator
+row a hand-edited file uses to group its tree, since they all share the
+empty key.
+
+The merge now edits the local file's own row list in place and only
+appends to it, so it cannot drop a local row, and rows without a name
+are left as they are. The key is case-sensitive for
+`Currency_definitions.csv`, the one vocabulary where case is part of a
+code's identity (ISO 4217 minor units: GBp, ZAr, ILa); every other file
+still folds case. The import preview uses the same key, so it no longer
+reports GBP and GBp as one conflicting row. Merging a file with its own
+rows now rewrites it byte-identically.
+
+An install that has already lost GBP gets it back by restoring the row
+in `resources/Currency_definitions.csv` (`git checkout` on a clone),
+then running Tools → **Reload resource files**.
+
 ## [0.132.0] - 2026-10-05
 
 ### Changed - "Cash held by me" is set per currency, and stays in that currency

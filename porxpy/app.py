@@ -149,6 +149,8 @@ from porxpy.utils import (
     HOLDINGS_ROW_FIELDS,
     listing_identity_get,
     listing_identity_lookup_isin,
+    listing_identities_for_isin,
+    network_reachable,
     listing_identity_put,
     load_overrides,
     load_isin_map,
@@ -645,6 +647,18 @@ def create_app() -> Flask:
         resolved_mic  = ""
         resolved_cur  = ""
         resolved_note = ""
+        # Set when the identity was read off the listing cache rather than
+        # resolved. A listing PorxPy has loaded before — every fund in the
+        # pre-loaded set and in a portfolio — already carries the ISIN,
+        # exchange and currency it was confirmed under, so asking OpenFIGI
+        # and Yahoo again bought nothing but a network round trip and a
+        # way to fail: offline, the probe's empty answer refused to open
+        # a fund whose every byte was on disk (v0.132.3). Only a listing
+        # never seen before is resolved live. Nothing is written back
+        # either: re-stamping resolved_at would claim a resolution that
+        # did not happen, and the sources would credit a service nobody
+        # asked.
+        identity_from_cache = False
 
         if not ticker_q:
             # ════ Mode 1: ISIN + exchange ══════════════════════════════
@@ -654,7 +668,26 @@ def create_app() -> Flask:
                 return jsonify({"error":
                     "An exchange (MIC) is required when fetching by ISIN."}), 422
 
-            listings, note = resolve_mode1_listings(isin, exchange)
+            # Known listings first (see identity_from_cache). The trade:
+            # a share class added on this exchange since the fund was
+            # last resolved is not offered until it is fetched by ticker.
+            listings = [{"yf_symbol": i["ticker"], "currency": i["currency"]}
+                        for i in listing_identities_for_isin(isin, exchange)]
+            if listings:
+                identity_from_cache = True
+                note = (f"{isin} on {exchange}: known listing(s), read "
+                        f"from the cache.")
+            else:
+                listings, note = resolve_mode1_listings(isin, exchange)
+                if not listings and not network_reachable(fresh=True):
+                    # Offline is not "OpenFIGI does not know this ISIN",
+                    # and the hint below would send the user hunting for
+                    # a ticker that is not the problem.
+                    return jsonify({"error":
+                        f"Offline — {isin} on {exchange} has not been "
+                        f"loaded before, so there is nothing cached to "
+                        f"show. Connect to the internet and try again.",
+                        "mode": 1}), 503
             if not listings:
                 # Nothing resolved — hard fail. Two cases produce this:
                 #   1. OpenFIGI doesn't know this ISIN on this exchange
@@ -736,7 +769,23 @@ def create_app() -> Flask:
 
             # Confirm Yahoo recognises the exact ticker and reports a
             # currency. This is mode 2's only automatic step.
-            cur, vnote = validate_mode2_ticker(ticker_q)
+            # Known listing first, exactly as mode 1 does: its currency
+            # was confirmed by Yahoo when it was first loaded.
+            cur = listing_identity_get(ticker_q).get("currency", "")
+            if cur:
+                identity_from_cache = True
+                vnote = (f"{ticker_q}: known listing (currency {cur}), "
+                         f"read from the cache.")
+            else:
+                cur, vnote = validate_mode2_ticker(ticker_q)
+                if not cur and not network_reachable(fresh=True):
+                    # Yahoo could not be asked, which is not the same as
+                    # Yahoo not knowing the ticker — the message below
+                    # blamed the ticker for an outage.
+                    return jsonify({"error":
+                        f"Offline — {ticker_q} has not been loaded before, "
+                        f"so there is nothing cached to show. Connect to "
+                        f"the internet and try again.", "mode": 2}), 503
             if not cur:
                 return jsonify({"error": vnote, "mode": 2}), 422
 
@@ -859,7 +908,7 @@ def create_app() -> Flask:
 
         # Persist the resolution so the fund is identity-complete on the
         # next fetch without another OpenFIGI round-trip.
-        if resolved_isin and resolved_tkr:
+        if resolved_isin and resolved_tkr and not identity_from_cache:
             isin_map_put(resolved_isin, resolved_mic, resolved_tkr,
                          resolved_mic, resolved_note)
 
@@ -870,7 +919,7 @@ def create_app() -> Flask:
         # is a top-level sibling of the TTL'd Yahoo categories, never
         # ages out, never needs refreshing — it's an output of the
         # resolver, stamped here once.
-        if resolved_tkr:
+        if resolved_tkr and not identity_from_cache:
             try:
                 listing_identity_put(resolved_tkr, {
                     "isin":      resolved_isin,

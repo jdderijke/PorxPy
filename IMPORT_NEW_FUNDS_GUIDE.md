@@ -1,6 +1,6 @@
 # IMPORT_NEW_FUNDS_GUIDE.md — importing new funds and ETFs
 
-*Current as of v0.132.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.132.3. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between typing an ISIN into an empty box and having a fully
@@ -82,7 +82,7 @@ version you are looking at:
 
 ```
 =======================================================
-  PorxPy  v0.132.0 (built 2026-10-05)
+  PorxPy  v0.132.3 (built 2026-10-20)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -256,6 +256,14 @@ re-issued for that listing. **Cancel** abandons it.
 4. Type the ISIN (from the fund's factsheet or KID) and click **Load
    fund**. If you have fetched this ticker before, the box is pre-filled
    with the ISIN you used last time; press the button to confirm.
+
+> **A listing PorxPy already has is not looked up again.** Routes A and
+> B both ask OpenFIGI and Yahoo only for a listing PorxPy has never
+> loaded. Opening a fund from the pre-loaded list or a portfolio reads
+> its ticker, exchange and currency from the cache, so it opens offline
+> too, from the cached data. The trade-off: a share class added on that
+> exchange after you first imported the fund will not show up under its
+> ISIN until you fetch it once by its ticker (route B).
 
 > **A bare ticker is refused.** Typing `IWDA` alone gives
 > `add an exchange suffix (e.g. .L)` and the fetch will not run. A symbol

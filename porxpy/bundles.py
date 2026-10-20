@@ -481,11 +481,11 @@ def _resource_conflicts(name: str, bundle_rows: list[dict]) -> dict:
 
     fp = RESOURCES_DIR / name
     local = parse_resource_csv(fp) if fp.exists() else []
-    local_by_key = {_row_key(r): r for r in local}
+    local_by_key = {_row_key(r, name): r for r in local}
 
     new_rows, conflicts, identical = [], [], 0
     for r in bundle_rows:
-        k = _row_key(r)
+        k = _row_key(r, name)
         if not k[1]:
             continue
         cur = local_by_key.get(k)
@@ -505,9 +505,24 @@ def _resource_conflicts(name: str, bundle_rows: list[dict]) -> dict:
     return {"new": new_rows, "conflicts": conflicts, "identical": identical}
 
 
-def _row_key(row: dict) -> tuple[str, str]:
-    return ((row.get("type") or "").strip().lower(),
-            (row.get("name") or "").strip().lower())
+def _row_key(row: dict, file_name: str) -> tuple[str, str]:
+    """Identity of a resource row, as the loader for its file sees it.
+
+    The name is case-FOLDED everywhere except the currency file. ISO
+    4217 marks minor units with a lowercase last letter, so GBP (the
+    pound) and GBp (the penny) are two currencies a hundredfold apart
+    that differ only in case — ``resources`` keeps a case-sensitive
+    code table for exactly this reason. Folding them here made the
+    merge treat the pair as one row: the later GBp replaced GBP in the
+    index and the rewritten file had no pound at all (v0.132.1). Every
+    other tree's names differ by more than case, so folding loses
+    nothing there and keeps "Technology"/"technology" one row.
+    """
+    from porxpy.config import CURRENCIES_FP
+    name = (row.get("name") or "").strip()
+    if file_name != CURRENCIES_FP.name:
+        name = name.lower()
+    return ((row.get("type") or "").strip().lower(), name)
 
 
 def _rows_equal(a: dict, b: dict) -> bool:
@@ -749,22 +764,38 @@ def _merge_resource_file(name: str, bundle_rows: list[dict],
     if not fields:
         return {"file": name, "added": 0, "updated": 0, "skipped": 0}
 
-    by_key = {_row_key(r): r for r in local}
+    # The LOCAL FILE is the list being edited, in its own order and with
+    # every row it has; the index only points into it. Until v0.132.1
+    # the file was rebuilt from the index itself, so any two local rows
+    # sharing a key collapsed into one on every import: GBP and GBp (see
+    # _row_key), and every blank separator row a hand-edited file uses
+    # to group its tree, all of which key to ("", ""). A merge must
+    # never drop a local row — it only adds to or edits the ones it
+    # matches. Rows without a name are kept as they stand and never
+    # matched.
+    out = [dict(r) for r in local]
+    index = {}
+    for i, r in enumerate(out):
+        k = _row_key(r, name)
+        if k[1]:
+            index.setdefault(k, i)
     added = updated = skipped = 0
 
     for r in bundle_rows:
-        k = _row_key(r)
+        k = _row_key(r, name)
         if not k[1]:
             continue
-        cur = by_key.get(k)
-        if cur is None:
-            by_key[k] = {f: (r.get(f) or "") for f in fields}
+        i = index.get(k)
+        if i is None:
+            out.append({f: (r.get(f) or "") for f in fields})
+            index[k] = len(out) - 1
             added += 1
             continue
+        cur = out[i]
         if _rows_equal(cur, r):
             continue
         if action == "overwrite":
-            by_key[k] = {f: (r.get(f) or "") for f in fields}
+            out[i] = {f: (r.get(f) or "") for f in fields}
             updated += 1
         elif action == "merge_aliases":
             # Key fields stay local; the alias columns become the union.
@@ -780,7 +811,7 @@ def _merge_resource_file(name: str, bundle_rows: list[dict],
                                key=str.lower)
                 merged[col] = "|".join(union)
             if not _rows_equal(merged, cur):
-                by_key[k] = merged
+                out[i] = merged
                 updated += 1
             else:
                 skipped += 1
@@ -789,7 +820,7 @@ def _merge_resource_file(name: str, bundle_rows: list[dict],
 
     write_resource_csv(fp, fields,
                        [{f: (row.get(f) or "") for f in fields}
-                        for row in by_key.values()])
+                        for row in out])
     return {"file": name, "added": added, "updated": updated,
             "skipped": skipped}
 

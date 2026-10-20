@@ -935,6 +935,47 @@ def listing_identity_lookup_isin(ticker: str) -> str:
     return listing_identity_get(ticker).get("isin", "") or ""
 
 
+def listing_identities_for_isin(isin: str, exchange: str = "") -> list[dict]:
+    """Every cached listing's identity block for ``isin``, optionally on one MIC.
+
+    Why this exists: resolving an ISIN to its listings asks OpenFIGI and
+    then Yahoo, and offline neither answers — so a fund the user already
+    holds could not be opened at all, although every listing it was ever
+    loaded under still carries its identity on disk. This is the offline
+    answer to the same question, read from what was resolved before. It
+    is a fallback only: online, the live resolution stays the authority,
+    because a listing can be added or delisted since it was cached.
+
+    Args:
+        isin: The fund's ISIN.
+        exchange: A MIC to restrict to, or ``""`` for every exchange.
+
+    Returns:
+        Identity dicts (``{isin, ticker, exchange, currency, ...}``) whose
+        ticker and currency are both known, in ticker order.
+    """
+    want_isin = (isin or "").strip().upper()
+    want_mic = (exchange or "").strip().upper()
+    out: list[dict] = []
+    if not want_isin or not LISTINGS_DIR.exists():
+        return out
+    for fp in sorted(LISTINGS_DIR.glob("*.json")):
+        try:
+            blob = json.loads(fp.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        ident = blob.get("identity") if isinstance(blob, dict) else None
+        if not isinstance(ident, dict):
+            continue
+        if (ident.get("isin") or "").strip().upper() != want_isin:
+            continue
+        if want_mic and (ident.get("exchange") or "").strip().upper() != want_mic:
+            continue
+        if ident.get("ticker") and ident.get("currency"):
+            out.append(dict(ident))
+    return out
+
+
 def cache_purge(key: str | None = None, category: str | None = None) -> int:
     """Remove cached data, optionally scoped to a key and/or category.
 
