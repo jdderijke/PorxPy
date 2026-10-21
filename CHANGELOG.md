@@ -3,6 +3,33 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.133.3] - 2026-10-21
+
+### Fixed - In Firefox, opening a peer list froze the rest of the page
+
+On the fund page, the "N peers" list in the Score row opened once.
+After that it never opened again, the peer buttons under the price
+chart vanished the moment one was clicked, and the main tabs stopped
+switching. Chrome was unaffected. Nothing threw an error, and every
+element was still in the DOM with the right state. Firefox (158) had
+stopped laying out anything that changed: the reopened menu, the
+redrawn peer buttons and a freshly inserted probe element all measured
+0×0. The trigger was two things together inside the `position:fixed`
+peer menu: the score-model `<select>` in its header, and peer rows
+laid out with `display:grid`. Either one alone was harmless. The rows
+are now flex with fixed-width currency and score columns, which keeps
+the aligned score column the grid was there for. The pre-loaded list's
+peer popover shares those rows, so it is fixed by the same change.
+
+### Fixed - The chart said "Peer group could not be loaded" while it was loading
+
+The note under the fund price chart read a missing peer result as a
+failure, so it said "could not be loaded" for the whole time the
+request was in flight, then corrected itself. It also kept the
+previous fund's verdict until the new one arrived. `loadFundPeers` now
+marks the request as loading and the note says *Loading peer group…*.
+A failed or non-OK response still reports the failure.
+
 ## [0.133.2] - 2026-10-20
 
 ### Changed - "↻ Live refresh all" asks before it starts

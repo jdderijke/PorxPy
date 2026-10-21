@@ -228,11 +228,22 @@
      read down the score column to see the ranking, and flex made every
      score start at a different x. The widths are shared by both surfaces
      that render peers, so the two lists line up the same way.
-     The identifier column was dropped in v0.82.0 — see _peerItemHtml. */
+     The identifier column was dropped in v0.82.0 — see _peerItemHtml.
+
+     Flex with fixed-width trailing columns, NOT grid. A display:grid row
+     inside this position:fixed menu, next to the score-model <select>
+     in its header, sends Firefox (158) into a state where it stops laying
+     out anything that changes afterwards: the menu reopens at 0x0, the
+     chart's peer buttons redraw at 0x0, the tabs stop switching. The
+     select alone or the grid alone is harmless; menu position:absolute
+     is too, but the menu is fixed to escape the list's overflow clip.
+     Fixed widths give the same aligned score column the grid did. */
   .crpop-menu.wide{min-width:340px;max-width:460px;}
-  .peer-item{display:grid;grid-template-columns:minmax(0,1fr) 42px 32px;
-    align-items:baseline;gap:10px;padding:5px 8px;font-family:var(--mono);
-    font-size:.7rem;border-radius:4px;}
+  .peer-item{display:flex;align-items:baseline;gap:10px;padding:5px 8px;
+    font-family:var(--mono);font-size:.7rem;border-radius:4px;}
+  .peer-item .peer-nm{flex:1 1 0;min-width:0;}
+  .peer-item .peer-cur{flex:0 0 42px;}
+  .peer-item .peer-sc{flex:0 0 32px;}
   .peer-item:hover{background:rgba(79,142,247,.06);}
   .peer-item.clk{cursor:pointer;}
   .peer-item.clk:hover{background:var(--surface2);}
@@ -9542,7 +9553,7 @@ let fViewMode   = 'price';    // 'price' | 'indexed'
 let fPeers      = [];         // [{ticker, name, history:[{date,close}]}]
 let fPeersOn    = new Set();  // tickers currently drawn
 let fPeersFor   = null;       // which ticker fPeers was loaded for
-let fPeerMeta   = null;       // {group_size, peer_n, peer_key}
+let fPeerMeta   = null;       // {group_size, peer_n, peer_key} | {loading} | null = failed
 
 function setFundViewMode(mode){
   if (mode !== 'price' && mode !== 'indexed') return;
@@ -9556,11 +9567,15 @@ function setFundViewMode(mode){
 // listing, so it is not something to run on every period change.
 async function loadFundPeers(ticker){
   if (fPeersFor === ticker) return;
+  // `loading` so the note says the group is on its way. Leaving the
+  // previous meta in place showed the LAST fund's verdict meanwhile, and
+  // a null one read "could not be loaded" for a request still in flight.
   fPeersFor = ticker; fPeers = []; fPeersOn = new Set();
+  fPeerMeta = { loading: true };
   renderFundPeerToggles();
   try {
     const r = await fetch(`${API}/funds/${encodeURIComponent(ticker)}/peers`);
-    if (!r.ok) return;
+    if (!r.ok){ fPeerMeta = null; renderFundPeerToggles(); return; }
     const d = await r.json();
     fPeers = d.peers || [];
     fPeerMeta = { group_size: d.group_size || 0, peer_n: d.peer_n || 0,
@@ -9586,7 +9601,10 @@ function renderFundPeerToggles(){
     el.innerHTML = '';
     if (note){
       const m = fPeerMeta;
-      if (!m){
+      if (m && m.loading){
+        note.textContent = 'Loading peer group…';
+        note.style.display = '';
+      } else if (!m){
         note.textContent = 'Peer group could not be loaded.';
         note.style.display = '';
       } else if ((m.group_size || 0) <= 1){
