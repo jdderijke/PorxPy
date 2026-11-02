@@ -3624,6 +3624,42 @@
 <!-- A fund house's own disclaimer, read and accepted by the user
      (v0.139.0). The text is the house's, fetched for the user's
      declaration; the accept button carries the house's own label. -->
+<!-- Apply the optimiser's trades (v0.144.0): to this portfolio, or to a
+     copy of it so the original stays as it is. -->
+<div class="modal-bg" id="optApplyModal">
+  <div class="modal" style="max-width:520px;width:95vw">
+    <div class="modal-h"><h3 id="optApplyTitle">Apply trades</h3></div>
+    <div class="modal-b" style="font-size:.78rem;line-height:1.55">
+      <div class="mfl" style="margin-bottom:.4rem">Where should the trades go?</div>
+      <label style="display:flex;gap:.5rem;align-items:flex-start;margin-bottom:.55rem">
+        <input type="radio" name="optApplyWhere" value="new" checked style="margin-top:3px"
+               onchange="optApplyWhereChanged()">
+        <span>Into a new portfolio<span style="display:block;color:var(--muted);font-size:.68rem"
+              id="optApplyNewNote">A copy of this portfolio with the trades applied. This one stays as it is.</span></span>
+      </label>
+      <div class="field" style="margin:0 0 .8rem 1.55rem">
+        <label class="mfl" for="optApplyName">Name of the new portfolio</label>
+        <input type="text" id="optApplyName" autocomplete="off"
+               onkeydown="if(event.key==='Enter') confirmOptimizerTrades()">
+      </div>
+      <label style="display:flex;gap:.5rem;align-items:flex-start;margin-bottom:.8rem">
+        <input type="radio" name="optApplyWhere" value="here" style="margin-top:3px"
+               onchange="optApplyWhereChanged()">
+        <span><span id="optApplyHereLabel">Into this portfolio</span><span style="display:block;color:var(--muted);font-size:.68rem">
+          Updates its share counts and cash balances.</span></span>
+      </label>
+      <div style="color:var(--muted);font-size:.7rem">
+        Applied as one batch — if any trade fails, none are applied and no
+        new portfolio is made.
+      </div>
+    </div>
+    <div class="modal-f" style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-s" onclick="hideModal('optApplyModal')">Cancel</button>
+      <button class="btn btn-p" id="optApplyGo" onclick="confirmOptimizerTrades()">Apply</button>
+    </div>
+  </div>
+</div>
+
 <!-- Portfolio report (v0.141.0): the choices, then one download. -->
 <div class="modal-bg" id="pReportModal">
   <div class="modal" style="max-width:520px;width:95vw">
@@ -7007,20 +7043,65 @@ async function applyOptimizerTrades(){
     cash_id:      sels[i] ? sels[i].value : null,
   }));
 
+  // Where they go is asked first (v0.144.0): this portfolio, or a copy
+  // of it under a new name so the original stays as it was. The dialog
+  // hands the answer to confirmOptimizerTrades.
+  _optApplyPending = {pid, trades};
   const n = trades.length;
-  if (!confirm(`Apply ${n} trade${n===1?'':'s'}?\n\n`
-             + `This updates your share counts and cash balances. `
-             + `It's applied as one batch — if any leg fails, none are applied.`)) return;
+  const name = (portfolios.find(p => p.id === pid) || {}).name || 'this portfolio';
+  document.getElementById('optApplyTitle').textContent =
+    `Apply ${n} trade${n===1?'':'s'}`;
+  document.getElementById('optApplyNewNote').textContent =
+    `A copy of “${name}” with the trades applied. “${name}” stays as it is.`;
+  document.getElementById('optApplyHereLabel').textContent = `Into “${name}” itself`;
+  const today = new Date().toISOString().slice(0, 10);
+  document.getElementById('optApplyName').value = `${name} — optimised ${today}`;
+  document.querySelector('input[name=optApplyWhere][value=new]').checked = true;
+  optApplyWhereChanged();
+  showModal('optApplyModal');
+  const nm = document.getElementById('optApplyName');
+  nm.focus(); nm.select();
+}
+
+let _optApplyPending = null;
+
+function optApplyWhereChanged(){
+  const isNew = document.querySelector('input[name=optApplyWhere]:checked')?.value === 'new';
+  const nm = document.getElementById('optApplyName');
+  if (nm) nm.disabled = !isNew;
+}
+
+async function confirmOptimizerTrades(){
+  const pend = _optApplyPending;
+  if (!pend) return;
+  // The proposal may have been dropped (portfolio switch) while the
+  // dialog was open; never post one portfolio's trades to another.
+  if (pend.pid !== activePid || !optProposal){
+    hideModal('optApplyModal'); _optApplyPending = null; return;
+  }
+  const isNew = document.querySelector('input[name=optApplyWhere]:checked')?.value === 'new';
+  let newName = '';
+  if (isNew){
+    newName = document.getElementById('optApplyName').value.trim();
+    if (!newName){ alert('Give the new portfolio a name.'); return; }
+    if (portfolios.some(p => (p.name || '').trim().toLowerCase() === newName.toLowerCase())){
+      alert(`There is already a portfolio called “${newName}”. Choose another name.`);
+      return;
+    }
+  }
+  hideModal('optApplyModal');
+  _optApplyPending = null;
+  const {pid, trades} = pend;
 
   const btn = document.getElementById('optApplyBtn');
   btn.disabled = true;
   const status = document.getElementById('optStatus');
-  status.textContent = 'Applying…';
+  status.textContent = isNew ? `Copying to “${newName}” and applying…` : 'Applying…';
 
   try {
     const r = await fetch(`${API}/portfolios/${pid}/trades`, {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({trades}),
+      body: JSON.stringify(isNew ? {trades, into_new: {name: newName}} : {trades}),
     });
     const d = await r.json();
     if (!d.ok){
@@ -7033,7 +7114,8 @@ async function applyOptimizerTrades(){
       return;
     }
     status.textContent = `Applied ${d.applied.length} trade`
-      + `${d.applied.length===1?'':'s'}.`
+      + `${d.applied.length===1?'':'s'}`
+      + (d.portfolio ? ` to the new portfolio “${d.portfolio.name}”, now selected.` : '.')
       + ((d.warnings||[]).length ? ' ' + d.warnings.join(' ') : '');
 
     document.getElementById('optResult').style.display = 'none';
@@ -7049,6 +7131,13 @@ async function applyOptimizerTrades(){
     portfolioHoldings    = null;
     portfolioHoldingsPid = '';
     lastLoadedPid = '';
+    if (d.portfolio){
+      // Into a copy: switch to it, as creating a portfolio does, so the
+      // tabs show the result; the original is one pick away, unchanged.
+      activePid = d.portfolio.id;
+      localStorage.setItem('activePortfolioId', activePid);
+      ufRenderImpact();
+    }
     await refreshConfigAndPortfolios();
   } catch(e){
     status.textContent = `Failed: ${e.message || e}`;

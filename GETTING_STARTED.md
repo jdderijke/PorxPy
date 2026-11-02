@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.143.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.144.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -135,7 +135,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.143.0 (built 2026-11-02)
+  PorxPy  v0.144.0 (built 2026-11-02)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -540,7 +540,14 @@ use it for the untargeted remainder, and it will rarely be chosen.
 
 ## 9. Apply the trades
 
-Press **✓ Apply these trades** and confirm.
+Press **✓ Apply these trades**. The dialog asks where they go:
+
+- **Into a new portfolio** (the default) — a copy of this one, under a
+  name you choose, with the trades applied. The portfolio you designed
+  from stays exactly as it was, and the new one is selected so you can
+  look at the result. The copy carries everything a **Start from**
+  clone does (section 5).
+- **Into this portfolio itself** — its share counts and cash change.
 
 The list shows the sells first, then the buys — the order they are
 applied in, so the cash the sells raise is there before the buys spend
@@ -559,7 +566,8 @@ with nothing applied — the message names the trade, and its row is
 highlighted in the list.
 
 The batch is applied atomically: every leg is validated and priced
-first, and if any one fails, none are applied. A half-applied proposal
+first, and if any one fails, none are applied — and when it was going
+into a new portfolio, no new portfolio is left behind. A half-applied proposal
 would leave the portfolio in a state neither you nor the optimiser could
 reason about.
 

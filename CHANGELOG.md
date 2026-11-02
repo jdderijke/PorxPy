@@ -3,6 +3,27 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.144.0] - 2026-11-02
+
+### Added - Apply the optimiser's trades to a new portfolio
+
+**✓ Apply these trades** now opens a dialog instead of a yes/no
+confirm, asking where the trades go: **into a new portfolio** — a copy
+of this one under a name you give it (suggested: "<name> — optimised
+<date>"), with the trades applied and the original left exactly as it
+was — or **into this portfolio itself**, as before. The new portfolio is
+the default, being the choice that changes nothing you already have,
+and it is selected afterwards so the tabs show the result. A name
+already in use is refused.
+
+The copy and the trades are one request (`POST /portfolios/<pid>/trades`
+with `into_new: {name}`), not a clone call followed by a trades call:
+`clone_portfolio` gives every cash position a fresh id, so the cash
+accounts chosen in the trade list have to be translated to the copy's,
+and only the server knows both. It also keeps the batch's promise — if
+any trade is refused, the copy is deleted again, so a rejected batch
+leaves no half-made portfolio.
+
 ## [0.143.0] - 2026-11-02
 
 ### Added - YTD on every price-history period selector

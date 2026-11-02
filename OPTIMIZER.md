@@ -1,6 +1,6 @@
 # The PorxPy Optimizer — how it works
 
-*Applies to `porxpy/optimizer.py` as of v0.143.0. The full audit — every
+*Applies to `porxpy/optimizer.py` as of v0.144.0. The full audit — every
 claim in the document re-checked against the module — was done at
 v0.91.0; since then the v0.96.0 peer-scoring change was folded into §7b
 and §13's one remaining open issue was re-confirmed by reading
@@ -767,7 +767,9 @@ achieved" has several causes needing different fixes:
 
 Nothing is applied. The trade list goes to the same `apply_trades`
 primitive the manual Buy/Sell dialog uses, atomically, only when you press
-Apply.
+Apply — to this portfolio, or (the dialog's default since v0.144.0) to a
+clone of it made in the same request, which is deleted again if the
+batch is refused.
 
 ---
 

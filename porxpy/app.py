@@ -1688,9 +1688,23 @@ def create_app() -> Flask:
 
         Body::
 
-            {"trades": [{"ticker", "shares_delta", "cash_id"}, ...]}
+            {"trades": [{"ticker", "shares_delta", "cash_id"}, ...],
+             "into_new": {"name": "..."}}          # optional (v0.144.0)
+
+        ``into_new`` applies the batch to a CLONE of this portfolio under
+        the given name and leaves this one untouched — the optimiser's
+        "keep the old portfolio" choice. It is done here, in one request,
+        rather than as a clone call followed by a trades call, for two
+        reasons. The clone gives every cash position a fresh id
+        (``clone_portfolio`` says why), so the trades' ``cash_id``s,
+        chosen against the source, must be translated to the clone's —
+        and only this side knows both. And the batch stays atomic in the
+        sense the user is promised: if any leg fails, the clone is
+        removed again, so a rejected batch leaves no half-made portfolio
+        behind.
         """
         from porxpy.trades import apply_trades, price_lookup_from_cache
+        from porxpy.utils import clone_portfolio
 
         p = find_portfolio(pid)
         if not p:
@@ -1700,6 +1714,24 @@ def create_app() -> Flask:
         trades = body.get("trades") or []
         if not isinstance(trades, list) or not trades:
             return jsonify({"error": "no trades supplied"}), 400
+
+        into_new = body.get("into_new")
+        created = None
+        if isinstance(into_new, dict):
+            new_name = (into_new.get("name") or "").strip()
+            if not new_name:
+                return jsonify({"error": "a name for the new portfolio is required"}), 400
+            clone = clone_portfolio(p, new_name)
+            # clone_portfolio renews the cash ids in place, in order, so
+            # the n-th position of the source is the n-th of the clone.
+            id_map = {(a or {}).get("id"): (b or {}).get("id")
+                      for a, b in zip(p.get("cash_positions") or [],
+                                      clone.get("cash_positions") or [])}
+            trades = [dict(t, cash_id=id_map.get(t.get("cash_id"), t.get("cash_id")))
+                      if isinstance(t, dict) else t for t in trades]
+            upsert_portfolio(clone)
+            created = clone
+            p, pid = clone, clone["id"]
 
         cache_cfg = normalise_cache_config(p.get("cache_config"))
 
@@ -1724,6 +1756,13 @@ def create_app() -> Flask:
 
         res = apply_trades(pid, trades, price_lookup_from_cache(cache_cfg))
         res["added_funds"] = added
+        if created is not None:
+            if not res.get("ok"):
+                # The whole clone goes, the auto-added funds with it.
+                delete_portfolio(created["id"])
+                res["added_funds"] = []
+                return jsonify(res), 400
+            res["portfolio"] = {"id": created["id"], "name": created["name"]}
 
         # Rolling back the auto-add on failure keeps the failed case a true
         # no-op — otherwise a rejected batch would still litter the
