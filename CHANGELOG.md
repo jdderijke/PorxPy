@@ -3,6 +3,111 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.143.0] - 2026-11-02
+
+### Added - YTD on every price-history period selector
+
+The fund page's price chart and the Portfolio → History chart gain a
+**YTD** button between 6M and 1Y, and the portfolio report dialog a
+**Year to date** period. On the charts YTD is a number of days back to
+1 January (`ytdDays()`), so both rows keep their one cutoff rule and
+the moving averages are still computed on the full history; the first
+point shown is the year's first close, the same starting point the fund
+page's YTD figure uses. In the report, `history_series` starts the
+window at the first close on or after 1 January of the latest date's
+year, and best and worst fund are judged over that window.
+
+### Fixed - "&" in the report's title and best/worst line
+
+The 0.142.0 escaping missed three places outside the tables: the
+portfolio name in the title and the best and worst fund in the history
+summary, where "L&G" still printed as "L&G;".
+
+## [0.142.0] - 2026-11-02
+
+### Changed - The report's funds table: more columns, on a landscape page
+
+The table now reads: fund, **asset class** (the fund's primary
+classification, as the summary counts it), value, weight, **1M / 3M /
+1Y / 3Y** returns, **TER** and **size** as figures rather than
+percentile ranks, **Peers** (the size of the fund's peer group), and
+the fund's **rank overall / among its peers under each weight model** —
+Cost driven, Cost and returns, Returns driven — side by side, where it
+showed one model's components before. The route therefore reads the
+scores once per preset, in the user's own preset order; the numbers are
+still the screen's own `/api/scores` payloads.
+
+Sixteen columns do not fit across portrait A4 at a readable size, so
+that section alone is set on landscape pages (the document now has a
+portrait and a landscape page template), with its two-row header —
+"Returns" and "Rank" bands over their columns — repeated on each page.
+
+### Fixed - Fund names with "&" in the report
+
+Names went into the PDF's markup unescaped, so "L&G Battery" printed as
+"L&G;". Every user- or source-supplied text in a table cell is escaped now.
+
+## [0.141.0] - 2026-11-02
+
+### Added - Portfolio report as a PDF, under a new "Downloads" group
+
+The Portfolio sub-tabs gain a fourth group behind a separator,
+**Downloads ▾** — a pull-down rather than tabs, because each entry
+produces a file and leaves you on the sub-tab you were reading. Its
+first entry is **Portfolio report (PDF)…**, which asks for the history
+period (1 / 3 / 5 years / all), whether to count the cash held by you
+(starting from the X-ray's own switch) and whether to append the
+factsheets, then downloads:
+
+1. **Summary** — total value, funds, cash positions (and the part held
+   back), funds per primary asset class, each cash account.
+2. **Funds** — value, weight, 1-year return, the percentile ranks on
+   TER, size and returns, and the overall and peer score under the
+   portfolio's weight model.
+3. **History** — indexed to 100 at the period start, with the
+   portfolio's 50- and 200-day averages (computed on the full history,
+   so valid from the first day shown) and the best and worst fund over
+   the period; funds younger than the period are not ranked.
+4. **Exposure versus target** — every targeted facet and level, with
+   now, deviation and allowed miss in points, and the untargeted share.
+5. **X-ray** — each facet at its middle level (sector, region, asset
+   class; currency and the fund classifications at their one level).
+6. **Addendum** — the stored factsheets appended as their own pages,
+   with a bookmark per fund; image factsheets get a page each.
+
+The data is not recomputed: the route calls `/view` and
+`/price_history` in-process and reads the cached scores, so the PDF and
+the screen are one computation. Layout lives in a new module,
+`porxpy/report.py`. It is a cancellable job on the progress bar, and it
+downloads through the size-and-checksum check the bundles use
+(`_bundle_response` now takes a MIME type), since a report with its
+factsheets is tens of megabytes.
+
+**New dependencies:** `reportlab`, `matplotlib`, `pypdf` — run
+`pip install -r requirements.txt` after pulling.
+
+## [0.140.0] - 2026-11-02
+
+### Added - "Clear all targets" in the targets editor
+
+One button empties every category — asset class, sector, country,
+currency and the three fund classifications — for a clean sheet, pins
+included (a pin holds a target, and none is left). Cash held by me and
+each category's allowed miss stay: they belong to the portfolio rather
+than to the target set. It asks first, is one Undo step like every
+other edit, and nothing is stored until Save. Greyed out when there is
+nothing to clear.
+
+### Changed - The "Start from a fund" box is laid out like the cash box
+
+It was one wrapping line, which put Undo on a line of its own under the
+baseline button and the four *Build from* choices at four different
+widths across two ragged lines. It is now a titled box like *Cash held
+by me* beside it: the fund and **Set baseline targets** on one row, then
+the four level choices in an aligned two-column grid. **Undo** moved out
+of it, to the right of *When I change a bucket* beside **Clear all
+targets** — it steps back through every edit, not just the baseline's.
+
 ## [0.139.0] - 2026-11-02
 
 ### Added - Tell the fund houses who you are, once, in Settings

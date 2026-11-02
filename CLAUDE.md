@@ -285,6 +285,7 @@ Flask backend (`porxpy/`) + one 19k-line vanilla-JS file (`fund_explorer.html`) 
 | `utils.py` | Cache I/O (`cache_get`/`cache_put`/`cache_read`/`cache_write`/`cache_purge`), portfolios, settings, overrides, ISIN map. |
 | `issuers.py` | Fund-house adapters: where one issuer publishes a fund's factsheet and holdings file, and the impersonating transport that can fetch them. Locates and downloads only — it parses nothing and stores no fund data, so the documents it returns go through the same `factsheet_put` / `upload_commit` paths a manual upload does. |
 | `upload.py` / `bundles.py` / `scoring.py` / `targets.py` / `optimizer.py` / `trades.py` / `ai.py` | Holdings-file parsing; fund/portfolio bundle export-import; percentile scoring and peer groups; target-vs-actual deviation **and the target-set CSV** (`targets_to_csv` / `targets_from_csv`); greedy design solver (`optimise_portfolio`); atomic cash↔position trades; factsheet extraction via the Anthropic API. |
+| `report.py` | The portfolio report PDF (v0.141.0): LAYOUT only. Its route feeds it the payloads of `/view`, `/price_history` and the scores by calling those routes in-process, so a report number and a screen number are one computation — keep it that way rather than recomputing anything here. reportlab for pages, matplotlib through the object API + Agg (never `pyplot`: the server is threaded), pypdf to append factsheets. |
 
 ### The four invariants worth knowing before editing
 

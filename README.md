@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.139.0. This is the fullest architecture write-up;
+*Current as of v0.143.0. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -579,6 +579,21 @@ value held in unrecognised values, worst facet first — green under 5%,
 amber under 10%, red above — so you can tell when resolving starts to
 matter.
 
+### Take the portfolio away as a PDF
+
+**Portfolio → Downloads ▾ → Portfolio report (PDF)** builds an overview
+of the portfolio as it stands: the summary with the cash positions and
+the funds per asset class; every fund, on a landscape page, with its
+asset class, value, weight, 1M/3M/1Y/3Y returns, TER, size, the size of
+its peer group, and its rank overall / among its peers under each of the
+three weight models (cost, cost + returns, returns); the indexed history over
+the year to date, 1, 3 or 5 years or all of it, with the 50- and 200-day averages and the
+best and worst fund; exposure against every target; and the X-ray at
+each facet's middle level (sector, region, asset class, currency and
+the three fund classifications). The funds' stored factsheets can be
+appended as real PDF pages, with a bookmark per fund. The numbers come
+from the same computations as the screen, so the PDF and the app agree.
+
 ### Back up your work, or hand it to someone else
 
 Building a usable pre-loaded set — a hundred-odd funds with holdings,
@@ -1025,6 +1040,6 @@ it does.
 
 ## Version
 
-Current release: **0.139.0** (2026-11-02)
+Current release: **0.143.0** (2026-11-02)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

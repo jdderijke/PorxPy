@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.139.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.143.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -135,7 +135,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.139.0 (built 2026-11-02)
+  PorxPy  v0.143.0 (built 2026-11-02)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -337,7 +337,7 @@ Leave it at 0 for a first run, or set aside a buffer if you want one.
 The quickest way to a coherent set is **Start from a fund → Set baseline
 targets**, at the top of the dialog. Pick a broad index fund and its own
 breakdown is read into every bucket of asset class, sector, country and
-currency. **Build from**, beside it, sets per category the finest level
+currency. **Build from**, below it, sets per category the finest level
 copied — *Sector ↑* targets the sectors and super sectors and leaves sub
 sectors free, *Super class only* targets just equity, fixed income and
 so on. It starts at the finest level of each. Nothing is written until
@@ -380,7 +380,10 @@ a sub-sector always appears inside its sector. Clearing a box (or the
 of this", and it is enforced — such a row is labelled *hold none*, so
 check for that label after adding buckets: a bucket you add starts at 0. The circle at the end of a row **pins** it,
 so changing a sibling or its parent leaves it — and everything inside it
-— alone. **Undo** steps back through the session's edits.
+— alone. **Undo**, at the right of the *When I change a bucket* line,
+steps back through the session's edits. Beside it, **Clear all targets**
+empties every category at once for a clean sheet — your cash held and
+the allowed miss per category stay — and is itself one Undo step.
 
 Below that, a rail on the left lists every category with what its
 targets commit and its **allowed miss**; pick one to edit it. The allowed

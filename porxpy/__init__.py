@@ -23,7 +23,7 @@ unanswerable. Every bump carries a matching CHANGELOG.md entry.
 """
 
 NAME       = "PorxPy"
-VERSION    = "0.139.0"
+VERSION    = "0.143.0"
 BUILD_DATE = "2026-11-02"
 
 __all__ = ["NAME", "VERSION", "BUILD_DATE"]

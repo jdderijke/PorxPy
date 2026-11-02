@@ -3533,8 +3533,13 @@ def create_app() -> Flask:
     # -----------------------------------------------------------------------
     # Bundle downloads
     # -----------------------------------------------------------------------
-    def _bundle_response(data: bytes, filename: str) -> Response:
-        """A bundle download the client can prove arrived intact.
+    def _bundle_response(data: bytes, filename: str,
+                         mimetype: str = "application/zip") -> Response:
+        """A large download the client can prove arrived intact.
+
+        Written for the bundles; the portfolio report (v0.141.0) uses it
+        too, because a report with its factsheets appended is the same
+        tens of megabytes and fails the same way.
 
         A 31MB bundle does not reliably survive the Werkzeug development
         server: measured three times against the shipped fund set, every
@@ -3562,6 +3567,7 @@ def create_app() -> Flask:
         Args:
             data: The complete archive.
             filename: Suggested download name.
+            mimetype: What the body is.
 
         Returns:
             A streaming response carrying the integrity headers.
@@ -3576,7 +3582,7 @@ def create_app() -> Flask:
                 yield data[i:i + CHUNK]
 
         return Response(
-            _stream(), mimetype="application/zip",
+            _stream(), mimetype=mimetype,
             headers={
                 "Content-Disposition": f'attachment; filename="{filename}"',
                 "Content-Length":      str(total),
@@ -4233,6 +4239,94 @@ def create_app() -> Flask:
         result = aggregate_portfolio_holdings(enriched, total_base, match_key)
         result["base_currency"] = base_cur
         return jsonify(result)
+
+    @app.route("/api/portfolios/<pid>/report", methods=["POST"])
+    def api_portfolio_report(pid: str) -> Response:
+        """The portfolio overview as a PDF (v0.141.0).
+
+        Body (JSON, all optional): ``{period: "1y"|"3y"|"5y"|"max",
+        include_cash: bool, factsheets: bool, progress_token}``.
+
+        The data is NOT recomputed here. The view and the price history
+        are produced by calling this app's own routes for them, so the
+        report and the screen are one computation and cannot drift; the
+        scores come from the same cached universe ``/api/scores`` serves,
+        under the weight model the portfolio's optimiser panel uses.
+        :mod:`porxpy.report` only lays them out.
+
+        A cancellable job: everything it does is reading, so a stop at
+        any step leaves nothing behind.
+        """
+        from porxpy.report import PERIODS, build_portfolio_report
+        from porxpy.resources import facet_alias_targets
+        from porxpy.utils import factsheet_file, factsheet_get
+
+        p = find_portfolio(pid)
+        if not p:
+            return jsonify({"error": "portfolio not found"}), 404
+        body = request.get_json(force=True, silent=True) or {}
+        period = body.get("period") if body.get("period") in PERIODS else "1y"
+        include_cash = body.get("include_cash", True) is not False
+        want_fs = bool(body.get("factsheets"))
+        ptok = _job_token()
+
+        def _via(route, path: str) -> dict:
+            # One of this app's own GET routes, called in-process with the
+            # same progress token, so its work shows on this job's bar.
+            with app.test_request_context(path, query_string={"progress_token": ptok}):
+                resp = app.make_response(route(pid))
+            if resp.status_code != 200:
+                raise RuntimeError((resp.get_json(silent=True) or {}).get("error")
+                                   or f"{path} answered HTTP {resp.status_code}")
+            return resp.get_json()
+
+        with progress_job(ptok, "loading the portfolio", "steps", cancellable=True):
+            try:
+                progress_stage(ptok, "Portfolio")
+                view = _via(api_portfolio_view, f"/api/portfolios/{pid}/view")
+                progress_check(ptok)
+                progress_stage(ptok, "History")
+                progress_phase(ptok, "reading the price history")
+                ph = _via(api_portfolio_price_history,
+                          f"/api/portfolios/{pid}/price_history")
+                progress_check(ptok)
+                progress_stage(ptok, "Report")
+                progress_phase(ptok, "reading the fund scores")
+                # Every weight model, in the user's own preset order: the
+                # funds table ranks each fund under all of them side by side.
+                from porxpy.config import SCORING_PRESETS
+                presets = ((load_settings().get("scoring") or {}).get("presets")
+                           or SCORING_PRESETS)
+                score_models = [_score_universe_cached(n) for n in presets]
+                labels = {}
+                for f in ("asset_class", "sector", "country", "currency"):
+                    labels[f] = {e["key"]: e.get("label") or e["key"]
+                                 for e in facet_alias_targets(f)}
+                factsheets = []
+                if want_fs:
+                    for f in sorted((x for x in view.get("funds") or []
+                                     if not x.get("is_cash")),
+                                    key=lambda x: -((x.get("valuation") or {})
+                                                    .get("value_base") or 0)):
+                        isin = f.get("isin") or ""
+                        meta = factsheet_get(isin) or {}
+                        prof = ((f.get("data") or {}).get("profile") or {})
+                        factsheets.append({
+                            "ticker": f.get("ticker") or "",
+                            "name": prof.get("longName") or prof.get("shortName") or "",
+                            "path": factsheet_file(isin),
+                            "ext": meta.get("ext") or ""})
+                pdf = build_portfolio_report(
+                    view, ph, score_models, period=period, include_cash=include_cash,
+                    labels=labels, factsheets=factsheets, app_version=VERSION,
+                    say=lambda m: progress_phase(ptok, m),
+                    check=lambda: progress_check(ptok))
+            except RuntimeError as exc:
+                return jsonify({"error": str(exc)}), 502
+        safe = re.sub(r"[^A-Za-z0-9 ._-]+", "", p.get("name") or "portfolio").strip()
+        stamp = datetime.now().strftime("%Y-%m-%d")
+        return _bundle_response(pdf, f"PorxPy - {safe or 'portfolio'} - {stamp}.pdf",
+                                mimetype="application/pdf")
 
     @app.route("/api/portfolios/<pid>/price_history")
     def api_portfolio_price_history(pid: str) -> Response:

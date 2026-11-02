@@ -80,6 +80,19 @@
      layout bug; a rule reads as a boundary somebody drew. */
   .subtab-sep{width:1px;align-self:stretch;margin:2px 7px;
     background:var(--border2);flex:0 0 auto;}
+  /* The Downloads pull-down (v0.141.0). */
+  .subtab-dd{position:relative;}
+  .subtab-menu{position:absolute;top:calc(100% + 6px);left:0;z-index:60;
+    min-width:290px;background:var(--surface);border:1px solid var(--border2);
+    border-radius:8px;padding:4px;box-shadow:0 8px 28px rgba(0,0,0,.45);}
+  .subtab-menu[hidden]{display:none;}
+  .subtab-menu button{display:block;width:100%;text-align:left;background:none;
+    border:0;color:var(--text);font-family:var(--mono);font-size:.7rem;
+    padding:.55rem .7rem;border-radius:6px;cursor:pointer;}
+  .subtab-menu button:hover,.subtab-menu button:focus-visible{background:var(--surface2);
+    color:var(--accent);outline:none;}
+  .subtab-menu button span{display:block;color:var(--muted);font-size:.62rem;
+    margin-top:2px;line-height:1.4;}
   .pcash-toggle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
     margin:-0.9rem 0 1.4rem;font-family:var(--mono);font-size:.68rem;}
   .pcash-toggle label{display:inline-flex;align-items:center;gap:7px;
@@ -977,6 +990,7 @@
     margin:0 0 .8rem;}
   .tge-mode .lbl{color:var(--muted);}
   .tge-mode label{display:flex;gap:.3rem;align-items:center;cursor:pointer;}
+  .tge-sheet-actions{margin-left:auto;display:flex;gap:.4rem;}
   /* One category at a time (v0.127.0): a rail of the seven, each with
      what it commits, beside the one being edited. */
   .tge-layout{display:grid;grid-template-columns:180px minmax(0,1fr);
@@ -1008,6 +1022,7 @@
     margin:-.2rem 0 .45rem;line-height:1.5;}
   @media (max-width:760px){
     .tge-top,.tge-layout{grid-template-columns:minmax(0,1fr);}
+    .tge-baselevels{grid-template-columns:auto minmax(0,1fr);}
     .tge-rail{flex-direction:row;flex-wrap:wrap;position:static;}
     .tge-rail .grp{display:none;}
   }
@@ -1127,21 +1142,27 @@
   .tge-trow .rm:hover{color:var(--red);}
   .tge-hint{font-family:var(--mono);font-size:.62rem;color:var(--amber);
     min-height:.9rem;opacity:0;transition:opacity .18s;margin:0 0 .15rem;}
-  .tge-baseline{display:flex;gap:.45rem;align-items:center;flex-wrap:wrap;
-    border:1px solid var(--border2);border-radius:6px;padding:8px 10px;
-    margin:0 0 .9rem;}
-  .tge-baseline select{font-family:var(--mono);font-size:.7rem;flex:1;
-    min-width:160px;padding:.25rem .3rem;background:var(--surface2);
+  /* The same frame as the cash box beside it (v0.140.0), so the two
+     read as a pair: a titled box, one row per thing. */
+  .tge-baseline{border:1px solid var(--border2);border-radius:6px;
+    padding:10px 12px;margin:0 0 1rem;background:var(--surface2);}
+  .tge-baseline select{font-family:var(--mono);font-size:.7rem;
+    padding:.25rem .3rem;background:var(--surface);min-width:0;
     color:var(--text);border:1px solid var(--border);border-radius:4px;}
-  .tge-baseline .lbl{font-family:var(--mono);font-size:.68rem;
-    color:var(--text);}
-  .tge-baselevels{display:flex;gap:.3rem .8rem;flex-wrap:wrap;width:100%;
-    align-items:center;font-family:var(--mono);font-size:.66rem;
+  .tge-baseline-row{display:flex;gap:.5rem;align-items:center;}
+  .tge-baseline-row select{flex:1;}
+  .tge-baseline-row .btn{white-space:nowrap;}
+  /* Build from: label / choice / label / choice, so the four line up
+     in two columns whatever their labels' lengths. */
+  .tge-baselevels{display:grid;margin-top:.6rem;align-items:center;
+    grid-template-columns:auto minmax(0,1fr) auto minmax(0,1fr);
+    gap:.35rem .6rem;font-family:var(--mono);font-size:.66rem;
     color:var(--muted);}
-  .tge-baselevels label{display:inline-flex;gap:.3rem;align-items:center;}
-  .tge-baselevels select{flex:0 0 auto;min-width:0;}
+  .tge-baselevels .tge-baselevels-h{grid-column:1/-1;}
+  .tge-baselevels select{width:100%;}
   .tge-basenotes{font-family:var(--mono);font-size:.62rem;color:var(--muted);
-    line-height:1.5;margin:.35rem 0 0;width:100%;}
+    line-height:1.5;margin:.35rem 0 0;}
+  .tge-basenotes:empty{display:none;}
   .tge-add{display:flex;gap:.4rem;align-items:center;margin-top:.4rem;}
   .tge-add select{font-family:var(--mono);font-size:.7rem;
     padding:.25rem .4rem;background:var(--surface2);color:var(--text);
@@ -1690,6 +1711,7 @@
           <button class="pb" onclick="setPeriod(this,30)">1M</button>
           <button class="pb" onclick="setPeriod(this,90)">3M</button>
           <button class="pb" onclick="setPeriod(this,180)">6M</button>
+          <button class="pb" onclick="setPeriod(this,ytdDays())" title="Year to date: since 1 January">YTD</button>
           <button class="pb active" onclick="setPeriod(this,365)">1Y</button>
           <button class="pb" onclick="setPeriod(this,1095)">3Y</button>
           <button class="pb" onclick="setPeriod(this,1825)">5Y</button>
@@ -1874,6 +1896,20 @@
           <button class="subtab"        id="pSubTabTargets"  onclick="switchPortfolioSubTab('targets')">Targets</button>
           <button class="subtab"        id="pSubTabOptimizer" onclick="switchPortfolioSubTab('optimizer')">Optimizer</button>
         </span>
+        <!-- v0.141.0: a fourth group, of things to take AWAY rather than
+             views to look at — so a pull-down, not a tab: choosing one
+             produces a file and leaves you where you were. -->
+        <span class="subtab-sep" aria-hidden="true"></span>
+        <span class="subtab-group subtab-dd" title="Documents to download">
+          <button class="subtab" id="pSubTabDownloads" aria-haspopup="menu"
+                  aria-expanded="false" onclick="togglePortfolioDownloads(event)">Downloads ▾</button>
+          <div class="subtab-menu" id="pDownloadsMenu" role="menu" hidden>
+            <button type="button" role="menuitem" onclick="openPortfolioReportDialog()">
+              Portfolio report (PDF)…
+              <span>Summary, funds, history, targets and X-ray, with the factsheets if you like</span>
+            </button>
+          </div>
+        </span>
       </div>
 
       <!-- Shown only for the "performance and exposure" group, because it
@@ -2050,6 +2086,7 @@
           <button class="pb" onclick="setPortfolioPeriod(this,30)">1M</button>
           <button class="pb" onclick="setPortfolioPeriod(this,90)">3M</button>
           <button class="pb" onclick="setPortfolioPeriod(this,180)">6M</button>
+          <button class="pb" onclick="setPortfolioPeriod(this,ytdDays())" title="Year to date: since 1 January">YTD</button>
           <button class="pb active" onclick="setPortfolioPeriod(this,365)">1Y</button>
           <button class="pb" onclick="setPortfolioPeriod(this,1095)">3Y</button>
           <button class="pb" onclick="setPortfolioPeriod(this,1825)">5Y</button>
@@ -3587,6 +3624,43 @@
 <!-- A fund house's own disclaimer, read and accepted by the user
      (v0.139.0). The text is the house's, fetched for the user's
      declaration; the accept button carries the house's own label. -->
+<!-- Portfolio report (v0.141.0): the choices, then one download. -->
+<div class="modal-bg" id="pReportModal">
+  <div class="modal" style="max-width:520px;width:95vw">
+    <div class="modal-h"><h3 id="pReportTitle">Portfolio report</h3></div>
+    <div class="modal-b" style="font-size:.78rem;line-height:1.55">
+      <div style="color:var(--muted);font-size:.72rem;margin-bottom:.8rem">
+        A PDF of this portfolio as it is now: summary and cash, the funds with
+        their one-year return and rankings, the indexed history with its 50-
+        and 200-day averages and the best and worst fund, exposure against
+        your targets, and the X-ray at each facet's middle level.
+      </div>
+      <div style="margin-bottom:.7rem">
+        <div class="mfl" style="margin-bottom:.3rem">History period</div>
+        <label style="margin-right:.9rem"><input type="radio" name="pRepPeriod" value="ytd"> Year to date</label>
+        <label style="margin-right:.9rem"><input type="radio" name="pRepPeriod" value="1y" checked> 1 year</label>
+        <label style="margin-right:.9rem"><input type="radio" name="pRepPeriod" value="3y"> 3 years</label>
+        <label style="margin-right:.9rem"><input type="radio" name="pRepPeriod" value="5y"> 5 years</label>
+        <label><input type="radio" name="pRepPeriod" value="max"> All</label>
+      </div>
+      <label style="display:flex;gap:.5rem;align-items:flex-start;margin-bottom:.5rem">
+        <input type="checkbox" id="pRepCash" style="margin-top:3px">
+        <span>Include the cash held by me<span style="display:block;color:var(--muted);font-size:.68rem">
+          In the history and the X-ray, as the X-ray's own switch does. Targets are always on the fund side.</span></span>
+      </label>
+      <label style="display:flex;gap:.5rem;align-items:flex-start">
+        <input type="checkbox" id="pRepFactsheets" checked style="margin-top:3px">
+        <span>Append the funds' factsheets<span style="display:block;color:var(--muted);font-size:.68rem">
+          Each stored factsheet as its own pages, with a bookmark per fund. Makes the file much larger.</span></span>
+      </label>
+    </div>
+    <div class="modal-f" style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-s" onclick="hideModal('pReportModal')">Cancel</button>
+      <button class="btn btn-p" id="pReportGo" onclick="generatePortfolioReport()">Download PDF</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-bg" id="issDiscModal">
   <div class="modal" style="max-width:620px;width:95vw;max-height:85vh;display:flex;flex-direction:column">
     <div class="modal-h"><h3 id="issDiscTitle">Disclaimer</h3></div>
@@ -3666,7 +3740,8 @@
             with it.</li>
           <li><b>✕</b> removes a target and everything inside it. <b>0</b>
             is different: it means “hold none of this”, and the
-            optimiser enforces it.</li>
+            optimiser enforces it. <b>Clear all targets</b> removes every
+            target in every category; <b>Undo</b> brings them back.</li>
           <li>The <span style="color:var(--amber)">○</span> on each slider
             and the <i>now</i> figure show where the portfolio sits today.</li>
           <li><b>Allowed miss</b>, beside each category, is how far a bucket
@@ -3698,14 +3773,21 @@
              say "and the rest at market weight", so the remainder is a
              blank cheque. A fund's own breakdown IS that missing
              sentence. -->
+        <!-- v0.140.0: laid out like the cash box beside it — a title,
+             then one row per thing — instead of one wrapping flex line,
+             which put Undo on a line of its own and the four level
+             choices at four different widths. Undo moved out: it steps
+             back through every edit, not just this box's. -->
         <div class="tge-baseline">
-          <span class="lbl">Start from a fund</span>
-          <select id="tgBaselineFund"></select>
-          <button class="btn btn-s" id="tgBaselineBtn"
-                  title="Replace the asset class, sector, country and currency targets with this fund's own breakdown"
-                  onclick="applyTgBaseline()">Set baseline targets</button>
-          <button class="btn btn-s" id="tgUndoBtn" onclick="tgUndoStep()"
-                  title="Step back through this session's edits">Undo</button>
+          <div class="tge-reserve-h">
+            <span class="tge-reserve-title">Start from a fund</span>
+          </div>
+          <div class="tge-baseline-row">
+            <select id="tgBaselineFund"></select>
+            <button class="btn btn-s btn-sm" id="tgBaselineBtn"
+                    title="Replace the asset class, sector, country and currency targets with this fund's own breakdown"
+                    onclick="applyTgBaseline()">Set baseline targets</button>
+          </div>
           <!-- Build from which level (v0.128.0): one choice per exposure
                facet, filled by tgFillBaselineLevels. -->
           <div class="tge-baselevels" id="tgBaselineLevels"></div>
@@ -3723,6 +3805,14 @@
                       onchange="setTgEditMode(this.value)"> others make room</label>
         <label><input type="radio" name="tgMode" value="fixed"
                       onchange="setTgEditMode(this.value)"> others stay put</label>
+        <!-- Actions on the whole sheet (v0.140.0), so they sit with the
+             rule for editing it rather than in the baseline box. -->
+        <span class="tge-sheet-actions">
+          <button class="btn btn-s btn-sm" id="tgUndoBtn" onclick="tgUndoStep()"
+                  title="Step back through this session's edits">Undo</button>
+          <button class="btn btn-s btn-sm" id="tgClearBtn" onclick="tgClearAll()"
+                  title="Remove every target in all seven categories and start from a clean sheet. Undo brings them back; nothing is saved until you press Save.">Clear all targets</button>
+        </span>
       </div>
 
       <!-- One category at a time (v0.127.0): the rail lists all seven
@@ -9701,6 +9791,17 @@ function openEditFundFromTile(){
 }
 
 let currentExpDays = 365;
+
+// YTD as a number of days back from now (v0.142.0), so both period rows
+// keep their one "days" currency and their cutoff arithmetic: now minus
+// this lands on 1 January, and the first close on or after it is the
+// fund page's own YTD starting point. At least one day, so 1 January
+// itself still draws a point.
+function ytdDays(){
+  const now  = new Date();
+  const jan1 = new Date(now.getFullYear(), 0, 1);
+  return Math.max(1, Math.floor((now - jan1) / 86400000));
+}
 
 function setPeriod(btn, days) {
   document.querySelectorAll('#priceCard .pb').forEach(b=>b.classList.remove('active'));
@@ -17591,6 +17692,77 @@ async function renderIssuerHouses(){
   }).join('');
 }
 
+// ── Portfolio downloads (v0.141.0) ───────────────────────────────────
+// The fourth sub-tab group is a pull-down rather than tabs: each entry
+// produces a file and leaves the user on the sub-tab they were reading.
+function togglePortfolioDownloads(evt){
+  if (evt) evt.stopPropagation();
+  const m = document.getElementById('pDownloadsMenu');
+  const b = document.getElementById('pSubTabDownloads');
+  if (!m) return;
+  const open = m.hidden;
+  m.hidden = !open;
+  if (b) b.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) m.querySelector('button')?.focus({preventScroll: true});
+}
+
+function closePortfolioDownloads(){
+  const m = document.getElementById('pDownloadsMenu');
+  if (m && !m.hidden){
+    m.hidden = true;
+    document.getElementById('pSubTabDownloads')?.setAttribute('aria-expanded', 'false');
+  }
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest || !e.target.closest('.subtab-dd')) closePortfolioDownloads();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closePortfolioDownloads(); });
+
+function openPortfolioReportDialog(){
+  closePortfolioDownloads();
+  if (!activePid) return;
+  const name = (portfolios.find(p => p.id === activePid) || {}).name || 'Portfolio';
+  document.getElementById('pReportTitle').textContent = `Portfolio report — ${name}`;
+  // Starts as the X-ray's own switch stands, so the PDF shows what the
+  // screen shows unless the user says otherwise here.
+  document.getElementById('pRepCash').checked = includeCashEnabled();
+  showModal('pReportModal');
+}
+
+async function generatePortfolioReport(){
+  const btn = document.getElementById('pReportGo');
+  const period = document.querySelector('input[name=pRepPeriod]:checked')?.value || '1y';
+  const body = {
+    period,
+    include_cash: !!document.getElementById('pRepCash')?.checked,
+    factsheets:   !!document.getElementById('pRepFactsheets')?.checked,
+  };
+  const name = (portfolios.find(p => p.id === activePid) || {}).name || 'portfolio';
+  setBtnBusy(btn, 'Building…');
+  try {
+    await withJobProgress('Portfolio report', async (tok) => {
+      const r = await fetch(`${API}/portfolios/${encodeURIComponent(activePid)}/report`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({...body, progress_token: tok}),
+      });
+      if (!r.ok){
+        const d = await r.json().catch(() => ({}));
+        throw new Error(d.cancelled ? 'stopped' : (d.error || `HTTP ${r.status}`));
+      }
+      // The same verified download the bundles use: a report with its
+      // factsheets is tens of MB, and the dev server truncates those.
+      await bkDownload(r, `PorxPy - ${name}.pdf`);
+    });
+    hideModal('pReportModal');
+    setStatus('ok', 'Portfolio report downloaded.');
+  } catch(e){
+    if (e.message === 'stopped') setStatus('ok', 'Report stopped — nothing was downloaded.');
+    else alert(`Could not build the report: ${e.message || e}`);
+  } finally {
+    clearBtnBusy(btn);
+  }
+}
+
 // ── The investor declaration (v0.139.0) ──────────────────────────────
 // One declaration for every house — a fact about the user, told to each
 // house its own way (see AUDIENCE in issuers.py). Blank until the user
@@ -22564,15 +22736,19 @@ let _tgBaselineLevels = (() => {
 function tgFillBaselineLevels(){
   const host = document.getElementById('tgBaselineLevels');
   if (!host) return;
-  host.innerHTML = `<span>Build from:</span>` + _TG_BASELINE_FACETS.map(f => {
+  // Label and choice as separate cells of the box's grid (v0.140.0), so
+  // the four line up in columns. Wrapped in one <label> each they were
+  // flex items of four different widths.
+  host.innerHTML = `<span class="tge-baselevels-h">Build from:</span>` + _TG_BASELINE_FACETS.map(f => {
     const levels = tgLevelsOf(f);           // finest first
     const cur = levels.includes(_tgBaselineLevels[f]) ? _tgBaselineLevels[f] : levels[0];
-    return `<label title="Copy ${escapeAttr(facetLabel(f).toLowerCase())} targets from this level up; finer levels are left untargeted">${
-      escapeHtml(facetLabel(f))}
-      <select data-facet="${escapeAttr(f)}" onchange="setTgBaselineLevel(this.dataset.facet, this.value)">${
+    const tip = `Copy ${escapeAttr(facetLabel(f).toLowerCase())} targets from this level up; finer levels are left untargeted`;
+    return `<label for="tgBaseLvl_${escapeAttr(f)}" title="${tip}">${escapeHtml(facetLabel(f))}</label>
+      <select id="tgBaseLvl_${escapeAttr(f)}" title="${tip}" data-facet="${escapeAttr(f)}"
+              onchange="setTgBaselineLevel(this.dataset.facet, this.value)">${
         levels.map(l => `<option value="${escapeAttr(l)}"${l === cur ? ' selected' : ''}>${
           escapeHtml(LEVEL_LABELS_LONG[l] || l)}${l === levels[levels.length - 1] && levels.length > 1 ? ' only' : ' ↑'}</option>`).join('')}
-      </select></label>`;
+      </select>`;
   }).join('');
 }
 
@@ -22663,6 +22839,43 @@ function tgRenderBaselineNotes(){
     .map(s => `<div>${escapeHtml(s)}</div>`).join('');
   const u = document.getElementById('tgUndoBtn');
   if (u) u.disabled = !_tgUndo.length;
+  // Nothing to clear is "nothing to do", not "not allowed".
+  const c = document.getElementById('tgClearBtn');
+  if (c) c.disabled = !tgHasAnyTarget();
+}
+
+// Whether the sheet holds any target at all, in any category or level.
+// A stored 0 counts: it is a real target ("hold none of this").
+function tgHasAnyTarget(){
+  return _TG_ALL_FACETS.some(f => Object.keys(_tgEditorState?.[f] || {})
+      .some(l => Object.keys(_tgEditorState[f][l] || {}).length));
+}
+
+// Start from a clean sheet (v0.140.0). Every target in all seven
+// categories goes, and the pins with them — a pin holds a target still,
+// so one with no target left holds nothing. What is NOT a target stays:
+// the cash held by me and each category's allowed miss belong to the
+// portfolio, not to this set, and a clean sheet is still measured
+// against them. One Undo step, like every other edit, and nothing is
+// stored until Save — the confirmation says both.
+function tgClearAll(){
+  if (!tgHasAnyTarget()) return;
+  if (!confirm('Remove every target in all seven categories and start from '
+      + 'a clean sheet?\n\nCash held by me and the allowed miss per category '
+      + 'stay as they are. Undo brings the targets back, and nothing is saved '
+      + 'until you press Save.')) return;
+  tgSnapshot();
+  tgInvalidateDragBase();
+  for (const f of _TG_ALL_FACETS){
+    // Keep the facet's level keys, emptied, so every reader of the state
+    // sees the same shape an untouched empty category has.
+    _tgEditorState[f] = Object.fromEntries(
+      Object.keys(_tgEditorState[f] || {}).map(l => [l, {}]));
+  }
+  _tgPins = {};
+  _tgExpanded = new Set();
+  _tgBaselineNotes = ['All targets cleared — a clean sheet. Undo brings them back; nothing is saved until you press Save.'];
+  _renderTgEditorBody();
 }
 
 // Build the editor body from _tgEditorState + _tgCanonical.

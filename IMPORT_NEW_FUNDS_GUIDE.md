@@ -1,6 +1,6 @@
 # IMPORT_NEW_FUNDS_GUIDE.md — importing new funds and ETFs
 
-*Current as of v0.139.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.143.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between typing an ISIN into an empty box and having a fully
@@ -82,7 +82,7 @@ version you are looking at:
 
 ```
 =======================================================
-  PorxPy  v0.139.0 (built 2026-11-02)
+  PorxPy  v0.143.0 (built 2026-11-02)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -170,7 +170,7 @@ top to bottom:
 3. **Four group tiles** — Identification, Structure, Operational,
    Trading. Every data element about the fund lives in one of them. See
    [section 15](#15-the-tiles-and-every-element-in-them).
-4. **The price chart** — adjusted close, period buttons from 1W to MAX,
+4. **The price chart** — adjusted close, period buttons from 1W to MAX (YTD among them),
    moving averages, an indexed mode, and peer overlays.
 5. **Four breakdown cards** — asset class, sector, country, currency.
    Each with its own source selector, level selector and coverage badge.
