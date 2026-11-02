@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.144.0. This is the fullest architecture write-up;
+*Current as of v0.145.2. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -605,7 +605,8 @@ days of work. Two bundle types, deliberately kept separate:
   Portable between installs and between users.
 - **Portfolios** — what *you* hold: portfolios, targets, cash and
   settings. Personal, and restored on top of whatever fund set is
-  present.
+  present. The one setting it never carries is the Anthropic API key,
+  which stays on the machine it was entered on.
 
 Mixing them would mean you cannot take someone else's fund research
 without also taking their holdings.
@@ -983,6 +984,12 @@ than a file in the repository: git cannot merge a 30 MB zip, so a
 tracked copy collided with `git pull` for anyone who had re-exported
 over theirs.
 
+On Windows there is also an installer, `PorxPy-Setup-<version>.exe`,
+which needs no Python: it starts PorxPy in a small console window and
+opens the browser for you, and keeps your data under
+`%LOCALAPPDATA%\PorxPy`. GETTING_STARTED §2 covers it, including how to
+build it from a checkout (`packaging/build.ps1`).
+
 For everything about getting *more* funds in — ISIN and ticker imports,
 holdings uploads, factsheets, structure fields and scores — see
 [IMPORT_NEW_FUNDS_GUIDE.md](IMPORT_NEW_FUNDS_GUIDE.md), and for what the
@@ -1040,6 +1047,6 @@ it does.
 
 ## Version
 
-Current release: **0.144.0** (2026-11-02)
+Current release: **0.145.2** (2026-11-02)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

@@ -1,0 +1,4 @@
+# Build-only dependencies for packaging/build.ps1 (the Windows installer).
+# The app's own requirements come first: PyInstaller freezes what is installed.
+-r ../requirements.txt
+pyinstaller>=6.11

@@ -246,6 +246,11 @@ python main.py                    # then open http://127.0.0.1:5000
 # Diagnostic scripts (run from the project root)
 python tools/inspect_fund.py TDIV.AS [MORE.TICKERS]   # dump raw Yahoo fields behind TER/size/turnover (network, writes nothing)
 python tools/data_coverage.py                          # profile-field coverage across the saved listing cache (no network)
+
+# Windows installer (v0.145.0) -> dist/PorxPy-Setup-<version>.exe
+pip install -r packaging/requirements-build.txt        # once: PyInstaller
+winget install JRSoftware.InnoSetup                    # once: the installer compiler
+powershell -ExecutionPolicy Bypass -File packaging/build.ps1
 ```
 
 The user usually keeps `main.py` running from PyCharm. **Check before
@@ -293,7 +298,7 @@ Flask backend (`porxpy/`) + one 19k-line vanilla-JS file (`fund_explorer.html`) 
 
 **2. The cache splits listing-level from fund-level data.** `cache/listings/<ticker>.json` holds what differs per listing (profile, price history, upload prefs); `cache/funds/<isin>.json` holds properties of the fund itself (holdings, sectors, asset class, asset allocation, uploaded breakdowns). Two share classes of one ETF share the fund file, so a holdings upload against either listing is visible from both. Per-category TTLs live in `DEFAULT_CACHE_CONFIG`; `holdings` and `uploaded_breakdowns` set `manual_refresh_only` — a present entry is always a hit, and only `force=True` bypasses it. Both of those slots are **source-keyed**: they hold one entry per supplying source (`holdings` → yahoo / factsheet / upload, via `utils.holdings_get` / `holdings_put`; `uploaded_breakdowns` → upload / factsheet per facet), so writing one source never overwrites another, and which one is in effect is an override applied on read. Never reach into either slot directly — go through its accessors, or a new source will be invisible to whatever you wrote.
 
-**3. `cache/` is losable; the project-root JSON is not.** `portfolios.json`, `settings.json`, `overrides.json`, `isin_map.json` are user state and are never auto-purged (all four are gitignored). Factsheets under `cache/factsheets/` are the deliberate exception — fetched artefacts, but never expired, because nothing replaces a document the user went and found.
+**3. `cache/` is losable; the project-root JSON is not.** `portfolios.json`, `settings.json`, `overrides.json`, `isin_map.json` are user state and are never auto-purged (all four are gitignored). "Project root" means `config.DATA_DIR`: the same directory when run from source, but `%LOCALAPPDATA%\PorxPy` in the installed build (v0.145.0), whose program directory is read-only. So anything PorxPy WRITES must be a path under `DATA_DIR` (`BASE_DIR` is its old name and still means it), and only what ships and is only READ — the page, the released resource CSVs — comes from `APP_DIR`. Never derive a path from `__file__` outside `config.py`: in the frozen build it points into the bundle. Create directories with `parents=True` — on a first run the data root itself does not exist yet. Factsheets under `cache/factsheets/` are the deliberate exception — fetched artefacts, but never expired, because nothing replaces a document the user went and found.
 
 **4. Overrides are a view, not a mutation.** `overrides.json` is keyed by ISIN then field (`{value, source, ts, note}`), applied on read in `load_fund_data`. They are fund-level, so every portfolio holding the ISIN sees them, they survive refetch, and clearing one restores the fetched value with no round-trip. Never write an override back into the cached fetch.
 
@@ -309,7 +314,7 @@ Two easily-confused things: the **asset tree** (`Asset_definitions.csv`) is the 
 
 ### Request flow
 
-`/` serves `fund_explorer.html` statically; the page then calls `/api/*` (the frontend hardcodes `const API = 'http://localhost:5000/api'`). `/api/fund` → cache lookup → on miss `extractors.load_fund_data` fetches, applies overrides, writes back → response carries profile, price history, the four breakdown cards (each from its configured source, each with all its levels) and merged holdings. `/api/portfolios/<pid>/view` is the same plus a `breakdowns.py` aggregation pass that weights each fund's facet breakdown by allocation, once per level.
+`/` serves `fund_explorer.html` statically; the page then calls `/api/*` (`API` is the origin that served the page, falling back to `http://localhost:5000` only when the page is opened as a file — the installed build may run on another port, v0.145.0). `/api/fund` → cache lookup → on miss `extractors.load_fund_data` fetches, applies overrides, writes back → response carries profile, price history, the four breakdown cards (each from its configured source, each with all its levels) and merged holdings. `/api/portfolios/<pid>/view` is the same plus a `breakdowns.py` aggregation pass that weights each fund's facet breakdown by allocation, once per level.
 
 External services: Yahoo Finance (always), OpenFIGI (ISIN→ticker), justETF (opt-in, ETFs only), Anthropic API (opt-in, factsheets only), the fund houses' own sites (only on "Get latest Factsheet and Holdings").
 

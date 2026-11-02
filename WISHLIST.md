@@ -270,8 +270,24 @@ is maybe to split the UI in html files per top-level tab.
 
 ## App deployment
 
-### Make the app Windows installable
+### ~~Make the app Windows installable~~ — shipped in v0.145.0
 One windows installable app, including automatic launching of the default browser to start the UI.
 
-### More user friendly way to enter the Claude API key
+Done as `packaging/` (PyInstaller + Inno Setup, `build.ps1`), described
+in GETTING_STARTED §2. It left one gap, below.
+
+### An upgrade's newer resource files for an existing install
+An installed PorxPy reads the resource CSVs from its data directory,
+copied there from the release on the FIRST run only — after that the
+copies carry the user's own aliases, and overwriting them with a newer
+release's files would throw those away. So rows and spellings a later
+release adds reach new installs and not existing ones. The fund
+bundle's import already knows how to fold one set of aliases into
+another (`resource_action: merge_aliases`); running that same merge
+from the released files into the user's on each upgrade would close
+it, and is the shape to try first rather than a second merge.
+
+### ~~More user friendly way to enter the Claude API key~~ — shipped in v0.103.0
 The key is currently added as an environment variable, better to enter it in the settings somewhere.
+
+Settings → AI helper has held the key since v0.103.0 (GETTING_STARTED §2).

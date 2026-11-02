@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.144.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.145.2. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -54,7 +54,8 @@ wrong.
 
 ## 1. What you need
 
-- **Python 3.12 or newer.**
+- **Python 3.12 or newer** — unless you use the Windows installer
+  (section 2), which brings its own.
 - A modern browser — Chrome, Firefox, Safari or Edge from the last few
   years.
 - Internet access for the first fetch of anything new. The pre-loaded
@@ -72,6 +73,49 @@ JSON files in the project directory.
 ---
 
 ## 2. Install
+
+### On Windows: the installer
+
+Since v0.145.0 there is a Windows installer, `PorxPy-Setup-<version>.exe`.
+It needs no Python and no command line: run it, and it installs PorxPy
+for your Windows account (no administrator needed; the first page
+offers *for all users* if you have the rights), with a Start-menu entry
+and, if you tick it, a desktop icon.
+
+Starting **PorxPy** opens a small console window — the banner, and the
+log while it runs — and then your browser on the app. **Closing that
+window stops PorxPy.** Starting it a second time while it runs just
+opens the browser again; it never starts a second copy. It listens on
+this PC only, on port 5000 — or, when something else holds 5000 (a
+PorxPy run from source, say), on the next free port up to 5009, so the
+address stays the same from one start to the next. Another PorxPy on
+the port is treated as just that: the installed one serves its own
+data, never another copy's.
+
+Your data — portfolios, settings, the fund cache, and the resource
+files that collect your aliases — lives in `%LOCALAPPDATA%\PorxPy`, not
+beside the program. Installing a newer version replaces the program
+and leaves that folder alone, and so does uninstalling (the uninstaller
+says where the folder is, if you want it gone too). One consequence: a
+newer version's resource files reach a fresh install only. An existing
+install keeps the copies it has, with your aliases in them.
+
+The installed app starts empty. Continue with section 4 to import the
+pre-loaded fund set; to bring portfolios over from another PorxPy,
+export a portfolio backup there and import it here (section 11).
+
+To build the installer yourself from a checkout (Windows, with the
+virtual environment set up as below):
+
+```bash
+pip install -r packaging/requirements-build.txt
+winget install JRSoftware.InnoSetup
+powershell -ExecutionPolicy Bypass -File packaging/build.ps1
+```
+
+It writes `dist/PorxPy-Setup-<version>.exe`.
+
+### From source
 
 Clone the repository, create a virtual environment, install the
 dependencies:
@@ -135,10 +179,12 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.144.0 (built 2026-11-02)
+  PorxPy  v0.145.2 (built 2026-11-02)
   Portfolio X-ray Python
 =======================================================
 ```
+
+(The Windows installer's PorxPy does this for you — section 2.)
 
 Then open <http://127.0.0.1:5000> in your browser. The same version
 appears in the pill beside the PorxPy logo at the top left, so you can
@@ -624,7 +670,7 @@ treated very differently:
 the export names the file after the day it ran and records that date in
 `manifest.json`, and the release upload renames it to the fixed name
 that keeps the download link permanent. |
-| **Export portfolios** | Portfolios, targets, cash positions and settings. | Your own backup. Restores on top of whatever fund set is present. |
+| **Export portfolios** | Portfolios, targets, cash positions and settings — but never your Anthropic API key. | Your own backup. Restores on top of whatever fund set is present, and keeps the key already on this machine. |
 
 Price history is off by default in the funds export, because it
 dominates the file size and one refetch replaces it.

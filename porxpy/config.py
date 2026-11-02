@@ -9,17 +9,62 @@ elsewhere — see ``porxpy.utils.normalise_cache_config``.
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
 
 # ---------------------------------------------------------------------------
-# Paths — anchored at the project root (the directory containing ``main.py``)
+# Paths — two roots: what PorxPy SHIPS, and where the user's data lives
 # ---------------------------------------------------------------------------
-# ``BASE_DIR`` resolves to ``<project>/`` regardless of where the package is
-# imported from, since this file lives at ``<project>/porxpy/config.py``.
-BASE_DIR              = Path(__file__).resolve().parent.parent
-FRONTEND_FP           = BASE_DIR / "fund_explorer.html"
+# Run from source the two are the same directory, the project root, and
+# nothing about a developer's checkout changes. The installed Windows
+# build (v0.145.0, PyInstaller) splits them, because its program files
+# sit under C:\Program Files, which a normal user cannot write to:
+#
+#   APP_DIR   what ships with the program and is only ever READ — the
+#             frontend page and the resource CSVs as released. In a
+#             frozen build this is the bundle's own directory.
+#   DATA_DIR  everything PorxPy WRITES — portfolios, settings,
+#             overrides, the ISIN map, the cache, uploads, and the
+#             resource CSVs in use (they gain aliases as the user
+#             resolves values, so they are user data once installed;
+#             main.py seeds them from APP_DIR on first run). Per user,
+#             under %LOCALAPPDATA%, so an uninstall or an upgrade never
+#             touches it.
+#
+# ``PORXPY_DATA_DIR`` overrides DATA_DIR in either mode — for running a
+# build against a scratch directory without disturbing the real one.
+# ``BASE_DIR`` is kept as the name of the DATA root, which is what every
+# path below has always meant by it.
+FROZEN                = bool(getattr(sys, "frozen", False))
+APP_DIR               = (Path(getattr(sys, "_MEIPASS", "")) if FROZEN
+                         else Path(__file__).resolve().parent.parent)
+DATA_DIR              = (Path(os.environ["PORXPY_DATA_DIR"])
+                         if os.environ.get("PORXPY_DATA_DIR")
+                         else (Path(os.environ.get("LOCALAPPDATA")
+                                    or Path.home() / "AppData" / "Local") / "PorxPy")
+                         if FROZEN else APP_DIR)
+BASE_DIR              = DATA_DIR
+
+
+def data_dir_id(path: Path | None = None) -> str:
+    """A short fingerprint of a data directory (v0.145.1).
+
+    Served by /api/meta so a starting PorxPy can tell whether the one
+    already answering on its port is ITSELF — same data — or another
+    copy, such as a source checkout's dev server holding port 5000. The
+    path is hashed rather than sent: the browser has no business with
+    the user's directory layout, only with "same or not".
+    """
+    import hashlib
+    p = str((path or DATA_DIR).resolve()).lower()
+    return hashlib.sha256(p.encode("utf-8")).hexdigest()[:16]
+FRONTEND_FP           = APP_DIR / "fund_explorer.html"
+# The resource CSVs as released, which seed RESOURCES_DIR (below) on a
+# first run of an installed build. The same directory when run from source.
+SHIPPED_RESOURCES_DIR = APP_DIR / "resources"
 
 # Top-level user-data files at the project root (not under ``cache/``,
 # because they are NOT cache — they are user state, permanent, valuable,

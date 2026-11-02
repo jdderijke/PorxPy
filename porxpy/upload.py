@@ -79,7 +79,7 @@ from porxpy.utils import (
 # ---------------------------------------------------------------------------
 # Token store — UUID → JSON file under UPLOAD_DIR
 # ---------------------------------------------------------------------------
-UPLOAD_DIR.mkdir(exist_ok=True)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # Maximum number of rows we'll process for Yahoo enrichment in a single

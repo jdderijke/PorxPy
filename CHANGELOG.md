@@ -3,6 +3,89 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.145.2] - 2026-11-02
+
+### Fixed - The portfolio backup carried the Anthropic API key
+
+**Export portfolios** wrote `settings.json` into the zip verbatim, so
+the backup held the API key in full — against the rule that the key
+never leaves the server, and in a file the README offers as the way to
+hand a design to someone else. The export now leaves `ai.api_key` out.
+
+Restoring had the mirror problem: it wrote the backup's `settings.json`
+over the local one wholesale, so a key-less backup would have erased
+the key on this machine. The key already here now always stays; a
+backup's key (only an older backup has one) fills in only where this
+machine has none, which is the case of restoring your own old backup
+onto a new install.
+
+Backups made before this release still contain the key: keep them to
+yourself, or export again.
+
+## [0.145.1] - 2026-11-02
+
+### Fixed - The installed PorxPy opened another PorxPy's data
+
+Started while a source checkout's dev server held port 5000, the
+installed build asked the port "is a PorxPy here?", heard yes, opened
+the browser on it and closed its own window after two seconds — so it
+appeared to start with no console and with the checkout's funds and
+portfolios already loaded. The check now asks whether it is the SAME
+PorxPy: `/api/meta` carries `data_id`, a fingerprint of the data
+directory (`config.data_dir_id`), and only a match counts as already
+running. Anything else on the port is a taken port.
+
+A taken 5000 then moves to the next free port up to 5009 rather than a
+random one, so the page keeps one address — the browser keeps the
+page's own settings per address. The running copy records its port in
+`running.json` in its data directory, which is where a second start
+looks first, and that second start says in its window that it is
+closing because the running copy has its own.
+
+## [0.145.0] - 2026-11-02
+
+### Added - A Windows installer
+
+`packaging/build.ps1` builds `dist/PorxPy-Setup-<version>.exe`:
+PyInstaller freezes the app with its own Python and packages
+(`packaging/porxpy.spec`, one folder rather than one file, so it does
+not unpack itself on every start), and Inno Setup wraps that into an
+installer (`packaging/porxpy.iss`) — per user by default with no
+administrator needed, a Start-menu entry, an optional desktop icon and
+an uninstaller. The version comes from `porxpy/__init__.py`. The icon,
+drawn from the app's own colours, is `packaging/porxpy.ico`
+(`make_icon.py` redraws it).
+
+The installed PorxPy opens a console window (the banner and the log;
+closing it stops the app) and the browser. It serves this PC only
+(127.0.0.1, where the dev server binds 0.0.0.0), without the debugger
+or reloader, on port 5000 or a free one when 5000 is taken; a second
+start opens the browser on the running copy instead of starting
+another. The fund set is not bundled: the installed app starts empty
+and imports the release's `porxpy_funds.zip` like any other.
+
+### Changed - Program files and user data are two directories
+
+`config.py` now has `APP_DIR` (what ships and is only read: the page,
+the released resource CSVs) and `DATA_DIR` (everything written:
+portfolios, settings, overrides, the ISIN map, cache, uploads, and the
+resource CSVs in use, which collect aliases). Run from source they are
+the same directory, so nothing changes for a checkout; installed,
+`DATA_DIR` is `%LOCALAPPDATA%\PorxPy`, because the program directory is
+not writable, and upgrades and uninstalls leave it alone.
+`PORXPY_DATA_DIR` overrides it, and `PORXPY_PORT` the port. On first
+run the released resource CSVs are copied into it — before the app is
+imported, which reads them — and only missing ones, so an existing
+install keeps its aliases (and, for now, does not receive a newer
+release's rows: WISHLIST).
+
+Along the way: the frontend asks the server that served it
+(`location.origin`) instead of a hard-coded `localhost:5000`; Flask's
+static folder is the program directory rather than the project root,
+so no static route can ever reach the user's files; and the cache and
+upload directories are created with their parents, since an installed
+build's first run starts without a data directory.
+
 ## [0.144.0] - 2026-11-02
 
 ### Added - Apply the optimiser's trades to a new portfolio

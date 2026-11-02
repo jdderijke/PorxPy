@@ -337,11 +337,26 @@ def export_portfolios(progress_token: str = "") -> bytes:
                    json.dumps(portfolios, indent=1, ensure_ascii=False))
         settings = _read_json(SETTINGS_FP)
         if settings is not None:
+            # Never the Anthropic API key (v0.145.2). A backup is a file
+            # that gets copied, mailed and handed over — the README offers
+            # it as the way to give a design to someone else — and the
+            # key is the one thing CLAUDE.md says may not leave the
+            # server. Until then it went out verbatim. Its counterpart on
+            # import keeps the local key rather than blanking it.
+            settings = _without_api_key(settings)
             z.writestr("settings.json",
                        json.dumps(settings, indent=1, ensure_ascii=False))
         z.writestr("manifest.json",
                    json.dumps(manifest, indent=1, ensure_ascii=False))
     return buf.getvalue()
+
+
+def _without_api_key(settings: dict) -> dict:
+    """A copy of ``settings`` with the Anthropic API key removed."""
+    out = dict(settings) if isinstance(settings, dict) else {}
+    if isinstance(out.get("ai"), dict):
+        out["ai"] = {k: v for k, v in out["ai"].items() if k != "api_key"}
+    return out
 
 
 def _fund_display_name(blob: dict) -> str:
@@ -744,8 +759,19 @@ def _apply_portfolios(z: zipfile.ZipFile, report: dict) -> dict:
 
     if "settings.json" in z.namelist():
         try:
+            incoming = json.loads(z.read("settings.json").decode("utf-8"))
+            # The key is this machine's, not the backup's: a backup made
+            # since v0.145.2 carries none, and restoring it must not erase
+            # the one already here. An older backup that does carry one
+            # yields to a local key, and fills in only where there is none
+            # — restoring your own old backup onto a new install.
+            local = (((_read_json(SETTINGS_FP) or {}).get("ai") or {})
+                     .get("api_key") or "")
+            if isinstance(incoming, dict) and local:
+                incoming = dict(incoming)
+                incoming["ai"] = {**(incoming.get("ai") or {}), "api_key": local}
             SETTINGS_FP.write_text(
-                z.read("settings.json").decode("utf-8"), encoding="utf-8")
+                json.dumps(incoming, indent=1, ensure_ascii=False), encoding="utf-8")
         except Exception as exc:
             report["errors"].append(f"settings not restored: {exc}")
     return report

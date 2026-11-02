@@ -175,7 +175,7 @@ def age_days(iso_ts: str) -> float | None:
 # ---------------------------------------------------------------------------
 # Per-ticker disk cache (one JSON file per ticker, all categories inside)
 # ---------------------------------------------------------------------------
-CACHE_DIR.mkdir(exist_ok=True)
+CACHE_DIR.mkdir(parents=True, exist_ok=True)   # parents: an installed build's data dir may not exist yet
 
 
 def _cache_path_for(key: str, category: str) -> Path:

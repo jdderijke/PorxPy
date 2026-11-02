@@ -44,7 +44,7 @@ from porxpy.config import (
     facet_node_field,
     facet_pinned_field,
     facet_raw_field,
-    BASE_DIR,
+    FRONTEND_FP,
     BREAKDOWN_FACETS,
     UPLOAD_DIR,
     FACTSHEET_EXTENSIONS,
@@ -200,7 +200,10 @@ def create_app() -> Flask:
     Returns:
         Configured Flask app (CORS enabled, static served from project root).
     """
-    app = Flask(__name__, static_folder=str(BASE_DIR))
+    # The SHIPPED directory, never the data one: a static route over the
+    # user's data root would serve settings.json (with its API key) to
+    # anything that asks.
+    app = Flask(__name__, static_folder=str(FRONTEND_FP.parent))
     CORS(app)
 
     @app.before_request
@@ -281,7 +284,7 @@ def create_app() -> Flask:
     @app.route("/")
     def index() -> Response:
         """Serve the single-page frontend."""
-        return send_from_directory(str(BASE_DIR), "fund_explorer.html")
+        return send_from_directory(str(FRONTEND_FP.parent), FRONTEND_FP.name)
 
     @app.route("/api/meta")
     def api_meta() -> Response:
@@ -291,7 +294,12 @@ def create_app() -> Flask:
         · built 2026-04-28") and could be probed by any client wanting
         to confirm what backend it's talking to.
         """
-        return jsonify({"name": NAME, "version": VERSION, "build_date": BUILD_DATE})
+        from porxpy.config import data_dir_id
+        # data_id: which data directory this server works on, fingerprinted
+        # — how a starting installed build recognises its own running copy
+        # (main._porxpy_answering) rather than any PorxPy on the port.
+        return jsonify({"name": NAME, "version": VERSION, "build_date": BUILD_DATE,
+                        "data_id": data_dir_id()})
 
 
     # The per-facet card source is one registry field per facet now

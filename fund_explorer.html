@@ -3870,7 +3870,11 @@
 </div>
 
 <script>
-const API = 'http://localhost:5000/api';
+// The server that served this page (v0.145.0): the installed build may
+// run on another port when 5000 is taken. Opened as a file, there is no
+// such server, so fall back to the development default.
+const API = (/^https?:$/.test(location.protocol) ? location.origin
+                                                : 'http://localhost:5000') + '/api';
 const SCOL = ['#4f8ef7','#7b61ff','#34d399','#f59e0b','#f87171','#a78bfa','#38bdf8','#fb923c','#4ade80','#e879f9','#facc15','#94a3b8','#6ee7b7','#fca5a5','#c084fc','#67e8f9'];
 const AC_COLOURS = {
   equity:'#34d399', fixed_income:'#fbbf24', cash:'#94a3b8',
