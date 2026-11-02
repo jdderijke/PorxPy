@@ -158,6 +158,6 @@ currency,XPD,Palladium Ounce,,palladium,FALSE,symbol=Pd
 currency,XPF,CFP Franc,,,FALSE,symbol=₣
 currency,XPT,Platinum Ounce,,platinum,FALSE,symbol=Pt
 currency,YER,Yemeni Rial,,,FALSE,symbol=﷼
-currency,ZAR,South African Rand,,rand,FALSE,symbol=R
+currency,ZAR,South African Rand,,rand|ZAC,FALSE,symbol=R
 currency,ZMW,Zambian Kwacha,,,FALSE,symbol=ZK
 currency,ZWL,Zimbabwean Dollar,,,FALSE,symbol=$
