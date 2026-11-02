@@ -3,6 +3,226 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.139.0] - 2026-11-02
+
+### Added - Tell the fund houses who you are, once, in Settings
+
+A VanEck factsheet URL could not be fetched: vaneck.com redirects every
+document request to its entry screen until the visitor has chosen an
+investor type and accepted a disclaimer, which sets a cookie. Your
+browser had that cookie; PorxPy never had. Rather than a VanEck patch,
+the declaration is now one setting for every house:
+
+- **Settings → Fund houses → You, as an investor**: private or
+  professional investor, and country (`investor` in settings.json,
+  `config.INVESTOR_TYPES` / `INVESTOR_COUNTRIES`). Blank by default —
+  PorxPy never makes it for you.
+- Each house shows **how it is told**, from new `AUDIENCE` data on its
+  adapter: *path* (iShares — the type is in the site address; a site
+  for the other type is marked ⚠), *none* (Amundi, Xtrackers),
+  *disclaimer* (VanEck), *unknown* (Vanguard, SPDR).
+- For a *disclaimer* house, **Read and accept …'s disclaimer** fetches
+  the house's OWN text for your declaration, through the same call its
+  entry screen makes, and shows it with the house's own button. Pressing
+  it stores the accept address the house returned; `issuers.http_get`
+  then visits it once per session before that house's documents, as
+  the site's button would. **Withdraw** removes it and drops the
+  house's cookies at once. An acceptance counts only for the
+  declaration it was given under.
+- A gated house's entry screen now fails with a message naming that
+  setting instead of "the link may have expired".
+
+### Changed - A pasted URL is downloaded by the issuer routine
+
+`upload._fetch_url_bytes` had its own urllib download with its own user
+agent. Its separate cookie jar would never have seen a passed
+disclaimer, so it now goes through `issuers.http_get`, the one routine
+for downloading a document: same transport, same gate.
+
+### Corrected - Amundi was not told "professional"
+
+Investigating this, the `/professional` in Amundi's default site
+addresses looked like PorxPy presenting the user as a professional
+investor. It does not: Amundi's factsheet requests use only the host
+and the ISIN. Its Settings entry now says so.
+
+## [0.138.0] - 2026-11-02
+
+### Added - One progress box per running job, stacked, each with its own stop button
+
+There was one progress box, and starting a second job took the first
+one's away — its poller was stopped "so there are never two" — although
+the first job ran on. Every job now gets a box of its own, keyed by its
+token, stacked bottom-right with the newest on top; each disappears when
+its own job ends.
+
+A job that can stop partway shows a small **✕**, which stops that job
+and no other (`POST /api/progress/<token>/cancel`). It is a request,
+honoured at the job's next check point between two steps, and the box
+says "stopping after the current step…" until then. The ✕ is offered
+only by jobs that both check and write nothing until their loop is
+done, so "stopped" always means "nothing written":
+
+- **enrichment** — the Enrich button, a holdings upload, and the import
+  in "Get latest Factsheet and Holdings": the holdings stay as they were;
+- **loading a portfolio** and **reading every fund's holdings** —
+  between two funds; the panel says "stopped by you";
+- **the optimiser's candidate pass** — before any design is proposed;
+- **"Get latest Factsheet and Holdings"** — between two downloads,
+  before the AI read (the factsheet stays stored, unread), between the
+  halves, and during the enrichment; a half already done keeps its
+  outcome and the report marks the rest stopped.
+
+Jobs that are one uninterruptible call (the AI read on its own, a
+justETF lookup, building a bundle) or that write as they go (a bundle
+import) show no ✕ rather than one that would only hide the bar.
+
+### Added - Progress boxes survive a page reload
+
+The work runs on the server, which does not notice a page going away,
+so reloading in the middle of an enrichment used to leave it running
+with nothing on screen. Running jobs are now remembered in the
+browser and picked up again on load; such a box follows its job to
+the end and closes itself. Leaving the page aborts every request in
+flight and each one's clean-up used to forget its job a moment before
+the page was gone, so that is suppressed while the page unloads.
+
+### Changed - Progress internals
+
+`progress_start` / `progress_scope` / `progress_job` take
+`cancellable`; `progress_cancel`, `progress_cancelled`,
+`progress_check` and `JobCancelled` are new in `utils`, with one
+app-wide error handler (409, `cancelled: true`). `upload_commit`'s
+cancel check also honours the bar's stop. In the browser,
+`jobProgressStop` now takes the token of the box it closes; the four
+callers that declared their token inside a `try` declare it before.
+
+## [0.137.1] - 2026-11-02
+
+### Fixed - "Map columns myself" opened the mapping dialog behind the report
+
+Choosing to map the columns yourself — from the new import
+confirmation, or because no saved mapping fitted the file — opened the
+"Latest documents" report as well as the mapping dialog. The report
+sits later in the page, so it landed on top and the mapping dialog
+behind it could be neither read nor used. The mapping dialog now opens
+alone; what the factsheet half did goes to the status line instead.
+
+### Changed - The import confirmation's "Map columns myself…" sits beside the mapping, and starts from it
+
+The button moved from the footer to beside the proposed columns, since
+it answers a question about that table. The mapping dialog it opens
+now starts from the proposed mapping, at the header row found in this
+file and with the enrich box as you left it, rather than from an
+almost empty form.
+
+## [0.137.0] - 2026-11-02
+
+### Changed - Every holdings import from "Get latest Factsheet and Holdings" is confirmed, with the enrich choice in the same dialog
+
+0.136.0 made the refresh always enrich, which on a fund of a few
+thousand holdings (iShares World) is minutes of Yahoo lookups on every
+run. The choice belongs with the user, but the one dialog the run had —
+"use the standard mapping?" — appeared only the first time per fund:
+the import saves the mapping as the fund's own, so from then on nothing
+was asked at all (64 listings already had their own mapping).
+
+The holdings half now always stops after the download with one dialog:
+the file and its approximate row count, which mapping will read it
+(the fund's own or the house standard, column by column), and a tick
+box **Enrich the N holdings through Yahoo**, starting at the fund's
+last answer — ticked for a fund never asked — and remembered. Import,
+Map columns myself… (the mapping dialog with this file in it) or
+Cancel. It replaces the `confirm()` that asked about the house
+standard, which is now one case of the same dialog.
+
+Behind it the holdings half is two calls. The first locates, downloads
+and checks the file and returns `needs_confirmation`; the second posts
+`confirm_holdings` and imports the file ALREADY downloaded — its preview
+token is held for half an hour — so the issuer is not asked twice. The
+mapping is looked up again server-side by kind (`own` / `house`) rather
+than taken from the request. The `use_house_mapping` body flag is gone.
+
+## [0.136.0] - 2026-11-02
+
+### Changed - "Get latest Factsheet and Holdings" always enriches the holdings it imports
+
+Since v0.110.2 the refresh enriched only when the fund's saved import
+settings said so — the enrich box in the mapping dialog, ticked or not
+during some earlier manual upload. That box is invisible from the
+button that runs every month, and the iShares house standard had been
+saved with it clear, so every iShares fund imported with it skipped
+enrichment while the user expected it to run; the only trace was
+"not enriched (your saved choice)" in the final report. The refresh now
+always enriches. The box still governs the manual upload it belongs
+to. Enrichment fills blanks only, never a value the file supplied, and
+which fields it may fill still comes from Settings → enrichment alone.
+
+## [0.135.0] - 2026-11-02
+
+### Fixed - "Get latest Factsheet and Holdings" froze its progress bar halfway
+
+The button runs two halves on one progress record, and the first half
+ended it. Reading the factsheet is a job of its own on the Extract
+button, so `run_factsheet_extraction` opens and finishes its record —
+and when it ran inside the issuer refresh it finished the refresh's
+record too. Every later phase was then dropped, and the bar sat on
+"checking what came back" for the whole holdings download, import and
+enrichment. The enrichment counted rows meanwhile, but onto the upload
+preview's token, which nothing was polling, so the row counter never
+appeared either.
+
+A job of several steps now owns its token for its whole length
+(`utils.progress_job`): inside it a step's start resets only the
+counter and phase, and its finish does nothing. The steps compose by
+construction rather than by each caller remembering not to finish.
+`upload_commit` takes a `progress_token` so the enrichment counts onto
+the bar the browser is actually polling.
+
+### Added - The progress popover says which half is running and what it is on
+
+- The title carries a **stage** — "Factsheet (1 of 2)", "Holdings
+  (2 of 2)" — set by the issuer refresh through `progress_stage`, so
+  the reader keeps their place while the detail moves.
+- The **phase** has its own line under the title and stays visible
+  while the bar counts. A counted run showed only "87 / 312", which
+  says how far but not what it is on; it now also shows e.g. "looking
+  up holding NVDA on Yahoo". This is the shared popover, so the
+  upload dialog, the Enrich button and every other slow job gain it.
+- The issuer search names each candidate it tries ("trying the iShares
+  uk factsheet for IWDA (2 of 5)"), then "storing …", "importing …".
+- A job that cannot count itself now shows a running clock: `/api/
+  progress` adds `job_elapsed_s`, the job's age, because `elapsed_s`
+  was only written by counted steps and the half-minute AI read showed
+  no time at all.
+- Both enrichment paths (upload commit, the fund page's Enrich button)
+  label the run "enriching the holdings" and count in holdings.
+
+## [0.134.0] - 2026-11-02
+
+### Added - A traffic light on the unresolved-values banner for the selected portfolio
+
+The ⚠ banner counted unmatched rows across every cached fund, which
+said there was work but not whether it mattered: a hundred unmatched
+rows in a fund nobody holds cost nothing. The banner now also shows,
+for the portfolio selected in the header, how much of its total value
+(cash included) sits on values no resource file recognises — green
+under 5%, amber under 10%, red from 10%. One number, the worst facet,
+because one holding is often unmatched in sector and country at once
+and adding the facets would count the same money twice. The tooltip
+gives each facet, next to that facet's whole `unknown` slice: most of
+the unknown is usually silence no alias can fix, so the light is
+graded only on the part the Resolve dialog can.
+
+To make that number, `rollup_portfolio_fundlevel` now sums each fund
+card's `unresolved` list (the fund card's "of which unrecognised")
+into the portfolio blocks, in money and as a share of the portfolio,
+in the same shape the fund card carries. The light reads the last
+loaded portfolio view rather than fetching one, so it appears once the
+portfolio has been opened on the Portfolio tab and reflects the state
+at that load; it hides while a different portfolio is selected but not
+yet loaded.
+
 ## [0.133.3] - 2026-10-21
 
 ### Fixed - In Firefox, opening a peer list froze the rest of the page

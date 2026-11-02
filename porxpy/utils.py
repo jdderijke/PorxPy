@@ -4496,7 +4496,7 @@ def _prune_progress(now: float) -> None:
 
 
 def progress_start(token: str, total: int, what: str = "working",
-                   unit: str = "items") -> None:
+                   unit: str = "items", cancellable: bool = False) -> None:
     """Open a progress record so the first poll has something to show.
 
     Called before the loop rather than left to the first callback: a
@@ -4512,17 +4512,36 @@ def progress_start(token: str, total: int, what: str = "working",
         unit: What the counts are of - "holdings", "funds", "rows". Sent
             to the client so one bar labels itself correctly for every
             caller instead of hardcoding a noun.
+        cancellable: True only for a job that actually checks
+            :func:`progress_cancelled` between its steps (v0.138.0). The
+            bar shows its stop button on this flag alone, so a job that
+            cannot stop never offers to.
     """
     if not token:
         return
     now = _time.time()
     with _PROGRESS_LOCK:
         _prune_progress(now)
+        rec = _PROGRESS.get(token)
+        if rec is not None and token in _PROGRESS_OWNED.get():
+            # A step inside a job that owns this token (see progress_job):
+            # it gets its own phase and counter, but the job's clock and
+            # stage are the outer job's, and it does not get to start
+            # the job over.
+            rec.update(phase=what, unit=unit,
+                       total=max(0, int(total or 0)), done=0,
+                       eta_s=None, finished=False, updated_at=now)
+            # A step may make an owned job stoppable, never the reverse:
+            # the job said it checks, and a step that does not still
+            # sits inside a job that does.
+            rec["cancellable"] = bool(rec.get("cancellable") or cancellable)
+            return
         _PROGRESS[token] = {
             "phase": what, "unit": unit,
             "total": max(0, int(total or 0)), "done": 0,
             "elapsed_s": 0.0, "eta_s": None, "finished": False,
             "started_at": now, "updated_at": now,
+            "cancellable": bool(cancellable), "cancel_requested": False,
         }
 
 
@@ -4588,9 +4607,120 @@ def progress_live(what: str) -> None:
     progress_phase(_PROGRESS_TOKEN.get(), what)
 
 
-def progress_finish(token: str, note: str = "") -> None:
-    """Close a run out. The record stays readable for _PROGRESS_TTL_S."""
+# Tokens a job of several steps currently owns (v0.135.0).
+#
+# The progress helpers were written for one job per token, and a step that
+# is a job in its own right elsewhere — reading a factsheet, enriching an
+# upload — opens and closes its own record. Called INSIDE a larger job on
+# the same token, the close ended the larger job too: "Get latest
+# Factsheet and Holdings" read the factsheet, the extraction finished the
+# record, and every later phase was dropped, so the bar sat on "checking
+# what came back" for the whole holdings import. Ownership makes the
+# steps compose instead of each caller remembering not to finish: while a
+# job owns a token, a step's start resets only the counter and its finish
+# does nothing. A context variable for the same reason as
+# _PROGRESS_TOKEN — the dev server is threaded.
+_PROGRESS_OWNED: contextvars.ContextVar[frozenset] = contextvars.ContextVar(
+    "progress_owned", default=frozenset())
+
+
+@contextlib.contextmanager
+def progress_job(token: str, what: str = "working", unit: str = "steps",
+                 cancellable: bool = False):
+    """Run a job of several steps on one token, finishing it once at the end.
+
+    Opens the record, makes the token owned for the block (so the steps'
+    own start/finish calls nest rather than restart or end it), routes
+    :func:`progress_live` onto it, and finishes it even when the block
+    raises. A blank token makes it a plain block.
+    """
+    progress_start(token, 0, what, unit, cancellable)
+    owned = _PROGRESS_OWNED.set(_PROGRESS_OWNED.get() | {token}
+                                if token else _PROGRESS_OWNED.get())
+    try:
+        with progress_context(token):
+            yield
+    finally:
+        _PROGRESS_OWNED.reset(owned)
+        progress_finish(token)
+
+
+class JobCancelled(Exception):
+    """Raised by :func:`progress_check` when the user stopped the job.
+
+    The app registers one error handler for it, so a route whose loop
+    checks needs no try/except of its own: the request ends with a 409
+    saying it was cancelled, and nothing after the check point runs —
+    which is the whole guarantee, since every cancellable job writes
+    only after its loop.
+    """
+
+
+def progress_cancel(token: str) -> bool:
+    """Ask the job running under ``token`` to stop (v0.138.0).
+
+    A request, not an interrupt: the job stops at its next check point,
+    between two steps, so a Yahoo lookup or a download already in flight
+    finishes first. Returns False when there is no such running job, or
+    it never offered to stop.
+    """
     if not token:
+        return False
+    with _PROGRESS_LOCK:
+        rec = _PROGRESS.get(token)
+        if rec is None or rec.get("finished") or not rec.get("cancellable"):
+            return False
+        rec["cancel_requested"] = True
+        rec["updated_at"] = _time.time()
+        return True
+
+
+def progress_cancelled(token: str) -> bool:
+    """Whether the user has asked the job under ``token`` to stop."""
+    if not token:
+        return False
+    with _PROGRESS_LOCK:
+        rec = _PROGRESS.get(token)
+        return bool(rec and rec.get("cancel_requested"))
+
+
+def progress_check(token: str = "") -> None:
+    """Raise :class:`JobCancelled` if the job has been asked to stop.
+
+    With no token, checks the current request's own (see
+    :func:`progress_context`), so code far below a route — the issuer
+    search — can honour a stop without being handed the token.
+    """
+    if progress_cancelled(token or _PROGRESS_TOKEN.get()):
+        raise JobCancelled(token or _PROGRESS_TOKEN.get())
+
+
+def progress_stage(token: str, stage: str) -> None:
+    """Say which part of a multi-part job is running ("Factsheet (1 of 2)").
+
+    Separate from the phase because the two change at different rates: a
+    stage lasts for a whole half of the job while its steps rename the
+    phase underneath it, and the bar shows the stage in its title so the
+    reader keeps their place while the detail line moves.
+    """
+    if not token:
+        return
+    with _PROGRESS_LOCK:
+        rec = _PROGRESS.get(token)
+        if rec is None or rec.get("finished"):
+            return
+        rec["stage"] = stage
+        rec["updated_at"] = _time.time()
+
+
+def progress_finish(token: str, note: str = "") -> None:
+    """Close a run out. The record stays readable for _PROGRESS_TTL_S.
+
+    A no-op for a token an outer :func:`progress_job` owns: the step that
+    called it has ended, the job has not, and closing the record would
+    freeze the bar on that step's last phase for the rest of the job.
+    """
+    if not token or token in _PROGRESS_OWNED.get():
         return
     with _PROGRESS_LOCK:
         rec = _PROGRESS.get(token)
@@ -4609,7 +4739,17 @@ def progress_get(token: str) -> dict | None:
         return None
     with _PROGRESS_LOCK:
         rec = _PROGRESS.get(token)
-        return dict(rec) if rec else None
+        if not rec:
+            return None
+        out = dict(rec)
+    # The whole job's age, computed at read time (v0.135.0). `elapsed_s`
+    # is only ever written by a counted step, so a job that can only
+    # name its phases — half a minute inside the AI helper — showed no
+    # clock at all, and a clock is what tells a slow job from a hung one.
+    out["job_elapsed_s"] = round(
+        (out.get("updated_at") if out.get("finished") else _time.time())
+        - out.get("started_at", _time.time()), 1)
+    return out
 
 
 class progress_scope:
@@ -4633,20 +4773,29 @@ class progress_scope:
     """
 
     def __init__(self, token: str, total: int = 0,
-                 what: str = "working", unit: str = "items"):
+                 what: str = "working", unit: str = "items",
+                 cancellable: bool = False):
         self.token = token or ""
         self.total = int(total or 0)
         self._what = what
         self._unit = unit
+        self._cancellable = cancellable
         self._t0 = 0.0
 
     def __enter__(self) -> "progress_scope":
         self._t0 = _time.time()
-        progress_start(self.token, self.total, self._what, self._unit)
+        progress_start(self.token, self.total, self._what, self._unit,
+                       self._cancellable)
         return self
 
     def step(self, done: int, total: int | None = None) -> None:
-        """Report ``done`` steps completed."""
+        """Report ``done`` steps completed.
+
+        In a cancellable scope this is also the check point: a stop asked
+        for during the last step lands here, before the next one starts.
+        """
+        if self._cancellable:
+            progress_check(self.token)
         progress_update(self.token, done,
                         self.total if total is None else total,
                         _time.time() - self._t0)
@@ -5276,7 +5425,8 @@ def normalise_settings(raw: dict | None) -> dict:
     # dead adapter is a worse reading of an empty box than "use the
     # defaults". Removing a default site therefore means reordering it
     # to the end, not deleting the lot.
-    from porxpy.config import DEFAULT_ISSUER_SITES
+    from porxpy.config import (DEFAULT_ISSUER_SITES, INVESTOR_COUNTRIES,
+                               INVESTOR_TYPES)
     iss_src = raw.get("issuers") if isinstance(raw.get("issuers"), dict) else {}
     issuers_out: dict[str, dict] = {}
     for house, default_sites in DEFAULT_ISSUER_SITES.items():
@@ -5297,7 +5447,35 @@ def normalise_settings(raw: dict | None) -> dict:
         hm = blk.get("holdings_mapping")
         if isinstance(hm, dict) and isinstance(hm.get("mapping"), dict):
             out_blk["holdings_mapping"] = _coerce_house_mapping(hm)
+        # The house's disclaimer as the user accepted it (v0.139.0):
+        # for which declaration, when, and the address the house's own
+        # "accept" button leads to. Kept only when well-formed, and the
+        # address only over https — it is fetched without further
+        # question, and a settings file is hand-editable.
+        dc = blk.get("disclaimer")
+        if (isinstance(dc, dict)
+                and str(dc.get("accept_url") or "").lower().startswith("https://")
+                and str(dc.get("type") or "") in INVESTOR_TYPES):
+            out_blk["disclaimer"] = {
+                "type":       str(dc.get("type")),
+                "country":    str(dc.get("country") or ""),
+                "accept_url": str(dc.get("accept_url")),
+                "at":         str(dc.get("at") or ""),
+            }
         issuers_out[house] = out_blk
+
+    # ── investor declaration (v0.139.0) ───────────────────────────────
+    # Blank type means NOT DECLARED, which is the default and an ordinary
+    # state: nothing is told to any house until the user says it. The
+    # country defaults to the Netherlands, where this project's funds
+    # come from, but means nothing while the type is blank.
+    inv = raw.get("investor") if isinstance(raw.get("investor"), dict) else {}
+    inv_type = str(inv.get("type") or "").strip().lower()
+    inv_cc = str(inv.get("country") or "").strip().lower()
+    investor_out = {
+        "type":    inv_type if inv_type in INVESTOR_TYPES else "",
+        "country": inv_cc if inv_cc in INVESTOR_COUNTRIES else "nl",
+    }
 
     return {
         "enrichment": {
@@ -5320,6 +5498,7 @@ def normalise_settings(raw: dict | None) -> dict:
         },
         "group_ttl_days": group_ttl,
         "issuers": issuers_out,
+        "investor": investor_out,
         "field_source_defaults": field_defaults,
     }
 
@@ -5495,6 +5674,54 @@ def issuer_site_learn(house: str, base: str) -> bool:
     issuer_sites_set(house, current + [b])
     print(f"[Issuers] learned {b} for {house}")
     return True
+
+
+def investor_declaration() -> dict:
+    """The user's declaration to the fund houses: ``{type, country}``.
+
+    ``type`` is ``""`` until the user has made one in Settings — the
+    ordinary state, and the one in which no house is told anything.
+    """
+    inv = load_settings().get("investor") or {}
+    return {"type": str(inv.get("type") or ""),
+            "country": str(inv.get("country") or "nl")}
+
+
+def issuer_disclaimer_get(house: str) -> dict | None:
+    """One house's accepted disclaimer, if it still stands.
+
+    It stands only while it was accepted for the declaration the user is
+    making NOW. A disclaimer accepted as a private investor in the
+    Netherlands says nothing about a professional in Belgium, so changing
+    the declaration retires every acceptance made under the old one —
+    by this check, without anything being deleted, so switching back
+    restores it.
+    """
+    blk = (load_settings().get("issuers") or {}).get(house) or {}
+    dc = blk.get("disclaimer")
+    if not isinstance(dc, dict):
+        return None
+    decl = investor_declaration()
+    if not decl["type"] or dc.get("type") != decl["type"] \
+            or dc.get("country") != decl["country"]:
+        return None
+    return dict(dc)
+
+
+def issuer_disclaimer_set(house: str, rec: dict | None) -> None:
+    """Store (or, with ``None``, withdraw) one house's acceptance."""
+    from porxpy.config import DEFAULT_ISSUER_SITES
+    if house not in DEFAULT_ISSUER_SITES:
+        raise ValueError(f"unknown fund house: {house!r}")
+    s = load_settings()
+    issuers = {k: dict(v) for k, v in (s.get("issuers") or {}).items()}
+    blk = dict(issuers.get(house) or {})
+    if rec is None:
+        blk.pop("disclaimer", None)
+    else:
+        blk["disclaimer"] = {**rec, "at": now_iso()}
+    issuers[house] = blk
+    save_settings({**s, "issuers": issuers})
 
 
 def issuer_mapping_get(house: str) -> dict | None:

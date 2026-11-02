@@ -683,6 +683,35 @@ DEFAULT_ISSUER_SITES: dict[str, tuple[str, ...]] = {
     "spdr":      (),
 }
 
+# ---------------------------------------------------------------------------
+# The investor declaration (v0.139.0)
+# ---------------------------------------------------------------------------
+# What the user says about themselves to the fund houses: which kind of
+# investor they are, and where. ONE declaration, made in Settings, and
+# not one per house — it is a fact about the user, and each house is
+# only told it in its own way (see issuers.IssuerAdapter.AUDIENCE).
+# Nothing in PorxPy may make it on the user's behalf: until it is made,
+# a house that needs it simply does not get it.
+#
+# Two types, because every house's own entry screen offers exactly
+# these two; each adapter maps them onto its site's spelling ("pi" at
+# VanEck, "professionele-belegger" in an iShares address).
+INVESTOR_TYPES: dict[str, str] = {
+    "retail":       "Private investor",
+    "professional": "Professional investor",
+}
+
+# Countries a declaration can name, by ISO 3166 alpha-2 (lower case, as
+# the houses put them in their addresses). The English name is what the
+# houses' own disclaimer calls ask for alongside the code. A short list
+# on purpose: the markets these funds are sold in, not the world.
+INVESTOR_COUNTRIES: dict[str, str] = {
+    "nl": "Netherlands", "be": "Belgium", "lu": "Luxembourg",
+    "de": "Germany", "at": "Austria", "ch": "Switzerland",
+    "fr": "France", "it": "Italy", "es": "Spain",
+    "gb": "United Kingdom", "ie": "Ireland",
+}
+
 
 # ---------------------------------------------------------------------------
 # Breakdown cards

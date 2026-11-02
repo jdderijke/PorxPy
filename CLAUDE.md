@@ -143,6 +143,17 @@ Concretely, before finishing a change, sweep the parallel set it belongs to:
   `issuer_mapping_get`. The site list is ORDER-SENSITIVE — first to last is
   the priority the adapters walk — so never sort it, and an empty list falls
   back to `DEFAULT_ISSUER_SITES` rather than meaning "look nowhere".
+  Who the user is to those houses is ONE declaration, `investor`
+  (`{type, country}`, vocabulary in `config.INVESTOR_TYPES` /
+  `INVESTOR_COUNTRIES`, read through `utils.investor_declaration`), made
+  by the user and never by PorxPy; a house's accepted disclaimer lives
+  under `issuers.<house>.disclaimer` and counts only while it matches
+  the current declaration (`issuer_disclaimer_get`). How each house is
+  told is its adapter's `AUDIENCE` data (none / path / disclaimer /
+  unknown) — add a house's mechanism there, not in code.
+- Download a **document from a URL** → through `issuers.http_get`, the
+  one routine (v0.139.0; a pasted URL had its own urllib copy until
+  then, whose separate cookie jar never saw a passed disclaimer).
 - Add or change an **issuer adapter** → it should be DATA, not code. A house
   is a `DOCUMENTS` table of URL templates and page-scrape specs plus a few
   class attributes (`hosts`, `name_patterns`, `SITE_PATH_SEGMENTS`);
@@ -163,6 +174,17 @@ Concretely, before finishing a change, sweep the parallel set it belongs to:
   refresh is indistinguishable from "this fund has no data" by its
   result alone; until v0.130.0 every path wrote that emptiness over the
   good copy. Never bump a timestamp on a refresh that did not happen.
+- Add a **slow job** → it reports through the progress store
+  (`progress_start` / `progress_scope` / `progress_job` in `utils`),
+  and the browser gives it its own box by token (`jobProgressStart` /
+  `jobProgressStop(token)` — always WITH the token, several jobs run
+  at once since v0.138.0). Mark it `cancellable` only if it calls
+  `progress_check` between steps AND writes nothing until its loop
+  is done: the ✕ is shown on that flag alone, and the promise it
+  makes is "stopped, nothing written". `JobCancelled` has one app-
+  wide handler (409, `cancelled: true`). A step that is a job of its
+  own elsewhere must not end an outer job — run the outer one under
+  `progress_job`, which makes the inner start/finish nest.
 - Ask **whether a fund is saved** (in the pre-loaded list) → through
   `utils.listing_is_saved` / `listing_blob_is_saved`, and enumerate the
   saved set with `utils.saved_listing_tickers()`. Never glob

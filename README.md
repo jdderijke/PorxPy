@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.133.3. This is the fullest architecture write-up;
+*Current as of v0.139.0. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -242,8 +242,9 @@ latest Factsheet and Holdings**, on the fund page beside Reload Fund
 Data, goes and gets them. The factsheet is stored against the fund and —
 if the AI helper is switched on and has a key — read, with the result
 applied to every field you have pinned to `factsheet`. The holdings file
-is imported with the column mapping you entered last time, enriched
-through Yahoo, and replaces the uploaded holdings.
+is checked against the column mapping you entered last time and, after
+one confirmation that also asks whether to enrich it through Yahoo,
+imported over the uploaded holdings.
 
 The two buttons are a pair: Reload Fund Data re-asks Yahoo and
 deliberately leaves uploaded holdings alone, so this is the half that
@@ -572,6 +573,11 @@ every source. Tell it what a value means once and the alias is written
 to the resource file; every occurrence everywhere resolves on the next
 read, including a factsheet extracted last month — resolution happens at
 derivation time, so nothing is rewritten and no migration is needed.
+The ⚠ banner that opens it also carries a traffic light for the
+portfolio selected in the header: the share of that portfolio's total
+value held in unrecognised values, worst facet first — green under 5%,
+amber under 10%, red above — so you can tell when resolving starts to
+matter.
 
 ### Back up your work, or hand it to someone else
 
@@ -1019,6 +1025,6 @@ it does.
 
 ## Version
 
-Current release: **0.133.3** (2026-10-21)
+Current release: **0.139.0** (2026-11-02)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

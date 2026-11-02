@@ -1210,6 +1210,13 @@ def rollup_portfolio_fundlevel(enriched: list[dict],
         off each entry's ``data.fund_structure`` rather than its
         breakdown cards. They aggregate identically once reshaped,
         which is the whole point of reshaping them.
+
+        v0.134.0: each breakdown facet's block also carries
+        ``unresolved`` — ``[{"raw", "weight", "value"}]``, the fund
+        cards' lists of supplied-but-unplaceable values summed over the
+        portfolio, weight a fraction of ``total_base``. It is the part of
+        ``unknown`` the Resolve dialog can fix, and the global banner
+        reads it to say how much of the selected portfolio is at stake.
     """
     # {facet: {level: {key: money}}} — every level aggregated, always.
     #
@@ -1230,6 +1237,19 @@ def rollup_portfolio_fundlevel(enriched: list[dict],
         f: {lv: {} for lv in _levels_of(f)} for f in TARGET_FACETS}
     covered_value: dict[str, dict[str, float]] = {
         f: {lv: 0.0 for lv in _levels_of(f)} for f in TARGET_FACETS}
+    # {facet: {raw: money}} — the part of each fund's unknown slice that
+    # is a value some source DID supply but the resource files could not
+    # place (v0.134.0): the fund card's "of which unrecognised", summed
+    # over the portfolio in money. This is the share an alias in the
+    # Resolve dialog would move out of `unknown`, as distinct from the
+    # silences no alias can fix, and it is what tells the user whether
+    # resolving is worth their time for THIS portfolio. Not per level:
+    # a fund's list describes its source's own items, at the grain the
+    # source stated, so it has no level dimension to aggregate over.
+    # Breakdown facets only — the meta facets are classifications of
+    # the fund and have no unresolved text.
+    unresolved_value: dict[str, dict[str, float]] = {
+        f: {} for f in TARGET_FACETS if f not in META_FACETS}
 
     for e in enriched:
         v = (e.get("valuation") or {}).get("value_base")
@@ -1247,6 +1267,15 @@ def rollup_portfolio_fundlevel(enriched: list[dict],
         # any one of them forgetting would silently drop the facet.
         meta = meta_facet_items(data.get("fund_structure"))
         fv = float(v)
+        for facet, acc in unresolved_value.items():
+            for u in ((fb.get(facet) or {}).get("unresolved") or []):
+                try:
+                    w = float(u.get("weight") or 0.0)
+                except (TypeError, ValueError, AttributeError):
+                    continue
+                raw = str(u.get("raw") or "").strip()
+                if w > 0 and raw:
+                    acc[raw] = acc.get(raw, 0.0) + fv * w
         for facet in TARGET_FACETS:
             for level in _levels_of(facet):
                 if facet in META_FACETS:
@@ -1347,6 +1376,18 @@ def rollup_portfolio_fundlevel(enriched: list[dict],
                 for lv in levels},
             "default_level":    FACET_DEFAULT_LEVEL.get(facet, levels[-1]),
         }
+        if facet in unresolved_value:
+            # The fund block's own key and shape ({raw, weight}, weight a
+            # fraction), plus the money. A fraction of the portfolio's
+            # value, like the items above, so it reads directly against
+            # the card's unknown slice it is part of.
+            u_denom = total_base if total_base > 0 else 0.0
+            fundlevel_breakdowns[facet]["unresolved"] = sorted(
+                ({"raw": raw,
+                  "weight": round(val / u_denom, 6) if u_denom else 0.0,
+                  "value": round(val, 2)}
+                 for raw, val in unresolved_value[facet].items()),
+                key=lambda x: -x["value"])
         fundlevel_coverage[facet] = cov_level
 
     return {

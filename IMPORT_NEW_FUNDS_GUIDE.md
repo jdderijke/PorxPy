@@ -1,6 +1,6 @@
 # IMPORT_NEW_FUNDS_GUIDE.md — importing new funds and ETFs
 
-*Current as of v0.133.3. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.139.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between typing an ISIN into an empty box and having a fully
@@ -82,7 +82,7 @@ version you are looking at:
 
 ```
 =======================================================
-  PorxPy  v0.133.3 (built 2026-10-21)
+  PorxPy  v0.139.0 (built 2026-11-02)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -133,7 +133,7 @@ navigates away; switching tabs swaps the panel below.
 |---|---|
 | **PorxPy** logo | Brand, tagline, and the version pill — the running build, read from the server. |
 | **Portfolio** selector | The active portfolio. Whatever is chosen here is the portfolio that fund pages check membership against, and the one the Portfolio tab shows. **+ New** creates one. |
-| **⚠ banner** | Appears under the header, on any tab, when values anywhere in your data failed to resolve against the resource files. Clicking it opens the [Resolve unmatched values](#9-the-resolve-unmatched-values-dialog) dialog. It is application-wide, not per portfolio. |
+| **⚠ banner** | Appears under the header, on any tab, when values anywhere in your data failed to resolve against the resource files. Clicking it opens the [Resolve unmatched values](#9-the-resolve-unmatched-values-dialog) dialog. The row count is application-wide; the traffic light beside it is for the portfolio selected in the header — the share of its total value (cash included) held in unrecognised values, for the worst facet: green under 5%, amber under 10%, red from 10%. It appears once that portfolio has been loaded on the Portfolio tab; hover it for the per-facet split. |
 
 ### The four tabs
 
@@ -614,8 +614,14 @@ showing and writes back into that same source, so enriching a
 factsheet's positions does not deposit them in Yahoo's slot. Which
 fields it may fill is your choice, in **Settings → enrichment**; the
 five available are name, country, currency, asset class and sector. The
-run reports its progress on the shared progress bar, so a few thousand
-holdings is a bar rather than a frozen button.
+run reports its progress in a box in the bottom-right corner, so a few
+thousand holdings is a bar rather than a frozen button. Every running
+job has a box of its own, the newest stacked on top; a job that can
+stop partway shows a small **✕** that stops that job alone, between
+two holdings, and writes nothing — the rows stay as they were. The
+boxes survive a page reload: the work runs on the server whether or
+not the page is open, so a reloaded page picks the running jobs up
+again and follows them to the end.
 
 **It acts on the rows you tick, and only those.** The button is disabled
 until something is ticked, and its label says how many
@@ -1042,6 +1048,14 @@ the half that was missing.
 Two independent halves, reported separately when it finishes. Neither
 can fail the other.
 
+While it runs, the progress box in the bottom-right corner says which
+half it is on ("Factsheet (1 of 2)", "Holdings (2 of 2)") and, on the
+line below, what that half is doing at that moment: which of the
+issuer's addresses it is trying, storing the document, the AI helper
+reading it, importing the file, and the enrichment counting holdings as
+it looks each one up on Yahoo. A step that cannot count itself — the AI
+helper's half-minute read — shows a running clock instead of a count.
+
 **The factsheet.** Located at the issuer and downloaded — and if those
 bytes are identical to the copy already stored, that is where it stops:
 the document and its reading are both kept, and the run says so. A
@@ -1068,19 +1082,29 @@ and that half still runs. A fund is treated this way only when its
 **Replication** is set to `synthetic` (section 13) — Yahoo never says,
 so it is always something you or a factsheet asserted.
 
-**The holdings file.** Located, downloaded, parsed with the column
-mapping you entered last time, enriched through Yahoo, and written over
-the uploaded holdings. Every parsing choice is the one you committed —
+**The holdings file.** Located, downloaded, checked against the column
+mapping you entered last time, and — once you confirm — imported and
+written over the uploaded holdings. Every parsing choice is the one you
+committed —
 the mapping, the header row, the decimal mark, the weight unit, the
 per-field defaults — because re-deciding any of them automatically is
 exactly how an unattended import produces a confident wrong answer.
 
-Enrichment follows the same rule as everything else: the box you ticked
-in the mapping dialog is the one that is honoured. Tick it and every
-refresh of that fund enriches; leave it clear and none of them do. The
-result line says which way it went. *Which* fields get filled is
-unchanged (section 11b), so switching enrichment off in Settings still
-switches it off everywhere.
+**Every holdings import is confirmed.** After the download, and before
+anything is replaced, one small dialog shows the file, roughly how many
+rows it has, which mapping will read it (this fund's own, or the house
+standard below) with the column each field comes from, and a tick box:
+**Enrich the N holdings through Yahoo**. It starts at whatever you chose
+last time for this fund, ticked for a fund that has never been asked,
+and your answer is remembered. Enrichment only fills blanks, never a
+value the file supplied, and *which* fields it may fill is still set in
+Settings (section 11b) — but a holding Yahoo does not already know costs
+about a second, so on a fund of a few thousand holdings it is minutes,
+and this is where you decide whether that is worth it today. **Map
+columns myself…**, beside the proposed columns, closes this dialog and
+opens the mapping dialog with the downloaded file in it, starting from
+the proposed mapping; **Cancel** imports nothing. The progress box counts the holdings as
+they are looked up.
 
 ### Which sites it looks at
 
@@ -1104,6 +1128,31 @@ came from is added to that house's list automatically. Supplying a
 document by dragging a file in teaches nothing, because a file on your
 disk is a copy rather than a place documents are published.
 
+### Telling the fund houses who you are
+
+Fund-house sites want to know what kind of investor is asking, and each
+asks differently. At the top of **Settings → Fund houses**, under **You,
+as an investor**, you declare it once: private or professional
+investor, and your country. PorxPy never makes that declaration for
+you; until you do, it is simply not given.
+
+Each house then shows how it is told:
+
+- **iShares** — the investor type is part of each site address
+  (`…/particuliere-belegger/…`), so the site list *is* what iShares is
+  told. A site for the other type than you declared is marked **⚠**.
+- **Amundi**, **Xtrackers** — no investor type is sent at all.
+- **VanEck** — vaneck.com hands out documents only after you choose a
+  type and accept its disclaimer. **Read and accept VanEck's
+  disclaimer…** shows VanEck's own text for your declaration, with its
+  own accept button; once you press it, PorxPy passes that acceptance on
+  exactly as the website's button would, for the issuer search and for a
+  VanEck URL you paste alike. **Withdraw** stops it at once. Changing your
+  declaration retires the acceptance, since it was given as someone
+  else. Until it is accepted, a VanEck document fails with a message
+  that points here.
+- **Vanguard**, **SPDR** — not looked into yet.
+
 ### The standard mapping for a fund house
 
 One issuer's holdings exports share a layout across its whole range: the
@@ -1117,8 +1166,9 @@ dialog, because the mapping has just been proved against a real file —
 which is what makes it worth offering to funds nobody has mapped yet.
 
 **When this button finds no mapping for a fund** and the house has a
-standard, it asks whether to use it, showing which column each field
-would be read from and which fund the standard came from. It is offered
+standard that fits the file, the confirmation dialog above says so —
+naming the standard and the fund it was saved from — and pressing
+Import applies it, after which it is this fund's own. It is offered
 and never assumed: applying one default to a file nobody has looked at
 is exactly the risk described below, and the column check still runs on
 every file the standard is applied to — so a house that turns out to be

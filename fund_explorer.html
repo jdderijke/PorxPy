@@ -1379,13 +1379,34 @@
      purpose: the upload dialog is still open while its commit enriches,
      and a bar hidden behind the dialog it belongs to would report on a
      wait nobody can see. */
-  .eprog{position:fixed;right:1.25rem;bottom:1.25rem;z-index:200;width:320px;
-         max-width:calc(100vw - 2.5rem);background:var(--surface);
+  /* v0.138.0: a STACK of boxes, one per running job, newest on top.
+     column-reverse so a new box is appended above the older ones and
+     the oldest stays where it was, at the bottom. */
+  .eprog-stack{position:fixed;right:1.25rem;bottom:1.25rem;z-index:200;
+               width:320px;max-width:calc(100vw - 2.5rem);
+               display:flex;flex-direction:column-reverse;gap:.55rem;
+               max-height:calc(100vh - 2.5rem);overflow-y:auto;}
+  .eprog{background:var(--surface);
          border:1px solid var(--border2);border-radius:10px;
          padding:.85rem 1rem .9rem;box-shadow:0 8px 28px rgba(0,0,0,.45);}
-  .eprog[hidden]{display:none;}
-  .eprog-title{font-family:var(--mono);font-size:.7rem;color:var(--text);
-               margin-bottom:.55rem;}
+  .eprog-head{display:flex;align-items:flex-start;gap:.5rem;margin-bottom:.55rem;}
+  .eprog-title{font-family:var(--mono);font-size:.7rem;color:var(--text);flex:1;}
+  /* Small on purpose: it stops a job, and should not be the first thing
+     the eye lands on. */
+  .eprog-x{background:transparent;border:1px solid var(--border2);border-radius:4px;
+           color:var(--muted);font-size:.62rem;line-height:1;padding:2px 5px;cursor:pointer;}
+  .eprog-x:hover:not(:disabled){color:var(--red);border-color:var(--red);}
+  .eprog-x:disabled{opacity:.5;cursor:default;}
+  .eprog-x[hidden]{display:none;}
+  /* What the job is doing right now, on its own line (v0.135.0) so it
+     stays visible while the bar counts — a counted run used to show
+     only "12 / 300", which says how far but not what it is on. */
+  .eprog-phase{font-family:var(--mono);font-size:.64rem;color:var(--muted);
+               margin:-.3rem 0 .5rem;overflow:hidden;
+               /* Two lines, not one: the tail of a phase is often the
+                  part that moves ("… (2 of 5)"), and an ellipsis hid it. */
+               display:-webkit-box;-webkit-box-orient:vertical;
+               -webkit-line-clamp:2;line-clamp:2;}
   .eprog-track{height:6px;border-radius:3px;background:var(--surface2);
                border:1px solid var(--border);overflow:hidden;}
   .eprog-fill{height:100%;width:0;background:var(--accent);
@@ -1536,6 +1557,11 @@
        title="Click to review and map unmatched values">
     <span style="font-size:1rem">⚠</span>
     <span id="ufBannerText" style="flex:1;color:var(--text)"></span>
+    <!-- v0.134.0: traffic light for the SELECTED portfolio — how much of
+         its value sits on values no resource file recognises. Hidden
+         when no portfolio is loaded; see ufPortfolioImpact. -->
+    <span id="ufBannerImpact" style="display:none;align-items:center;gap:6px;
+          white-space:nowrap;color:var(--muted)"></span>
     <span style="color:var(--accent)">Review →</span>
   </div>
 
@@ -2577,6 +2603,10 @@
         Put the market your funds are listed in first. A site you paste a
         document URL from is added here automatically.
       </div>
+      <!-- v0.139.0: the one declaration every house is told in its own
+           way. Saved on change, like the site lists below it. -->
+      <div id="setInvestor" style="border:1px solid var(--border);border-radius:6px;
+           padding:.6rem .7rem;margin:0 0 .9rem"></div>
       <div id="setIssuers" style="margin:0 0 1rem"></div>
 
       <div class="ct" style="margin:1.75rem 0 .5rem;border-top:1px solid var(--border);padding-top:1.5rem">// factsheets</div>
@@ -2747,13 +2777,8 @@
      the same loop server-side (enrich_holdings_rows) and report through
      the same store, so they should not grow two different ways of
      showing the same wait. -->
-<div class="eprog" id="enrichProgress" hidden>
-  <div class="eprog-title" id="eprogTitle">Enriching through Yahoo</div>
-  <div class="eprog-track"><div class="eprog-fill" id="eprogFill"></div></div>
-  <div class="eprog-sub">
-    <span id="eprogCount">starting…</span><span id="eprogEta"></span>
-  </div>
-</div>
+<!-- v0.138.0: the boxes themselves are built per job by _jobBox. -->
+<div class="eprog-stack" id="eprogStack"></div>
 
 <div class="modal-bg" id="resetModal">
   <div class="modal" style="max-width:520px">
@@ -3554,6 +3579,55 @@
   </div>
 </div>
 
+<!-- Holdings import confirmation (v0.137.0). The one question in a
+     "Get latest Factsheet and Holdings" run, asked on EVERY run: which
+     mapping is about to be applied to which file, and whether to enrich
+     the rows through Yahoo — the step that can take minutes. Filled by
+     issuerConfirmHoldings(). -->
+<!-- A fund house's own disclaimer, read and accepted by the user
+     (v0.139.0). The text is the house's, fetched for the user's
+     declaration; the accept button carries the house's own label. -->
+<div class="modal-bg" id="issDiscModal">
+  <div class="modal" style="max-width:620px;width:95vw;max-height:85vh;display:flex;flex-direction:column">
+    <div class="modal-h"><h3 id="issDiscTitle">Disclaimer</h3></div>
+    <div class="modal-b" style="overflow-y:auto">
+      <div id="issDiscWho" style="font-family:var(--mono);font-size:.7rem;color:var(--muted);margin-bottom:.6rem"></div>
+      <div id="issDiscText" style="white-space:pre-wrap;font-size:.78rem;line-height:1.55"></div>
+    </div>
+    <div class="modal-f" style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-s" onclick="hideModal('issDiscModal')">Cancel</button>
+      <button class="btn btn-p" id="issDiscAgree">Accept</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="issuerConfirmModal">
+  <div class="modal" style="max-width:560px;width:95vw;max-height:85vh;overflow-y:auto">
+    <div class="modal-h">
+      <h3 id="issuerConfirmTitle">Import holdings</h3>
+    </div>
+    <div class="modal-b">
+      <div id="issuerConfirmBody"></div>
+      <label style="display:flex;gap:8px;align-items:flex-start;margin-top:.9rem;cursor:pointer">
+        <input type="checkbox" id="issuerConfirmEnrich" style="margin-top:3px">
+        <span>
+          <span id="issuerConfirmEnrichLabel">Enrich the holdings through Yahoo</span>
+          <span style="display:block;color:var(--muted);font-size:.72rem;margin-top:2px">
+            Fills blanks only, never a value the file supplies; which fields
+            is set in Settings &rarr; enrichment. Holdings Yahoo already knows
+            are instant, each one it does not costs about a second, so a large
+            fund can take several minutes. Your choice is remembered for this fund.
+          </span>
+        </span>
+      </label>
+    </div>
+    <div class="modal-f" style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-s" id="issuerConfirmCancel">Cancel</button>
+      <button class="btn btn-p" id="issuerConfirmOk">Import</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-bg" id="targetsEditorModal">
   <div class="modal" style="max-width:1100px;width:96vw;max-height:92vh;overflow-y:auto">
     <div class="modal-h">
@@ -3864,6 +3938,11 @@ let pfModalEditingId = '';
   // v0.15.7: prime the global unmatched-facets banner. Non-blocking;
   // a slow startup just means the banner appears a moment later.
   ufRefreshBanner().catch(()=>{});
+  // Jobs a previous page left running (v0.138.0) get their boxes back.
+  // Deferred, not called here: this IIFE runs while the script is still
+  // being parsed, and the job registry is a `const` declared further
+  // down — still in its temporal dead zone at this point.
+  setTimeout(jobProgressResume, 0);
   try { await refreshConfigAndPortfolios(); }
   catch(e){ setStatus('err','Could not reach backend — start main.py'); }
 })();
@@ -4051,37 +4130,96 @@ let cacheListData = [];
 // Whether to show it at all stays the CALLER's decision, because the
 // caller is where the counts are: a two-row enrichment is over before a
 // bar could render and should not show one.
-let _eprogTimer = null;
+// Several jobs at once, one box each (v0.138.0).
+//
+// There used to be ONE box, and starting a second job stopped the first
+// one's poller ("never two pollers at once"), so a portfolio load begun
+// while a fund's holdings enriched took the enrichment's bar away
+// although the enrichment ran on. Each job now has its own box, keyed by
+// its token, stacked bottom-right with the newest on top.
+//
+// The boxes outlive the request that started them. The work runs on the
+// server, which does not notice a page that has gone away, so a reload
+// in the middle of an enrichment used to leave the enrichment running
+// with nothing on screen to say so. Running tokens are remembered in
+// localStorage and picked up again on load (jobProgressResume); a resumed
+// box has no request waiting on it, so it closes itself once the server
+// says the job has finished.
+//
+// Each box carries its own stop button, shown only when the job says it
+// can stop (`cancellable` on the record) — a button that only hid the
+// bar while the work went on would be worse than none.
+const _jobs = new Map();        // token -> {el, timer, title, owned, cancelling}
+const _JOBS_KEY = 'porxpyRunningJobs';
+// Set as the page goes away. Leaving aborts every request in flight, and
+// each one's `finally` then calls jobProgressStop — which, without this,
+// forgot the job a moment before the page was gone, so the reload had
+// nothing to pick up while the server worked on regardless.
+let _jobsPageLeaving = false;
+window.addEventListener('beforeunload', () => { _jobsPageLeaving = true; });
+window.addEventListener('pagehide',     () => { _jobsPageLeaving = true; });
+
+function _jobsRemember(){
+  try {
+    localStorage.setItem(_JOBS_KEY, JSON.stringify(
+      [..._jobs].map(([token, j]) => ({token, title: j.title}))));
+  } catch(_e){ /* no storage: boxes just do not survive a reload */ }
+}
 
 function jobProgressToken(){
   // crypto.randomUUID is unavailable on http:// origins in some
   // browsers; the fallback only has to be unique among this user's
-  // in-flight jobs, of which there is realistically one.
+  // in-flight jobs.
   return (window.crypto && crypto.randomUUID)
     ? crypto.randomUUID()
     : 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 }
 
-function _jobProgRender(p){
-  const box  = document.getElementById('enrichProgress');
-  const fill = document.getElementById('eprogFill');
-  const cnt  = document.getElementById('eprogCount');
-  const eta  = document.getElementById('eprogEta');
-  if (!box) return;
-  // No record yet (the request has not reached the loop) or no total:
+function _jobBox(token, title){
+  const stack = document.getElementById('eprogStack');
+  const el = document.createElement('div');
+  el.className = 'eprog indet';
+  el.innerHTML = `
+    <div class="eprog-head">
+      <div class="eprog-title"></div>
+      <button class="eprog-x" type="button" hidden
+              title="Stop this job. It stops between two steps; anything it would have written is not written.">✕</button>
+    </div>
+    <div class="eprog-phase"></div>
+    <div class="eprog-track"><div class="eprog-fill"></div></div>
+    <div class="eprog-sub"><span class="eprog-count"></span><span class="eprog-eta"></span></div>`;
+  el.querySelector('.eprog-title').textContent = title;
+  el.querySelector('.eprog-x').onclick = () => jobProgressCancel(token);
+  // The stack is column-reverse, so appending puts the newest on top.
+  if (stack) stack.appendChild(el);
+  return el;
+}
+
+function _jobProgRender(job, p){
+  const el = job.el;
+  const q = sel => el.querySelector(sel);
+  // Stage in the title, phase on its own line — in both modes below.
+  q('.eprog-title').textContent = job.title + (p && p.stage ? ` — ${p.stage}` : '');
+  const stopping = job.cancelling || (p && p.cancel_requested);
+  const ph = q('.eprog-phase');
+  ph.textContent = stopping ? 'stopping after the current step…'
+                 : p ? (p.phase || 'working…') : 'contacting…';
+  ph.title = ph.textContent;
+  const x = q('.eprog-x');
+  x.hidden   = !(p && p.cancellable && !p.finished);
+  x.disabled = !!stopping;
+  const fill = q('.eprog-fill'), cnt = q('.eprog-count'), eta = q('.eprog-eta');
+  // No record yet (the request has not reached the work) or no total:
   // sweep rather than sit at 0%, which reads as stuck.
   if (!p || !p.total){
-    box.classList.add('indet');
+    el.classList.add('indet');
     fill.style.width = '';
-    // Three distinct states, because they mean different things: no
-    // record yet (the request has not reached the work), a record with
-    // no denominator (a job that cannot count itself), and a counted job
-    // mid-run. Only the last can honestly draw a percentage.
-    cnt.textContent = p ? (p.phase || 'working…') : 'contacting…';
-    eta.textContent = p && p.elapsed_s ? `${Math.round(p.elapsed_s)}s` : '';
+    cnt.textContent = '';
+    const secs = p ? (p.job_elapsed_s ?? p.elapsed_s) : 0;
+    eta.textContent = secs ? `${Math.round(secs)}s` : '';
     return;
   }
-  box.classList.remove('indet');
+  el.classList.remove('indet');
   const pct = Math.max(0, Math.min(100, Math.round(100 * p.done / p.total)));
   fill.style.width = pct + '%';
   cnt.textContent = `${p.done} / ${p.total} ${p.unit || 'items'} · ${pct}%`;
@@ -4089,38 +4227,79 @@ function _jobProgRender(p){
     : (p.eta_s == null ? '' : `~${Math.max(1, Math.round(p.eta_s))}s left`);
 }
 
-// Show the popover and start polling. Returns nothing; call
-// jobProgressStop() when the request that owns it settles.
-function jobProgressStart(token, title){
-  const box = document.getElementById('enrichProgress');
-  if (!box) return;
-  jobProgressStop();                      // never two pollers at once
-  document.getElementById('eprogTitle').textContent =
-    title || 'Working…';
-  _jobProgRender(null);
-  box.hidden = false;
+// Show a box for `token` and start polling it. `owned` is false only for
+// a box picked up again after a reload — nothing will call
+// jobProgressStop for it, so it closes itself when the job finishes.
+function jobProgressStart(token, title, owned = true){
+  if (!token || _jobs.has(token)) return;
+  const job = {title: title || 'Working…', owned, cancelling: false, seen: false};
+  job.el = _jobBox(token, job.title);
+  _jobs.set(token, job);
+  _jobsRemember();
+  _jobProgRender(job, null);
   const poll = async () => {
     try {
-      const r = await fetch(
-        `${API}/progress/${encodeURIComponent(token)}`);
+      const r = await fetch(`${API}/progress/${encodeURIComponent(token)}`);
       if (!r.ok) return;
-      _jobProgRender((await r.json()).progress);
+      const p = (await r.json()).progress;
+      if (!_jobs.has(token)) return;          // stopped while we waited
+      if (p) job.seen = true;
+      if (!job.owned && (p ? p.finished : job.seen || job.misses++ > 3)){
+        // A resumed box: the job has ended (or aged out of the store),
+        // and no request is waiting to take the box down.
+        if (p) _jobProgRender(job, p);
+        setTimeout(() => jobProgressStop(token), p ? 1500 : 0);
+        return;
+      }
+      _jobProgRender(job, p);
     } catch(_e){
       // A failed poll is not a failed job — the request doing the work
-      // is a different one. Keep the bar and try again.
+      // is a different one. Keep the box and try again.
     }
   };
+  job.misses = 0;
   poll();
   // 700ms: fast enough that a row-per-second loop visibly moves, slow
   // enough not to add a request per row to a run that is already
   // network-bound.
-  _eprogTimer = setInterval(poll, 700);
+  job.timer = setInterval(poll, 700);
 }
 
-function jobProgressStop(){
-  if (_eprogTimer){ clearInterval(_eprogTimer); _eprogTimer = null; }
-  const box = document.getElementById('enrichProgress');
-  if (box) box.hidden = true;
+// Take one job's box down. By token, because several may be up: the
+// caller that started a job is the one that knows when it is over.
+function jobProgressStop(token){
+  const job = _jobs.get(token);
+  if (!job) return;
+  clearInterval(job.timer);
+  job.el.remove();
+  _jobs.delete(token);
+  if (!_jobsPageLeaving) _jobsRemember();
+}
+
+// The box's ✕. Asks the server to stop that job and only that one; the
+// request that started it then comes back `cancelled` and closes the box
+// the usual way. Until then the box says it is stopping.
+async function jobProgressCancel(token){
+  const job = _jobs.get(token);
+  if (!job || job.cancelling) return;
+  job.cancelling = true;
+  _jobProgRender(job, null);
+  try {
+    const r = await fetch(`${API}/progress/${encodeURIComponent(token)}/cancel`,
+                          {method: 'POST'});
+    const d = await r.json().catch(() => ({}));
+    if (!d.accepted) job.cancelling = false;   // already finished, or cannot stop
+  } catch(_e){ job.cancelling = false; }
+}
+
+// Pick up the jobs a previous page left running (see the note above).
+function jobProgressResume(){
+  let saved = [];
+  try { saved = JSON.parse(localStorage.getItem(_JOBS_KEY) || '[]') || []; }
+  catch(_e){ saved = []; }
+  for (const j of saved){
+    if (j && j.token) jobProgressStart(j.token, j.title, false);
+  }
 }
 
 // ── Credit quality ──────────────────────────────────────────────────
@@ -4239,7 +4418,7 @@ async function withJobProgress(title, fn){
   const tok = jobProgressToken();
   jobProgressStart(tok, title);
   try { return await fn(tok); }
-  finally { jobProgressStop(); }
+  finally { jobProgressStop(tok); }
 }
 
 // The Explore fund fetch, in all seven places that make it. Every caller
@@ -5737,6 +5916,8 @@ function onPortfolioChange(){
   // Picking a different portfolio must force a reload — the cached view
   // belongs to the previous pid.
   if (activePid !== lastLoadedPid) lastLoadedPid = '';
+  // The banner's traffic light described the previous portfolio.
+  ufRenderImpact();
   // The optimiser's last proposal belongs to the previous pid too.
   optForgetIfOtherPortfolio();
   if (currentTab === 'portfolio') renderPortfolioTab();
@@ -6174,6 +6355,8 @@ async function runOptimizer(){
   optProposalPid = runPid;
   status.textContent = 'Solving…';
 
+  // Outside the try, so the finally can name the bar it closes.
+  let ptok = '';
   try {
     // Cash positions are needed for the "settle from" dropdowns.
     const cr = await fetch(`${API}/portfolios/${activePid}/cash`);
@@ -6190,7 +6373,7 @@ async function runOptimizer(){
     };
     // The candidate pass reads every pre-loaded fund, so on a cold cache
     // it is as slow as a portfolio load and deserves the same bar.
-    const ptok = jobProgressToken();
+    ptok = jobProgressToken();
     body.progress_token = ptok;
     jobProgressStart(ptok, 'Designing the portfolio');
     const r = await fetch(`${API}/portfolios/${activePid}/optimize`, {
@@ -6325,7 +6508,7 @@ async function runOptimizer(){
   } catch(e){
     status.textContent = `Failed: ${e.message || e}`;
   } finally {
-    jobProgressStop();
+    jobProgressStop(ptok);
     btn.disabled = false;
   }
 }
@@ -7569,10 +7752,12 @@ async function loadPortfolioHoldings(forceRefresh){
       `<div class="spin" style="display:inline-block;margin-right:8px"></div>` +
       `Aggregating holdings across funds…</div>`;
   }
+  // Outside the try, so the finally can name the bar it closes.
+  let ptok = '';
   try {
     const params = new URLSearchParams();
     if (forceRefresh) params.set('refresh','1');
-    const ptok = jobProgressToken();
+    ptok = jobProgressToken();
     params.set('progress_token', ptok);
     jobProgressStart(ptok, 'Reading every fund’s holdings');
     const r = await fetch(`${API}/portfolios/${activePid}/holdings_rollup?${params}`);
@@ -7595,7 +7780,7 @@ async function loadPortfolioHoldings(forceRefresh){
     // In a finally, not after the await: the bar must come down when the
     // request fails too, or a failed load leaves a bar that will never
     // move and reads as "still working".
-    jobProgressStop();
+    jobProgressStop(ptok);
   }
 }
 
@@ -11787,8 +11972,9 @@ async function getLatestIssuerDocuments(opts){
   opts = opts || {};
   const ticker = lastFundData && lastFundData.ticker;
   if (!ticker) return;
-  // The retry after "use the standard mapping?" asks for the HOLDINGS
-  // HALF ONLY (v0.106.2).
+  // The second call, after the import confirmation, asks for the
+  // HOLDINGS HALF ONLY (v0.106.2; the confirmation was the house-mapping
+  // question until v0.137.0).
   //
   // It used to re-post the whole run, which meant the factsheet was
   // fetched, stored and — the expensive part — sent to the AI helper a
@@ -11807,7 +11993,7 @@ async function getLatestIssuerDocuments(opts){
             method:'POST', headers:{'Content-Type':'application/json'},
             body: JSON.stringify({progress_token: tok,
                                   factsheet: wantFactsheet,
-                                  use_house_mapping: !!opts.useHouseMapping}),
+                                  confirm_holdings: opts.confirm || null}),
           });
         return await r.json();
       });
@@ -11820,40 +12006,52 @@ async function getLatestIssuerDocuments(opts){
   // skipping the re-fetch does not also lose the news about it.
   if (opts.carryFactsheet) d.factsheet = opts.carryFactsheet;
 
-  // The one outcome that is a QUESTION rather than a result: this fund
-  // has no mapping of its own, and the house has a standard one. Asked
-  // rather than assumed, because applying a portfolio-wide default to a
-  // file nobody has looked at is exactly the unattended-import risk the
-  // column check exists for.
-  if (d.holdings?.status === 'needs_mapping'){
-    const m = d.holdings.house_mapping;
-    if (m){
-      // A house standard exists AND fits the downloaded file. Ask.
-      const cols = Object.entries(m.columns || {}).map(([f,c]) => `  ${f} → ${c}`).join('\n');
-      const ok = confirm(
-        `${d.holdings.message}\n\n`
-        + (m.from_ticker ? `Saved from ${m.from_ticker}.\n` : '')
-        + `${cols}\n\n`
-        + 'It is still checked against this fund\'s file before anything is replaced.');
-      if (ok){
-        await getLatestIssuerDocuments({useHouseMapping: true,
-                                        factsheet: false,
-                                        carryFactsheet: d.factsheet});
-        return;
-      }
+  // The one outcome that is a QUESTION rather than a result (v0.137.0):
+  // a file is downloaded and a saved mapping fits it. Asked on every run,
+  // not just the first — which mapping is applied, and whether to spend
+  // minutes enriching, are both the user's to see before the wait.
+  if (d.holdings?.status === 'needs_confirmation'){
+    const h = d.holdings;
+    const ans = await issuerConfirmHoldings(h, d.issuer?.label || '');
+    if (ans.action === 'import'){
+      await getLatestIssuerDocuments({
+        factsheet: false, carryFactsheet: d.factsheet,
+        confirm: {preview_token: h.preview_token, header_row: h.header_row,
+                  mapping_kind: h.mapping_kind, enrich: ans.enrich,
+                  url: h.url, why: h.why}});
+      return;
     }
-    // Either there was no mapping that fits, or the user declined the
-    // house standard. Either way the file is already downloaded and
-    // parsed, so the useful next step is the mapping dialog with it in
-    // — not a message telling them to go and fetch it themselves.
+    if (ans.action === 'map'){
+      // Same way out as a file no mapping fits, below — but starting
+      // from the mapping just proposed, and the enrich box as left.
+      d.holdings = {...h, status: 'needs_mapping',
+                    seedPrefs: {...(h.mapping_prefs || {}), enrich: ans.enrich}};
+    } else {
+      d.holdings = {status: 'skipped', url: h.url,
+                    message: `${h.downloaded || 'the file'} was downloaded but not `
+                             + 'imported — cancelled at the confirmation'};
+    }
+  }
+  if (d.holdings?.status === 'needs_mapping'){
+    // No saved mapping fits, or the user chose to map it themselves.
+    // Either way the file is already downloaded and parsed, so the
+    // useful next step is the mapping dialog with it in — not a message
+    // telling them to go and fetch it themselves.
     if (d.holdings.preview){
-      showIssuerRefreshReport({...d, holdings: {
-        status: 'skipped',
-        message: `${d.holdings.downloaded || 'the file'} was downloaded — `
-                 + 'map its columns to finish the import',
-        url: d.holdings.url}});
+      // The mapping dialog ALONE (v0.137.1). The report used to be
+      // opened here too, and it sits later in the page than the upload
+      // dialog, so it landed on top and left the mapping dialog behind
+      // it, unreadable and unusable. The factsheet half's outcome is
+      // still news, so it goes to the status line instead of a dialog.
+      const fs = d.factsheet || {};
+      const fsNote = (fs.status && fs.message && fs.message !== 'not requested')
+        ? `Factsheet: ${fs.message}${fs.extraction?.message ? ` (${fs.extraction.message})` : ''}. `
+        : '';
+      setStatus(fs.status === 'failed' ? 'err' : 'ok',
+                `${fsNote}${d.holdings.downloaded || 'The holdings file'} was downloaded — `
+                + 'map its columns to finish the import.');
       openUploadModal();
-      enterUploadMapping(d.holdings.preview, null);
+      enterUploadMapping(d.holdings.preview, d.holdings.seedPrefs || null);
       return;
     }
     d.holdings = {status:'skipped',
@@ -11865,6 +12063,61 @@ async function getLatestIssuerDocuments(opts){
   if (d.factsheet?.status === 'ok' || d.holdings?.status === 'ok'){
     await reloadCurrentFund(false);
   }
+}
+
+// Ask before importing a downloaded holdings file (v0.137.0).
+//
+// Resolves {action:'import', enrich} | {action:'map'} | {action:'cancel'}.
+// A modal rather than confirm(), because it carries a choice (enrich)
+// and three ways out, and because the mapping it names has to be
+// readable as columns rather than squeezed into an alert.
+function issuerConfirmHoldings(h, houseLabel){
+  const m = h.mapping || {};
+  const n = Number(h.approx_rows) || 0;
+  const cols = Object.entries(m.columns || {})
+    .map(([f, c]) => `<tr><td style="color:var(--muted);padding:1px 14px 1px 0;border:0">${escapeHtml(f.replace(/_/g,' '))}</td>`
+                   + `<td style="padding:1px 0;border:0">${escapeHtml(String(c))}</td></tr>`).join('');
+  document.getElementById('issuerConfirmTitle').textContent =
+    `Import holdings — ${houseLabel || 'issuer'}`;
+  document.getElementById('issuerConfirmBody').innerHTML = `
+    <div style="font-size:.8rem">
+      <div><b>${escapeHtml(h.downloaded || 'the file')}</b>
+        ${n ? `<span style="color:var(--muted)"> · about ${n.toLocaleString()} rows</span>` : ''}</div>
+      ${h.url ? `<div style="font-family:var(--mono);font-size:.64rem;color:var(--muted);word-break:break-all">${escapeHtml(h.url)}</div>` : ''}
+      <div style="margin-top:.7rem">Columns read with <b>${escapeHtml(h.mapping_from || 'the saved mapping')}</b>
+        ${m.from_ticker && h.mapping_kind === 'house' ? `<span style="color:var(--muted)">(saved from ${escapeHtml(m.from_ticker)})</span>` : ''}
+        — checked against this file's own column names:</div>
+      <div style="display:flex;gap:14px;align-items:flex-start;margin-top:.35rem">
+        ${cols ? `<table style="font-family:var(--mono);font-size:.7rem;margin-left:.4rem;width:auto;border-collapse:collapse">${cols}</table>` : ''}
+        <!-- Beside the mapping it would replace (v0.137.1), not among
+             the footer's Import/Cancel: it answers "is this mapping
+             right?", which is a question about the table. -->
+        <button class="btn btn-s btn-sm" id="issuerConfirmMap" style="margin-left:auto;white-space:nowrap"
+                title="Open the column-mapping dialog with this file in it">Map columns myself…</button>
+      </div>
+      <div style="margin-top:.6rem;color:var(--muted);font-size:.72rem">
+        Nothing is replaced until you press Import.</div>
+    </div>`;
+  const box = document.getElementById('issuerConfirmEnrich');
+  box.checked = h.enrich_default !== false;
+  document.getElementById('issuerConfirmEnrichLabel').textContent =
+    n ? `Enrich the ${n.toLocaleString()} holdings through Yahoo`
+      : 'Enrich the holdings through Yahoo';
+  return new Promise(resolve => {
+    const done = (ans) => {
+      hideModal('issuerConfirmModal');
+      for (const id of ['issuerConfirmOk','issuerConfirmMap','issuerConfirmCancel'])
+        document.getElementById(id).onclick = null;
+      resolve(ans);
+    };
+    document.getElementById('issuerConfirmOk').onclick =
+      () => done({action: 'import', enrich: box.checked});
+    document.getElementById('issuerConfirmMap').onclick =
+      () => done({action: 'map', enrich: box.checked});
+    document.getElementById('issuerConfirmCancel').onclick =
+      () => done({action: 'cancel'});
+    showModal('issuerConfirmModal');
+  });
 }
 
 // Offer a just-committed mapping as the fund house's standard.
@@ -11908,6 +12161,9 @@ function showIssuerRefreshReport(d){
     ok:      {icon:'✓', colour:'var(--green)'},
     skipped: {icon:'–', colour:'var(--muted)'},
     failed:  {icon:'⚠', colour:'var(--amber)'},
+    // Stopped from the progress bar (v0.138.0): the user's own act, so
+    // neither a warning nor a success.
+    cancelled: {icon:'■', colour:'var(--muted)'},
   };
   const half = (title, blk) => {
     const b = blk || {status:'skipped', message:''};
@@ -11917,7 +12173,7 @@ function showIssuerRefreshReport(d){
     if (b.mapping_from) bits.push(b.mapping_from);
     if (b.enriched != null)
       bits.push(b.enriched ? 'enriched through Yahoo'
-                           : 'not enriched (your saved choice)');
+                           : 'not enriched');
     if (b.weight_sum_pct != null) bits.push(`weights sum to ${Number(b.weight_sum_pct).toFixed(2)}%`);
     // The extraction is a THIRD outcome nested inside the factsheet's,
     // because "fetched but not read" is the normal state of an install
@@ -15546,6 +15802,8 @@ async function extractFactsheet(){
   const btn = document.getElementById('exRunBtn');
   if (btn){ btn.disabled = true; btn.textContent = '✨ Reading…'; }
   setStatus('spin', 'Reading the factsheet — this takes a few seconds…');
+  // Outside the try, so the finally can name the bar it closes.
+  let ptok = '';
   try {
     // Only send a prompt when editing is on AND it differs from the
     // default — otherwise every run would pin a snapshot of a prompt
@@ -15557,7 +15815,7 @@ async function extractFactsheet(){
     // Reading a factsheet is one long call to the model — routinely half
     // a minute, and the button alone cannot say whether it is thinking or
     // stuck. It reports phases rather than a count, which the bar handles.
-    const ptok = jobProgressToken();
+    ptok = jobProgressToken();
     jobProgressStart(ptok, 'Reading the factsheet');
     const _bd = custom ? { prompt: custom } : {};
     _bd.progress_token = ptok;
@@ -15586,7 +15844,7 @@ async function extractFactsheet(){
     const b = document.getElementById('exRunBtn');
     if (b){ b.disabled = false; b.textContent = '✨ Extract now'; }
   } finally {
-    jobProgressStop();
+    jobProgressStop(ptok);
   }
 }
 
@@ -17027,7 +17285,7 @@ async function submitUploadCommit(){
     }
     showUploadMapError('Network error: ' + e.message);
   } finally {
-    enrichProgressStop();
+    enrichProgressStop(tokenAtFire);
     clearBtnBusy(btn);
     // uploadState may have been nulled by closeUploadModal — guard.
     if (uploadState) {
@@ -17211,7 +17469,7 @@ async function enrichHoldings(){
   } catch(e){
     setStatus('err', 'Network error: ' + e.message);
   } finally {
-    enrichProgressStop();
+    enrichProgressStop(ptoken);
     _hEnrichBusy = false;
     fhSyncEnrichLabel();
   }
@@ -17275,16 +17533,21 @@ let _issHouses = [];
 async function renderIssuerHouses(){
   const box = document.getElementById('setIssuers');
   if (!box) return;
+  let payload = {};
   try {
     const r = await fetch(`${API}/issuers`);
-    _issHouses = (await r.json()).houses || [];
+    payload = await r.json();
+    _issHouses = payload.houses || [];
   } catch(e){ box.innerHTML = ''; return; }
+  _issInvestor = payload.investor || {type:'', country:'nl'};
+  renderInvestorDeclaration(payload);
 
   box.innerHTML = _issHouses.map(h => {
     const rows = (h.sites || []).map((u, i) => `
       <div style="display:flex;gap:.3rem;align-items:center;margin:.15rem 0">
         <span style="font-family:var(--mono);font-size:.62rem;color:var(--muted);width:1.4rem">${i+1}.</span>
         <span style="flex:1;font-family:var(--mono);font-size:.68rem;word-break:break-all">${escapeHtml(u)}</span>
+        ${_issSiteMismatch(h, i)}
         <button class="btn-icon" title="Move up" ${i===0?'disabled':''}
                 onclick="issMove('${h.key}',${i},-1)">↑</button>
         <button class="btn-icon" title="Move down" ${i===(h.sites.length-1)?'disabled':''}
@@ -17314,6 +17577,7 @@ async function renderIssuerHouses(){
           <span class="src ${h.discovers ? 'cache' : ''}" style="font-size:.6rem">
             ${h.discovers ? 'finds documents itself' : 'remembered URLs only'}</span>
         </div>
+        ${_issAudienceHtml(h)}
         <div style="margin-top:.35rem">${rows}</div>
         <div style="display:flex;gap:.3rem;margin-top:.35rem">
           <input id="issAdd_${h.key}" placeholder="https://www.ishares.com/uk/individual/en"
@@ -17325,6 +17589,130 @@ async function renderIssuerHouses(){
         ${mapLine}
       </div>`;
   }).join('');
+}
+
+// ── The investor declaration (v0.139.0) ──────────────────────────────
+// One declaration for every house — a fact about the user, told to each
+// house its own way (see AUDIENCE in issuers.py). Blank until the user
+// makes it, and nothing is told to any house while it is.
+let _issInvestor = {type:'', country:'nl'};
+
+function renderInvestorDeclaration(payload){
+  const box = document.getElementById('setInvestor');
+  if (!box) return;
+  const types = payload.investor_types || {};
+  const countries = payload.investor_countries || {};
+  const opt = (v, label, cur) =>
+    `<option value="${escapeHtml(v)}"${v === cur ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+  box.innerHTML = `
+    <div style="font-family:var(--mono);font-size:.74rem;margin-bottom:.4rem"><strong>You, as an investor</strong></div>
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+      <select id="setInvType" onchange="saveInvestorDeclaration()"
+              style="background:var(--surface2);border:1px solid var(--border2);border-radius:6px;
+                     color:var(--text);font-family:var(--mono);font-size:.7rem;padding:.3rem .45rem">
+        ${opt('', '— not declared —', _issInvestor.type)}
+        ${Object.entries(types).map(([k, v]) => opt(k, v, _issInvestor.type)).join('')}
+      </select>
+      <span style="font-family:var(--mono);font-size:.7rem;color:var(--muted)">in</span>
+      <select id="setInvCountry" onchange="saveInvestorDeclaration()"
+              style="background:var(--surface2);border:1px solid var(--border2);border-radius:6px;
+                     color:var(--text);font-family:var(--mono);font-size:.7rem;padding:.3rem .45rem">
+        ${Object.entries(countries).map(([k, v]) => opt(k, v, _issInvestor.country)).join('')}
+      </select>
+    </div>
+    <div style="font-family:var(--mono);font-size:.64rem;color:var(--muted);line-height:1.55;margin-top:.45rem">
+      What the fund houses are told about you, each in its own way (shown per house below).
+      PorxPy never declares this for you: until you do, a house that asks gets no answer,
+      and one that hands out documents only after a disclaimer will not hand them out.
+      Changing it retires every disclaimer accepted under the old declaration.
+    </div>`;
+}
+
+async function saveInvestorDeclaration(){
+  const investor = {
+    type:    document.getElementById('setInvType')?.value || '',
+    country: document.getElementById('setInvCountry')?.value || 'nl',
+  };
+  try {
+    const r = await fetch(`${API}/settings`, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({investor}),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  } catch(e){ alert(`Could not save: ${e.message || e}`); }
+  renderIssuerHouses();
+}
+
+// The house's line about how it is told who you are, plus — for a house
+// that gates its documents behind a disclaimer — the accept/withdraw
+// control for it.
+function _issAudienceHtml(h){
+  const a = h.audience || {};
+  let ctl = '';
+  if (a.how === 'disclaimer'){
+    const dc = h.disclaimer || {};
+    ctl = !_issInvestor.type
+      ? `<span style="color:var(--amber)">Declare your investor type above first.</span>`
+      : dc.accepted
+        ? `<span style="color:var(--green)">✓ Accepted${dc.at ? ' on ' + escapeHtml(dc.at.slice(0, 10)) : ''}</span>
+           <button class="btn btn-s btn-sm" onclick="issWithdrawDisclaimer('${h.key}')">Withdraw</button>`
+        : `<button class="btn btn-s btn-sm" onclick="issReadDisclaimer('${h.key}')">Read and accept ${escapeHtml(h.label)}'s disclaimer…</button>`;
+  }
+  return `
+    <div style="font-family:var(--mono);font-size:.64rem;color:var(--muted);line-height:1.55;margin-top:.35rem">
+      ${escapeHtml(a.note || '')}
+      ${ctl ? `<div style="margin-top:.3rem;display:flex;gap:.5rem;align-items:center">${ctl}</div>` : ''}
+    </div>`;
+}
+
+// A site whose address is for the other investor type than the one
+// declared. Marked, not changed: the list is the user's, and its order
+// is a setting of its own.
+function _issSiteMismatch(h, i){
+  const aud = (h.site_audiences || [])[i] || '';
+  if (!aud || !_issInvestor.type || aud === _issInvestor.type) return '';
+  const label = aud === 'professional' ? 'professional investors' : 'private investors';
+  return `<span title="This site is for ${label}, which is not what you declared above"
+                style="font-family:var(--mono);font-size:.6rem;color:var(--amber);white-space:nowrap">⚠ for ${label}</span>`;
+}
+
+async function issReadDisclaimer(house){
+  let d;
+  try {
+    const r = await fetch(`${API}/issuers/${encodeURIComponent(house)}/disclaimer`);
+    d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
+  } catch(e){ alert(`Could not fetch the disclaimer: ${e.message || e}`); return; }
+  const h = _issHouses.find(x => x.key === house) || {};
+  document.getElementById('issDiscTitle').textContent =
+    `${h.label || house} — ${d.header || 'disclaimer'}`;
+  const sel = id => document.getElementById(id);
+  const typ = sel('setInvType')?.selectedOptions?.[0]?.textContent || _issInvestor.type;
+  const cty = sel('setInvCountry')?.selectedOptions?.[0]?.textContent || _issInvestor.country;
+  document.getElementById('issDiscWho').textContent =
+    `As declared: ${typ}, ${cty}. This is ${h.label || house}'s own text.`;
+  document.getElementById('issDiscText').textContent = d.text || '';
+  const btn = document.getElementById('issDiscAgree');
+  btn.textContent = d.agree || 'Accept';
+  btn.onclick = async () => {
+    try {
+      const r = await fetch(`${API}/issuers/${encodeURIComponent(house)}/disclaimer`,
+                            {method:'POST'});
+      const x = await r.json();
+      if (!r.ok || x.error) throw new Error(x.error || `HTTP ${r.status}`);
+    } catch(e){ alert(`Could not record it: ${e.message || e}`); return; }
+    hideModal('issDiscModal');
+    renderIssuerHouses();
+  };
+  showModal('issDiscModal');
+}
+
+async function issWithdrawDisclaimer(house){
+  try {
+    await fetch(`${API}/issuers/${encodeURIComponent(house)}/disclaimer`,
+                {method:'DELETE'});
+  } catch(e){ /* the re-render shows whether it went */ }
+  renderIssuerHouses();
 }
 
 async function _issSaveSites(house, sites){
@@ -17831,6 +18219,77 @@ function ufRestoreTriggerFocus(){
 let ufAnchorKey = null;
 let ufSelected = new Set();   // row keys of form `${fund_isin}|${row_id}`
 
+// How much of the selected portfolio the unrecognised values touch
+// (v0.134.0) — the traffic light on the global banner.
+//
+// The banner counts rows across EVERY cached fund, which says there is
+// work but not whether it matters: a hundred unmatched rows in a fund
+// nobody holds cost nothing. This answers the second question for the
+// portfolio in the header selector, from the rollup the server already
+// made (each breakdown facet's `unresolved` list, a fraction of the
+// portfolio's whole value, cash included — "of the total portfolio
+// value" is the question, so the include-cash toggle deliberately does
+// not apply here).
+//
+// One number, the WORST facet, rather than a sum: one holding is often
+// unmatched in sector and country at once, so adding the facets would
+// count the same money twice. The per-facet split goes in the tooltip.
+//
+// Read from the last loaded view, not fetched: /view is the slowest call
+// in the app, and the banner refreshes after every edit. So the light
+// describes the portfolio as last loaded, and is hidden while a
+// different portfolio is selected but not yet loaded rather than show
+// one portfolio's number under another's name.
+const UF_IMPACT_GREEN = 0.05;   // below: safe to leave for now
+const UF_IMPACT_AMBER = 0.10;   // below: worth a look; at or above: resolve
+function ufPortfolioImpact(){
+  const view = currentPortfolioView;
+  if (!activePid || lastLoadedPid !== activePid || !view) return null;
+  const bd = view.fundlevel_breakdowns || {};
+  const perFacet = [];
+  for (const f of ['asset_class','sector','currency','country']) {
+    const card = bd[f] || {};
+    const w = (card.unresolved || [])
+      .reduce((a, u) => a + (Number(u.weight) || 0), 0);
+    // The whole unknown slice too, for the tooltip only: it is the
+    // ceiling, and most of it is usually silence no alias can fix, so
+    // grading the light on it would ask the user to resolve what the
+    // dialog cannot reach.
+    const lv = card.default_level || '';
+    const unknown = (((card.items || {})[lv]) || [])
+      .filter(it => it.key === 'unknown')
+      .reduce((a, it) => a + (Number(it.weight) || 0), 0);
+    perFacet.push({ facet: f, weight: w, unknown });
+  }
+  const worst = perFacet.reduce((m, x) => x.weight > m.weight ? x : m, perFacet[0]);
+  return { name: view.portfolio?.name || 'portfolio', perFacet, worst };
+}
+
+function ufRenderImpact(){
+  const el = document.getElementById('ufBannerImpact');
+  if (!el) return;
+  const imp = ufPortfolioImpact();
+  if (!imp) { el.style.display = 'none'; return; }
+  const w = imp.worst.weight;
+  const [colour, verdict] =
+      w < UF_IMPACT_GREEN ? ['var(--green)', 'can wait']
+    : w < UF_IMPACT_AMBER ? ['var(--amber)', 'worth resolving']
+    :                       ['var(--red)',   'resolve these'];
+  const pct = x => `${(x * 100).toFixed(1)}%`;
+  el.title = `Share of ${imp.name}'s total value (cash included) held in `
+    + `values no resource file recognises, as of the last portfolio load:\n`
+    + imp.perFacet.map(x => `  ${x.facet.replace('_',' ')}: ${pct(x.weight)}`
+        + ` (of ${pct(x.unknown)} unknown in all)`).join('\n')
+    + `\n\nThe light follows the worst facet: green below `
+    + `${UF_IMPACT_GREEN*100}%, amber below ${UF_IMPACT_AMBER*100}%, red above.`;
+  el.innerHTML =
+    `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;`
+    + `background:${colour};box-shadow:0 0 6px ${colour}"></span>`
+    + `<span>${escapeHtml(imp.name)}: <b style="color:${colour}">${pct(w)}</b> `
+    + `unrecognised · ${verdict}</span>`;
+  el.style.display = 'inline-flex';
+}
+
 // Refresh the global banner from /api/unmatched_facets. Called at app
 // startup, after a successful upload, after a holding edit, and after
 // applying bulk edits in the dialog.
@@ -17844,6 +18303,7 @@ async function ufRefreshBanner(){
     ufLastPayload = d;
     const total = d.total || 0;
     if (total <= 0) { banner.style.display = 'none'; return; }
+    ufRenderImpact();
     // Summarise: count distinct rows + which facets carry mismatches.
     const facetCounts = {};
     for (const row of (d.rows || [])) {
@@ -19762,13 +20222,15 @@ async function reloadPortfolio(forceRefresh, isSwitch = false){
   document.getElementById('pfundsBody').innerHTML =
     `<tr><td colspan="11" style="padding:20px;text-align:center;color:var(--muted)"><div class="spin" style="display:inline-block;margin-right:8px"></div>Loading fund data…</td></tr>`;
 
+  // Outside the try, so the finally can name the bar it closes.
+  let ptok = '';
   try {
     const params = new URLSearchParams();
     if (forceRefresh) params.set('refresh','1');
     // The longest wait in the app: one Yahoo load per fund, and any of
     // them can miss the cache. The request cannot report on itself, so it
     // carries a token and the bar polls that while we wait here.
-    const ptok = jobProgressToken();
+    ptok = jobProgressToken();
     params.set('progress_token', ptok);
     jobProgressStart(ptok, 'Loading portfolio funds');
     const r = await fetch(`${API}/portfolios/${activePid}/view?${params}`);
@@ -19860,7 +20322,7 @@ async function reloadPortfolio(forceRefresh, isSwitch = false){
       `<tr><td colspan="12" style="padding:20px;text-align:center;color:var(--red)">Error: ${escapeHtml(e.message)}</td></tr>`;
     document.getElementById('pTitle').textContent = 'Error';
   } finally {
-    jobProgressStop();
+    jobProgressStop(ptok);
     if (_scrollSnap) _restoreScroll(_scrollSnap);
   }
 }

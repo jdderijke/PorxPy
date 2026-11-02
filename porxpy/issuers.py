@@ -180,6 +180,11 @@ def http_get(url: str, *, referer: str = "") -> Fetched:
             browser.
     """
     headers = {"Referer": referer} if referer else {}
+    # A house that gates its documents behind a disclaimer the user has
+    # accepted in Settings is told so first (v0.139.0). Here, in the one
+    # download routine, so every path that fetches a document — the
+    # issuer search and a pasted URL alike — gets it.
+    _pass_disclaimer(url)
     try:
         r = _session().get(url, timeout=HTTP_TIMEOUT, headers=headers,
                            allow_redirects=True)
@@ -308,6 +313,28 @@ class IssuerAdapter:
     # Said in the report when this adapter has no discovery of its own,
     # so "nothing found" reads as a known limit rather than a failure.
     discovery_note: str = ""
+
+    # How this house learns who is asking (v0.139.0). DATA, like
+    # DOCUMENTS: the mechanism is shared (site_audience, disclaimer_text,
+    # _pass_disclaimer) and a house only describes itself. ``how`` is:
+    #
+    #   "none"        requests carry no investor type at all;
+    #   "path"        the type is a segment of each site address, so the
+    #                 site list IS what the house is told — ``segments``
+    #                 says which spelling means which type;
+    #   "disclaimer"  documents are handed out only after a visitor picks
+    #                 a type and accepts a disclaimer, which sets a
+    #                 cookie. The spec says where the house's own entry
+    #                 screen fetches that text; the user reads and
+    #                 accepts it in Settings, never PorxPy for them;
+    #   "unknown"     nobody has looked yet.
+    #
+    # ``note`` is the sentence Settings shows under the house.
+    AUDIENCE: dict = {
+        "how": "unknown",
+        "note": "Not looked into yet: PorxPy does not know how this "
+                "house asks who you are.",
+    }
 
     def matches(self, ref: FundRef) -> bool:
         """Whether this house publishes this fund."""
@@ -645,6 +672,22 @@ class ISharesAdapter(IssuerAdapter):
     """iShares (BlackRock)."""
 
     key = "ishares"
+    AUDIENCE = {
+        "how": "path",
+        "note": "The investor type is part of each site address "
+                "(…/particuliere-belegger/…), so the site list below is "
+                "what iShares is told. A site marked for the other type "
+                "contradicts your declaration.",
+        # Lower-case path segments, per type, across the sites iShares
+        # runs. A site carrying none of them is not marked either way.
+        "segments": {
+            "retail": ("particuliere-belegger", "individual",
+                       "privatanleger", "particuliers"),
+            "professional": ("professionele-belegger", "professional",
+                             "professionelle-anleger", "institutional",
+                             "intermediaries"),
+        },
+    }
     label = "iShares"
     name_patterns = ("ishares",)
     hosts = ("ishares.com", "blackrock.com")
@@ -933,6 +976,12 @@ class AmundiAdapter(IssuerAdapter):
 
     key = "amundi"
     label = "Amundi"
+    AUDIENCE = {
+        "how": "none",
+        "note": "Factsheets are addressed by host and ISIN alone, so no "
+                "investor type reaches Amundi. The /professional in the "
+                "site addresses below only names the site.",
+    }
     # Lyxor is Amundi since 2022 and its funds still carry the old name
     # on Yahoo, so both spellings reach this adapter.
     name_patterns = ("amundi", "lyxor")
@@ -1023,6 +1072,11 @@ class XtrackersAdapter(IssuerAdapter):
     """
 
     key = "xtrackers"
+    AUDIENCE = {
+        "how": "none",
+        "note": "The document addresses carry no investor type and the "
+                "site asks for none.",
+    }
     label = "Xtrackers"
     # "DWS" is the parent and appears on the funds' own documents.
     name_patterns = ("xtrackers", "db x-trackers")
@@ -1071,6 +1125,30 @@ class VanEckAdapter(_UndiscoveredHouse):
     label = "VanEck"
     name_patterns = ("vaneck", "van eck")
     hosts = ("vaneck.com",)
+    # vaneck.com redirects every document request to its entry screen
+    # until the visitor has picked a type and accepted the disclaimer;
+    # accepting sets the cookie the documents are then served against.
+    # Measured at v0.139.0 from the site's own main.js: the screen calls
+    # the endpoint below with op=getdisclaimer, and its "Ik ga akkoord"
+    # button navigates to the AcceptUrl that call returns.
+    AUDIENCE = {
+        "how": "disclaimer",
+        "note": "vaneck.com hands out documents only after you choose an "
+                "investor type and accept its disclaimer. Read it here and "
+                "accept it once; PorxPy then passes that acceptance on "
+                "exactly as the site's own button would.",
+        # The site's own ids for the two types ("pi": Professional Investor).
+        "ids": {"retail": "retail", "professional": "pi"},
+        "url": "https://www.vaneck.com/common/header/processrequest",
+        "params": {"op": "getdisclaimer", "param1": "{audience}",
+                   "param2": "{COUNTRY}", "param3": "", "param4": "%2F",
+                   "param5": "{lang}", "param6": "",
+                   "param7": "{country_name}"},
+        # The site language per country, for {lang}.
+        "langs": {"nl": "nl", "be": "nl", "lu": "en", "de": "de", "at": "de",
+                  "ch": "de", "fr": "fr", "it": "it", "es": "es",
+                  "gb": "en", "ie": "en"},
+    }
 
 
 class SPDRAdapter(_UndiscoveredHouse):
@@ -1120,6 +1198,157 @@ def house_for_url(url: str) -> IssuerAdapter | None:
         if any(host == h or host.endswith("." + h) for h in a.hosts):
             return a
     return None
+
+
+# ---------------------------------------------------------------------------
+# Who is asking (v0.139.0) — one mechanism, described per house in AUDIENCE
+# ---------------------------------------------------------------------------
+# Disclaimer addresses already visited in this process. The acceptance
+# lives in a cookie on the shared session, so one visit per process is
+# enough; a restart starts a new session and visits again.
+_GATES_PASSED: set[str] = set()
+
+
+def site_audience(adapter: IssuerAdapter, url: str) -> str:
+    """Which investor type a site address is for: a key of
+    ``config.INVESTOR_TYPES``, or ``""`` when it does not say.
+
+    Only meaningful for a ``path`` house, where the type is a segment of
+    the address. Read off the adapter's ``segments`` table.
+    """
+    aud = adapter.AUDIENCE or {}
+    if aud.get("how") != "path":
+        return ""
+    parts = {p.lower() for p in urlparse(url or "").path.split("/") if p}
+    for typ, segs in (aud.get("segments") or {}).items():
+        if parts & set(segs):
+            return typ
+    return ""
+
+
+def _html_to_text(html: str) -> str:
+    """A disclaimer's HTML as plain paragraphs.
+
+    Shown to the user to read, never injected as markup: the text comes
+    from a third-party site, and a paragraph break is all the structure
+    a disclaimer needs.
+    """
+    import html as _h
+    t = re.sub(r"(?i)<\s*(br|/p|/li|/h\d|/div)\s*/?>", "\n", html or "")
+    t = _h.unescape(re.sub(r"<[^>]+>", "", t))
+    lines = [re.sub(r"[ \t\u00a0]+", " ", ln).strip() for ln in t.split("\n")]
+    out, blank = [], False
+    for ln in lines:
+        if ln:
+            out.append(ln)
+            blank = False
+        elif not blank and out:
+            out.append("")
+            blank = True
+    return "\n".join(out).strip()
+
+
+def disclaimer_text(adapter: IssuerAdapter, decl: dict) -> dict:
+    """The house's own disclaimer for a declaration, ready to read.
+
+    Asks the endpoint the house's entry screen asks, with the house's
+    spelling of the user's type. Fetching the text declares nothing;
+    only visiting ``accept_url`` does, and that is left to
+    :func:`_pass_disclaimer` once the user has accepted.
+
+    Returns:
+        ``{header, text, agree, accept_url}``.
+
+    Raises:
+        ValueError: The house has no disclaimer, the declaration is
+            incomplete, or the site's answer carries no accept address.
+        RuntimeError: The site could not be reached.
+    """
+    from porxpy.config import INVESTOR_COUNTRIES
+    from urllib.parse import unquote
+    aud = adapter.AUDIENCE or {}
+    if aud.get("how") != "disclaimer":
+        raise ValueError(f"{adapter.label} has no disclaimer to accept")
+    typ = (decl or {}).get("type") or ""
+    cc = (decl or {}).get("country") or ""
+    site_id = (aud.get("ids") or {}).get(typ)
+    if not site_id or cc not in INVESTOR_COUNTRIES:
+        raise ValueError("declare your investor type and country first")
+    vals = {"audience": site_id, "COUNTRY": cc.upper(), "country": cc,
+            "lang": (aud.get("langs") or {}).get(cc, "en"),
+            "country_name": INVESTOR_COUNTRIES[cc]}
+    params = {k: str(v).format(**vals) for k, v in (aud.get("params") or {}).items()}
+    try:
+        r = _session().get(aud["url"], params=params, timeout=HTTP_TIMEOUT)
+        d = r.json()
+    except Exception as exc:
+        raise RuntimeError(f"could not reach {adapter.label}: {exc}") from exc
+    accept = unquote(str(d.get("AcceptUrl") or ""))
+    if not accept.lower().startswith("https://") or house_for_url(accept) is not adapter:
+        raise ValueError(f"{adapter.label} did not offer a disclaimer for "
+                         f"this declaration")
+    body = "\n\n".join(x for x in (_html_to_text(d.get("IntroText") or ""),
+                                    _html_to_text(d.get("Text") or "")) if x)
+    return {"header": re.sub(r"\s+", " ", str(d.get("Header") or "")).strip(),
+            "text": body,
+            "agree": str(d.get("AgreeText") or "Accept"),
+            "accept_url": accept}
+
+
+def _pass_disclaimer(url: str) -> None:
+    """Tell a disclaimer-gated house what the user accepted, once.
+
+    Visits the address the house's own accept button leads to, stored
+    when the user accepted in Settings — and only then: with nothing
+    accepted, or an acceptance made under a different declaration, the
+    request goes out as it always did and is answered with the entry
+    screen. Never raises; a gate that cannot be passed shows up as the
+    document check's "web page rather than a document", which names
+    the fix.
+    """
+    adapter = house_for_url(url)
+    if adapter is None or (adapter.AUDIENCE or {}).get("how") != "disclaimer":
+        return
+    from porxpy.utils import issuer_disclaimer_get
+    rec = issuer_disclaimer_get(adapter.key)
+    accept = (rec or {}).get("accept_url") or ""
+    if not accept or accept in _GATES_PASSED or house_for_url(accept) is not adapter:
+        return
+    try:
+        _session().get(accept, timeout=HTTP_TIMEOUT, allow_redirects=True)
+        _GATES_PASSED.add(accept)
+    except Exception as exc:                      # pragma: no cover
+        print(f"[Issuers] could not pass {adapter.label}'s disclaimer: {exc}")
+
+
+def forget_disclaimer(adapter: IssuerAdapter) -> None:
+    """Undo :func:`_pass_disclaimer` for this process: forget the visit
+    and drop the house's cookies, so a withdrawn acceptance stops being
+    sent now rather than at the next restart."""
+    for u in [u for u in _GATES_PASSED if house_for_url(u) is adapter]:
+        _GATES_PASSED.discard(u)
+    jar = getattr(_session(), "cookies", None)
+    for host in adapter.hosts:
+        for dom in (host, "." + host, "www." + host):
+            try:
+                jar.clear(domain=dom)
+            except Exception:
+                pass
+
+
+def _gate_hint(url: str) -> str:
+    """What to do when a gated house answered with its entry screen."""
+    adapter = house_for_url(url)
+    if adapter is None or (adapter.AUDIENCE or {}).get("how") != "disclaimer":
+        return ""
+    from porxpy.utils import issuer_disclaimer_get
+    if issuer_disclaimer_get(adapter.key):
+        return (f"{adapter.label} still showed its entry screen after the "
+                f"disclaimer you accepted; accept it again in Settings → "
+                f"Fund houses → {adapter.label}")
+    return (f"{adapter.label} hands out documents only after you declare "
+            f"your investor type and accept its disclaimer: Settings → "
+            f"Fund houses → {adapter.label}")
 
 
 def learn_site(url: str) -> str:
@@ -1227,13 +1456,15 @@ def implausible(kind: str, got: Fetched) -> str:
     if kind == "factsheet":
         if head.startswith(_PDF_MAGIC) or head.startswith(_IMAGE_MAGIC):
             return ""
-        return ("the issuer served a web page rather than a document — the "
-                "link may have expired or now need a login")
+        return ("the issuer served a web page rather than a document — "
+                + (_gate_hint(got.url) or "the link may have expired or "
+                                          "now need a login"))
     if kind == "holdings":
         if head.startswith(_ZIP_MAGIC):
             return ""
         if got.content_type in ("text/html", "application/xhtml+xml"):
-            return "the issuer served a web page rather than a data file"
+            return ("the issuer served a web page rather than a data file"
+                    + (f" — {_gate_hint(got.url)}" if _gate_hint(got.url) else ""))
         # SpreadsheetML (an .xls extension over an XML document) is
         # readable since v0.106.1, and refusing it was not a small
         # limitation: it is the format iShares' own "Fund Download"
@@ -1295,9 +1526,18 @@ def locate(ref: FundRef, adapter: IssuerAdapter, kind: str,
         that is an answer, and the caller has another half of the job to
         get on with.
     """
+    # Each candidate is a download from the issuer and a miss can take
+    # several seconds, so the bar names the one being tried (v0.135.0).
+    # Reporting only, through the request's own token: nothing is stored.
+    from porxpy.utils import progress_check, progress_live
     cands, note = adapter.candidates(ref, kind)
     out = Located(note=note)
-    for c in cands:
+    for i, c in enumerate(cands, 1):
+        # Between downloads, the place a stop from the bar lands
+        # (v0.138.0). Raises; the issuer refresh route catches it.
+        progress_check()
+        progress_live(f"trying {c.why}"
+                      + (f" ({i} of {len(cands)})" if len(cands) > 1 else ""))
         try:
             got = http_get(c.url, referer=c.referer)
         except RuntimeError as exc:

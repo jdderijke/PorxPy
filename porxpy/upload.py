@@ -167,7 +167,7 @@ def clear_cancel(token: str) -> None:
 # existing callers and their imports keep working unchanged.
 from porxpy.utils import (  # noqa: F401
     progress_start, progress_update, progress_finish, progress_get,
-    progress_phase, progress_scope,
+    progress_phase, progress_scope, progress_cancelled,
 )
 
 
@@ -714,12 +714,9 @@ def _detect_weight_unit(values: list[float]) -> str:
 # that point to enormous payloads.
 _SOURCE_BYTES_CAP = 25 * 1024 * 1024  # 25 MB
 
-# Custom UA — some issuer CDNs return 403/404 for Python's default UA.
-# This mimics a recent desktop browser and is enough for public CSVs.
-_SOURCE_HTTP_UA = (
-    "Mozilla/5.0 (PorxPy holdings importer; contact: localhost) "
-    "AppleWebKit/537.36 Safari/537.36"
-)
+# No user agent of its own any more (v0.139.0): a URL is fetched through
+# issuers.http_get, whose impersonating transport replaced the custom UA
+# this file set for issuer CDNs that refused Python's default.
 
 
 def _looks_like_url(s: str) -> bool:
@@ -792,39 +789,24 @@ def _fetch_url_bytes(url: str) -> tuple[str, bytes]:
     Raises:
         ValueError: HTTP error, redirect loop, payload too large, or empty.
     """
-    import urllib.request
-    import urllib.error
-    from urllib.parse import urlparse, unquote
+    from urllib.parse import unquote
 
-    req = urllib.request.Request(url, headers={
-        "User-Agent": _SOURCE_HTTP_UA,
-        "Accept":     "*/*",
-    })
+    # Through the issuer download routine since v0.139.0, not urllib of
+    # its own. Two routines meant two cookie jars: a fund house's
+    # disclaimer, accepted in Settings and passed on by
+    # issuers.http_get, was invisible to a pasted URL, which went on
+    # receiving the entry screen. One routine also gives a pasted URL the
+    # browser-like transport the issuer search already had.
+    from porxpy.issuers import http_get
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            # Read with cap — bail if payload exceeds the limit so we
-            # don't OOM on a huge response.
-            data = resp.read(_SOURCE_BYTES_CAP + 1)
-            if len(data) > _SOURCE_BYTES_CAP:
-                raise ValueError(
-                    f"download exceeds {_SOURCE_BYTES_CAP // (1024*1024)} MB cap"
-                )
-            # Filename from Content-Disposition (RFC 6266 simplified)
-            cd = resp.headers.get("Content-Disposition") or ""
-            fname = ""
-            if "filename=" in cd.lower():
-                # Quick parse — handles filename="x.csv" and filename=x.csv
-                m = re.search(r'filename\*?=(?:UTF-\d\'\')?["]?([^";\r\n]+)', cd, re.IGNORECASE)
-                if m:
-                    fname = unquote(m.group(1)).strip().strip('"')
-            if not fname:
-                # Fall back to the URL path's basename
-                pth = urlparse(resp.url or url).path
-                fname = unquote(pth.rsplit("/", 1)[-1] or "download")
-    except urllib.error.HTTPError as exc:
-        raise ValueError(f"HTTP {exc.code} fetching {url}") from exc
-    except urllib.error.URLError as exc:
-        raise ValueError(f"network error fetching {url}: {exc.reason}") from exc
+        got = http_get(url)
+    except RuntimeError as exc:
+        raise ValueError(str(exc)) from exc
+    data = got.data
+    if len(data) > _SOURCE_BYTES_CAP:
+        raise ValueError(
+            f"download exceeds {_SOURCE_BYTES_CAP // (1024*1024)} MB cap")
+    fname = unquote(got.filename or "") or "download"
 
     if not data:
         raise ValueError(f"empty response from {url}")
@@ -1040,7 +1022,8 @@ def upload_commit(token: str, *,
                   sheet_name: str | None = None,
                   delimiter: str | None = None,
                   defaults: dict | None = None,
-                  enrich: bool = False) -> dict:
+                  enrich: bool = False,
+                  progress_token: str | None = None) -> dict:
     """Public entry point — wraps the implementation in a try/finally so
     the cancel-token registry is always cleaned up, regardless of how
     the commit exits (success, ValueError, UploadCancelled, etc.).
@@ -1055,7 +1038,7 @@ def upload_commit(token: str, *,
             header_row=header_row, decimal=decimal,
             weight_unit=weight_unit, sheet_name=sheet_name,
             delimiter=delimiter, defaults=defaults,
-            enrich=enrich,
+            enrich=enrich, progress_token=progress_token,
         )
     finally:
         clear_cancel(token)
@@ -1071,7 +1054,8 @@ def _upload_commit_impl(token: str, *,
                   sheet_name: str | None = None,
                   delimiter: str | None = None,
                   defaults: dict | None = None,
-                  enrich: bool = False) -> dict:
+                  enrich: bool = False,
+                  progress_token: str | None = None) -> dict:
     """Apply a column mapping to a previewed upload and write the cache.
 
     Args:
@@ -1362,7 +1346,11 @@ def _upload_commit_impl(token: str, *,
         # Raising from this callback keeps UploadCancelled — and the
         # token it names — out of the shared loop entirely.
         def _cancel_check() -> None:
-            if is_cancelled(token):
+            # Either way of stopping: the upload dialog's own Cancel (the
+            # preview token) or the stop button on the progress bar
+            # (v0.138.0), which may be a different token — the issuer
+            # refresh runs this commit under its own.
+            if is_cancelled(token) or progress_cancelled(progress_token or token):
                 raise UploadCancelled(token)
 
         # Progress, to the terminal and to the browser. A per-holding
@@ -1373,9 +1361,16 @@ def _upload_commit_impl(token: str, *,
         # says otherwise. The record is opened under the PREVIEW token,
         # which the dialog already holds, so the bar needs no second
         # identifier and stops when the commit returns.
+        #
+        # `progress_token` (v0.135.0) is for a caller whose browser is
+        # polling a token of its own — the issuer refresh, which runs
+        # this commit as one step of a larger job. The cancel check
+        # above stays on the preview token either way.
+        _ptok = progress_token or token
         _n_total = min(len(out_rows), _ENRICH_ROW_CAP)
-        progress_start(token, _n_total, "enriching")
-        _progress = enrichment_progress_hook(token, "Upload")
+        progress_start(_ptok, _n_total, "enriching the holdings", "holdings",
+                       cancellable=True)
+        _progress = enrichment_progress_hook(_ptok, "Upload")
 
         _t_start = time.time()
         print(f"[Upload] enrichment starting: {_n_total} row(s), "
@@ -1393,7 +1388,7 @@ def _upload_commit_impl(token: str, *,
         # Closed here rather than in a finally: a cancelled commit raises
         # out of the loop above and its record should stay at the row it
         # stopped on, which is what the dialog reports.
-        progress_finish(token, "enrichment complete")
+        progress_finish(_ptok, "enrichment complete")
 
     # ──────────────────────────────────────────────────────────────────
     # Pass 4 — default-fill for unmapped fields the user supplied a

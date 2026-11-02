@@ -101,8 +101,14 @@ from porxpy.upload import (
 from porxpy.utils import (
     progress_finish,
     progress_get,
+    progress_job,
+    progress_cancel,
+    progress_cancelled,
+    progress_check,
+    JobCancelled,
     progress_phase,
     progress_scope,
+    progress_stage,
     progress_start,
     progress_update,
 )
@@ -1253,8 +1259,12 @@ def create_app() -> Flask:
         _uni = sorted(universe)
         _opt_tok = _job_token()
         _opt_t0 = time.time()
-        progress_start(_opt_tok, len(_uni), "reading candidate funds", "funds")
+        progress_start(_opt_tok, len(_uni), "reading candidate funds", "funds",
+                       cancellable=True)
         for _ci, tk in enumerate(_uni):
+            # The design is computed after this pass, so a stop here
+            # leaves nothing proposed and nothing saved (v0.138.0).
+            progress_check(_opt_tok)
             progress_update(_opt_tok, _ci, len(_uni), time.time() - _opt_t0)
             ident = listing_identity_get(tk)
             isin  = (ident.get("isin") or "").strip().upper()
@@ -2411,8 +2421,11 @@ def create_app() -> Flask:
         fund_rows = [f for f in p.get("funds", [])
                      if (f.get("ticker") or "").strip()]
         enriched: list[dict] = []
+        # Cancellable (v0.138.0): stopping between two funds leaves
+        # nothing half-written, because this loop only reads.
         with progress_scope(progress_token, len(fund_rows),
-                            "loading funds", "funds") as _pr:
+                            "loading funds", "funds",
+                            cancellable=True) as _pr:
             for _fi, f in enumerate(fund_rows, 1):
                 _pr.step(_fi - 1)
                 enriched.append(_enrich_one_fund(f, cache_cfg, force, base_cur))
@@ -5846,6 +5859,13 @@ def create_app() -> Flask:
         Body (JSON, all optional): ``{"factsheet": bool, "holdings": bool}``
         to run only one half.
 
+        The holdings half takes two calls (v0.137.0). The first locates,
+        downloads and checks the file and answers ``needs_confirmation``
+        (or ``needs_mapping`` when no saved mapping fits). The browser
+        shows that to the user and posts again with ``factsheet: false``
+        and ``confirm_holdings: {preview_token, header_row, mapping_kind,
+        enrich, url, why}``, which imports the file already downloaded.
+
         Returns:
             ``{ticker, isin, issuer, factsheet: {...}, holdings: {...}}``
             where each half carries ``status`` (``"ok"`` / ``"skipped"``
@@ -5879,24 +5899,57 @@ def create_app() -> Flask:
         adapter = issuers.adapter_for(ref)
 
         ptok = _job_token()
-        progress_start(ptok, 0, f"asking {adapter.label}", "steps")
         out = {"ticker": ticker, "isin": isin,
                "issuer": {"key": adapter.key, "label": adapter.label},
                "factsheet": {"status": "skipped", "message": "not requested"},
                "holdings":  {"status": "skipped", "message": "not requested"}}
-        try:
+        # One job, owned for its whole length (v0.135.0): the factsheet
+        # reading and the holdings enrichment are each a job of their own
+        # elsewhere, and until this the first one's finish closed the
+        # record, so the bar froze on "checking what came back" for the
+        # entire holdings import. See utils.progress_job.
+        #
+        # The stage names the half and where it sits in the run; the
+        # phases underneath it say what that half is doing right now.
+        halves = [h for h, on in (("Factsheet", do_fs), ("Holdings", do_hd)) if on]
+        def _stage(name: str) -> None:
+            progress_stage(ptok, name if len(halves) < 2 else
+                           f"{name} ({halves.index(name) + 1} of {len(halves)})")
+        # Cancellable (v0.138.0). A stop lands between steps — between
+        # two downloads, before the AI read, between the halves, between
+        # two holdings — and whatever half it lands in reports itself
+        # `cancelled`; a half already finished keeps its outcome.
+        _stopped = {"status": "cancelled", "message": "stopped by you"}
+        with progress_job(ptok, f"asking {adapter.label}", cancellable=True):
             if do_fs:
-                progress_phase(ptok, "looking for the latest factsheet")
-                out["factsheet"] = _issuer_refresh_factsheet(ticker, isin,
-                                                             ref, adapter, ptok)
-            if do_hd:
-                progress_phase(ptok, "looking for the latest holdings file")
-                out["holdings"] = _issuer_refresh_holdings(
-                    ticker, isin, ref, adapter, ptok, get_upload_prefs,
-                    mapping_mismatch, upload_preview_from_source, upload_commit,
-                    use_house_mapping=bool(body.get("use_house_mapping")))
-        finally:
-            progress_finish(ptok)
+                _stage("Factsheet")
+                progress_phase(ptok, f"looking for the latest factsheet at "
+                                     f"{adapter.label}")
+                try:
+                    out["factsheet"] = _issuer_refresh_factsheet(
+                        ticker, isin, ref, adapter, ptok)
+                except JobCancelled:
+                    out["factsheet"] = dict(_stopped)
+            if do_hd and progress_cancelled(ptok):
+                out["holdings"] = dict(_stopped)
+            elif do_hd:
+                _stage("Holdings")
+                progress_phase(ptok, f"looking for the latest holdings file "
+                                     f"at {adapter.label}")
+                confirm = body.get("confirm_holdings")
+                if isinstance(confirm, dict):
+                    # The second call: the user has seen the file, the
+                    # mapping and the enrich choice, and said go.
+                    out["holdings"] = _issuer_commit_holdings(
+                        ticker, isin, adapter, ptok, confirm,
+                        get_upload_prefs, upload_commit)
+                else:
+                    try:
+                        out["holdings"] = _issuer_refresh_holdings(
+                            ticker, isin, ref, adapter, ptok, get_upload_prefs,
+                            mapping_mismatch, upload_preview_from_source)
+                    except JobCancelled:
+                        out["holdings"] = dict(_stopped)
         return jsonify(out)
 
     def _located_failure(kind: str, adapter, found) -> dict:
@@ -5958,6 +6011,7 @@ def create_app() -> Flask:
                             "message": "the document has not changed, so the "
                                        "reading already on file still stands"}}
 
+        progress_phase(ptok, f"storing {got.filename}")
         try:
             meta = factsheet_put(isin, got.filename, got.data)
         except ValueError as exc:
@@ -5982,6 +6036,13 @@ def create_app() -> Flask:
             res["extraction"] = {"status": "skipped", "message": blocked}
             return res
 
+        # The AI read is one call that cannot be interrupted once sent,
+        # so a stop is honoured BEFORE it: the document stays stored,
+        # unread, one Extract click from being read (v0.138.0).
+        if progress_cancelled(ptok):
+            res["extraction"] = {"status": "skipped",
+                                 "message": "stopped by you before reading"}
+            return res
         progress_phase(ptok, "reading the factsheet")
         payload, err, _status = run_factsheet_extraction(isin, "", ptok, ticker)
         if err is not None:
@@ -6028,9 +6089,14 @@ def create_app() -> Flask:
 
     def _issuer_refresh_holdings(ticker: str, isin: str, ref, adapter,
                                  ptok: str, get_upload_prefs, mapping_mismatch,
-                                 upload_preview_from_source, upload_commit,
-                                 use_house_mapping: bool = False) -> dict:
-        """Fetch the latest holdings file and re-run the saved import.
+                                 upload_preview_from_source) -> dict:
+        """Fetch the latest holdings file and get it ready to import.
+
+        Since v0.137.0 this stops short of the import: it locates,
+        downloads and checks the file against a saved mapping, and
+        returns ``needs_confirmation`` for the browser to show the user
+        (mapping, row count, enrich choice). The import itself is
+        :func:`_issuer_commit_holdings`, on the confirmation coming back.
 
         The saved import, exactly: the same mapping, header row, decimal
         and weight-unit choices, the same per-field defaults and the same
@@ -6086,7 +6152,8 @@ def create_app() -> Flask:
         # and never silent - applying one house-wide default to a fund
         # nobody has looked at is precisely the unattended-import risk
         # the column check exists for, so it is offered and confirmed.
-        # `use_house_mapping` is that confirmation coming back.
+        # Since v0.137.0 EVERY import is confirmed, own mapping or house
+        # standard, in one dialog that also asks about enrichment.
         own = get_upload_prefs(ticker)
         if not (own and (own.get("mapping") or {})):
             own = None
@@ -6163,65 +6230,135 @@ def create_app() -> Flask:
         prefs = state["prefs"]
         used_house = state["used_house"]
 
-        # The house standard fitted, and the user has not said to use
-        # it. Ask - with the file already downloaded and previewed, so
-        # either answer is one round trip away from being acted on.
-        if used_house and not use_house_mapping:
-            return {"status": "needs_mapping",
-                    "house": adapter.key,
-                    "house_label": adapter.label,
-                    "house_mapping": _mapping_summary(house),
-                    "url": got.url,
-                    "downloaded": got.filename,
-                    "preview": preview,
-                    "message": (f"No column mapping saved for this fund. "
-                                f"PorxPy has a standard {adapter.label} "
-                                f"mapping and it fits {got.filename} - "
-                                f"use it for this fund?")}
+        # v0.137.0: every import is confirmed, not only the first.
+        #
+        # The house-standard question (above, until this version) was
+        # the only dialog in the run, and it appeared once per fund: the
+        # import saves the mapping as the fund's own, so from the second
+        # refresh on nothing was asked at all. That left the one costly
+        # choice of the run - enriching, which on a fund of a few
+        # thousand holdings is minutes of Yahoo lookups - decided by a
+        # checkbox from some earlier upload, invisible from this button.
+        # So the run stops here, with the file downloaded and checked,
+        # and hands back everything the dialog needs: the mapping that
+        # fits, the row count, and the enrich choice to start from. The
+        # answer comes back as `confirm` and is committed by
+        # _issuer_commit_holdings against the SAME downloaded file.
+        approx_rows = max(0, int(preview.get("total_rows") or 0)
+                          - int(state["row"]) - 1)
+        # Last time's answer for this fund; a fund that has never been
+        # asked starts ticked, because the refresh enriched by default
+        # before v0.110.2 and again in v0.136.0. The house blob's own
+        # flag is NOT used: it records whichever fund the standard was
+        # saved from, which says nothing about this one.
+        own_enrich = (own or {}).get("enrich") if not used_house else None
+        return {"status": "needs_confirmation",
+                "url": got.url, "why": found.why,
+                "downloaded": got.filename,
+                "preview_token": preview["token"],
+                # The grid too, for the dialog's "map the columns myself"
+                # way out: the mapping dialog opens with this file in it.
+                "preview": preview,
+                "header_row": state["row"],
+                "mapping_kind": "house" if used_house else "own",
+                "mapping_from": (f"the standard {adapter.label} mapping"
+                                 if used_house else "this fund's saved mapping"),
+                "house_label": adapter.label,
+                "mapping": _mapping_summary(prefs),
+                # The proposed mapping itself, for "map the columns
+                # myself" (v0.137.1): the mapping dialog starts from what
+                # was just proposed rather than from nothing, at the
+                # header row found in THIS file.
+                "mapping_prefs": {**prefs, "header_row": state["row"]},
+                "approx_rows": approx_rows,
+                "enrich_default": (own_enrich if isinstance(own_enrich, bool)
+                                   else True),
+                "message": (f"downloaded {got.filename} from {found.why}")}
 
-        progress_phase(ptok, "importing and enriching the holdings")
+    def _issuer_commit_holdings(ticker: str, isin: str, adapter, ptok: str,
+                                confirm: dict, get_upload_prefs,
+                                upload_commit) -> dict:
+        """Import a holdings file the user has just confirmed.
+
+        The second call of the two-step holdings half (v0.137.0). The
+        file is the one already downloaded and previewed - its preview
+        token is kept for UPLOAD_TOKEN_TTL_MIN - so the issuer is not
+        asked twice for the same document.
+
+        The mapping is looked up again here by KIND rather than taken
+        from the request: the browser says which of the two it agreed
+        to, and the server applies its own stored copy of it, so a
+        client cannot hand the import a mapping nobody saved.
+        """
+        from porxpy.upload import _load_token
+        from porxpy.utils import issuer_mapping_get
+
+        kind = str(confirm.get("mapping_kind") or "")
+        prefs = (issuer_mapping_get(adapter.key) if kind == "house"
+                 else get_upload_prefs(ticker))
+        if not (prefs and (prefs.get("mapping") or {})):
+            return {"status": "failed",
+                    "message": "the column mapping that was confirmed is no "
+                               "longer stored - press the button again"}
+        tok = str(confirm.get("preview_token") or "")
+        held = _load_token(tok) if tok else None
+        if not held:
+            return {"status": "failed",
+                    "message": "the downloaded file is no longer held (it is "
+                               "kept for half an hour) - press the button "
+                               "again to fetch it afresh"}
+        try:
+            header_row = int(confirm.get("header_row") or 0)
+        except (TypeError, ValueError):
+            header_row = 0
+        enrich = bool(confirm.get("enrich"))
+        filename = held.get("filename") or "the file"
+
+        progress_stage(ptok, "Holdings")
+        progress_phase(ptok, f"importing {filename}")
         try:
             result = upload_commit(
-                preview["token"], ticker=ticker, isin=isin,
+                tok, ticker=ticker, isin=isin,
                 mapping=prefs.get("mapping") or {},
                 # The row the header was FOUND on, not the one the
                 # mapping was saved with. An issuer's preamble carries
                 # the fund name, its inception date and a holdings date,
                 # and those come and go per fund and per report.
-                header_row=state["row"],
+                header_row=header_row,
                 decimal=prefs.get("decimal") or "auto",
                 weight_unit=prefs.get("weight_unit") or "auto",
                 defaults=prefs.get("defaults") or {},
-                # The saved choice, like every other setting above
-                # (v0.110.2). It was forced on until then, on the
-                # reasoning that a freshly downloaded file is when the
-                # issuer's blanks are most worth filling — which is
-                # true, and still left the mapping dialog offering a
-                # checkbox this path ignored. A control that does not
-                # control anything is worse than no control, and the
-                # user who unticks it has said something.
-                #
+                # The answer from the confirmation dialog (v0.137.0).
+                # upload_commit stores it with the fund's prefs, which is
+                # what makes it the dialog's starting point next time.
                 # WHICH fields get filled is still not decided here:
                 # that is utils.enrichment_fields(), the same list the
                 # fund page's button uses.
-                enrich=bool(prefs.get("enrich")),
+                enrich=enrich,
+                # The bar the browser is polling is this job's, not the
+                # preview's, so the enrichment counts onto it.
+                progress_token=ptok,
             )
+        except UploadCancelled:
+            # The bar's stop button, mid-enrichment. The commit writes
+            # after the loop, so the fund's holdings are as they were.
+            return {"status": "cancelled", "url": confirm.get("url") or "",
+                    "message": "stopped by you — nothing was imported, the "
+                               "fund's holdings are unchanged"}
         except (ValueError, RuntimeError) as exc:
-            return {"status": "failed", "url": got.url,
+            return {"status": "failed", "url": confirm.get("url") or "",
                     "message": f"the import failed: {exc}"}
 
-        return {"status": "ok", "url": got.url, "why": found.why,
+        why = str(confirm.get("why") or filename)
+        return {"status": "ok", "url": confirm.get("url") or "", "why": why,
                 "mapping_from": (f"the standard {adapter.label} mapping"
-                                 if used_house else "this fund's saved mapping"),
-                # Said out loud because it is no longer always the same
-                # answer: the import follows the saved choice, and the
-                # user should not have to infer which way it went.
-                "enriched": bool(prefs.get("enrich")),
+                                 if kind == "house" else "this fund's saved mapping"),
+                "enriched": enrich,
                 "rows": result.get("rows_written"),
                 "weight_sum_pct": result.get("weight_sum_pct"),
                 "warnings": result.get("warnings") or {},
                 "message": (f"imported {result.get('rows_written')} rows from "
-                            f"{found.why}")}
+                            f"{why}")}
 
     # -----------------------------------------------------------------------
     # Fund houses — sites and standard mappings (v0.106.0)
@@ -6272,12 +6409,27 @@ def create_app() -> Flask:
             holdings_mapping}]}``.
         """
         from porxpy import issuers
-        from porxpy.config import DEFAULT_ISSUER_SITES
-        from porxpy.utils import issuer_mapping_get, issuer_sites
+        from porxpy.config import (DEFAULT_ISSUER_SITES, INVESTOR_COUNTRIES,
+                                   INVESTOR_TYPES)
+        from porxpy.utils import (investor_declaration, issuer_disclaimer_get,
+                                  issuer_mapping_get, issuer_sites)
         out = []
         for a in issuers.ADAPTERS:
             hm = issuer_mapping_get(a.key)
+            aud = a.AUDIENCE or {}
+            dc = issuer_disclaimer_get(a.key)
             out.append({
+                # How this house is told who you are (v0.139.0), and for
+                # a disclaimer house whether you have accepted it under
+                # your current declaration. The accept address stays on
+                # the server: the browser has no use for it.
+                "audience": {"how": aud.get("how") or "unknown",
+                             "note": aud.get("note") or ""},
+                "site_audiences": [issuers.site_audience(a, u)
+                                   for u in issuer_sites(a.key)],
+                "disclaimer": ({"accepted": bool(dc),
+                                "at": (dc or {}).get("at") or ""}
+                               if aud.get("how") == "disclaimer" else None),
                 "key": a.key,
                 "label": a.label,
                 "sites": issuer_sites(a.key),
@@ -6296,7 +6448,52 @@ def create_app() -> Flask:
                 "discovers": bool(type(a).DOCUMENTS),
                 "holdings_mapping": (_mapping_summary(hm) if hm else None),
             })
-        return jsonify({"houses": out})
+        return jsonify({"houses": out,
+                        "investor": investor_declaration(),
+                        "investor_types": INVESTOR_TYPES,
+                        "investor_countries": INVESTOR_COUNTRIES})
+
+    @app.route("/api/issuers/<house>/disclaimer",
+               methods=["GET", "POST", "DELETE"])
+    def api_issuer_disclaimer(house: str) -> Response:
+        """A fund house's own disclaimer: read it, accept it, withdraw it.
+
+        ``GET`` fetches the house's text for the user's current
+        declaration, to be read in Settings. ``POST`` is the user pressing
+        the house's own accept button there: the text is asked for again
+        and the accept address it carries is stored — taken from the
+        house, never from the browser. ``DELETE`` withdraws it, and stops
+        sending it at once.
+
+        Nothing here accepts anything on the user's behalf. A POST is the
+        user's click; without one, no house is told anything (v0.139.0).
+        """
+        from porxpy import issuers
+        from porxpy.utils import investor_declaration, issuer_disclaimer_set
+        adapter = next((a for a in issuers.ADAPTERS if a.key == house), None)
+        if adapter is None:
+            return jsonify({"error": f"unknown fund house: {house!r}"}), 404
+        if request.method == "DELETE":
+            issuer_disclaimer_set(house, None)
+            issuers.forget_disclaimer(adapter)
+            return jsonify({"house": house, "accepted": False})
+        decl = investor_declaration()
+        try:
+            d = issuers.disclaimer_text(adapter, decl)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 502
+        if request.method == "GET":
+            return jsonify({"house": house, "header": d["header"],
+                            "text": d["text"], "agree": d["agree"]})
+        issuer_disclaimer_set(house, {"type": decl["type"],
+                                      "country": decl["country"],
+                                      "accept_url": d["accept_url"]})
+        # A previous acceptance may have been passed under another
+        # declaration in this process; start clean so the new one is sent.
+        issuers.forget_disclaimer(adapter)
+        return jsonify({"house": house, "accepted": True})
 
     @app.route("/api/issuers/<house>/sites", methods=["PUT"])
     def api_issuer_sites(house: str) -> Response:
@@ -7474,6 +7671,27 @@ def create_app() -> Flask:
             })
         return jsonify({"rows": out})
 
+    @app.route("/api/progress/<token>/cancel", methods=["POST"])
+    def api_progress_cancel(token: str) -> Response:
+        """Ask the job behind one progress bar to stop (v0.138.0).
+
+        The bar's stop button. Only that token's job is touched, so with
+        several bars running each stops its own. Answers whether the
+        request was accepted — a job that has finished, or never offered
+        to stop, says no rather than pretending.
+        """
+        return jsonify({"token": token, "accepted": progress_cancel(token)})
+
+    @app.errorhandler(JobCancelled)
+    def _on_job_cancelled(exc) -> Response:
+        """Every cancellable route ends here when stopped (v0.138.0).
+
+        One handler rather than a try/except per route, so a new
+        cancellable loop needs only its check point. 409 with a body the
+        browser can tell apart from a failure: `cancelled: true`.
+        """
+        return jsonify({"error": "stopped by you", "cancelled": True}), 409
+
     @app.route("/api/progress/<token>", methods=["GET"])
     @app.route("/api/enrichment/progress/<token>", methods=["GET"])
     def api_enrichment_progress(token: str) -> Response:
@@ -8012,16 +8230,20 @@ def create_app() -> Flask:
         # denominated by a total the run will never reach.
         ptoken = str(body.get("progress_token") or "").strip()
         n_total = len(row_ids) if row_ids else len(rows)
-        progress_start(ptoken, n_total, "enriching")
+        # Same label and unit as the upload commit's run of the same loop.
+        progress_start(ptoken, n_total, "enriching the holdings", "holdings",
+                       cancellable=True)
         try:
             rows, stats = enrich_holdings_rows(
                 rows, fields, row_ids=row_ids,
-                on_progress=enrichment_progress_hook(ptoken, "Enrich"))
+                on_progress=enrichment_progress_hook(ptoken, "Enrich"),
+                # The bar's stop button (v0.138.0). The rows are written
+                # only after the loop, so a stop writes nothing — the
+                # same rule as a cancelled upload commit.
+                should_cancel=lambda: progress_check(ptoken))
         finally:
-            # Unlike the commit, nothing here can cancel mid-run, so the
-            # record is closed whatever happened — a failed enrichment
-            # that left the bar spinning would be the same silence this
-            # endpoint exists to end.
+            # Closed whatever happened, a stop included — a record left
+            # open would read as a job still running.
             progress_finish(ptoken, "enrichment complete")
 
         # Recompute the weight sum (rows may have been re-coerced, which
