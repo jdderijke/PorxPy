@@ -1,6 +1,6 @@
 # PorxPy
 
-*Current as of v0.145.2. This is the fullest architecture write-up;
+*Current as of v0.146.0. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
@@ -979,7 +979,10 @@ The short version: clone the repo, `pip install -r requirements.txt`,
 bundle attached to the latest release —
 <https://github.com/jdderijke/PorxPy/releases/latest/download/porxpy_funds.zip> —
 from Settings → backup & restore so there is a fund universe to work
-with from the first minute. The bundle is a release download rather
+with from the first minute. Since v0.146.0 PorxPy can fetch that bundle
+itself: on a first start with no funds it offers to download it from
+GitHub, take a local bundle, or skip, and Settings → backup & restore
+has a **Download fund set from GitHub** button for later. The bundle is a release download rather
 than a file in the repository: git cannot merge a 30 MB zip, so a
 tracked copy collided with `git pull` for anyone who had re-exported
 over theirs.
@@ -1047,6 +1050,6 @@ it does.
 
 ## Version
 
-Current release: **0.145.2** (2026-11-02)
+Current release: **0.146.0** (2026-11-03)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

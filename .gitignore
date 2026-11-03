@@ -26,6 +26,8 @@ portfolios.json
 settings.json
 overrides.json
 isin_map.json
+# Which port the running copy took (main.py, v0.146.0)
+running.json
 
 # Cache directories (auto-rebuilt at runtime)
 cache/

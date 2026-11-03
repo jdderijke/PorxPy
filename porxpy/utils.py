@@ -5477,6 +5477,15 @@ def normalise_settings(raw: dict | None) -> dict:
         "country": inv_cc if inv_cc in INVESTOR_COUNTRIES else "nl",
     }
 
+    # ── onboarding (v0.146.0) ─────────────────────────────────────────
+    # Whether the first-start question "where do your funds come from?"
+    # has been answered. Set when the user skips it or an import from it
+    # completes — closing the dialog with ✕ leaves it unset, so the
+    # question comes back on the next start. Asked only while no fund is
+    # saved, so an install that already has funds never sees it either way.
+    ob = raw.get("onboarding") if isinstance(raw.get("onboarding"), dict) else {}
+    onboarding_out = {"funds_offered": bool(ob.get("funds_offered", False))}
+
     return {
         "enrichment": {
             "fields": fields,
@@ -5499,6 +5508,7 @@ def normalise_settings(raw: dict | None) -> dict:
         "group_ttl_days": group_ttl,
         "issuers": issuers_out,
         "investor": investor_out,
+        "onboarding": onboarding_out,
         "field_source_defaults": field_defaults,
     }
 

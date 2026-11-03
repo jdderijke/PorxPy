@@ -2530,6 +2530,9 @@
                  onchange="bkInspect(this)">
           <button class="btn btn-s"
                   onclick="document.getElementById('bkFile').click()">Choose file…</button>
+          <button class="btn btn-s" id="bkGithubBtn" style="margin-top:6px"
+                  title="Download porxpy_funds.zip from the newest PorxPy release on GitHub, then show what it would import"
+                  onclick="bkImportFromGithub()">Download fund set from GitHub</button>
         </div>
       </div>
       <div id="bkMsg" style="font-family:var(--mono);font-size:.66rem;
@@ -2786,6 +2789,38 @@
 <!-- ================================================================ -->
 <!--  RESET CONFIRMATION MODAL (typed token gate)                     -->
 <!-- ================================================================ -->
+<!-- First start (v0.146.0): offered while no fund is saved and the
+     question has not been answered — see /api/onboarding. Every choice
+     leads into the ordinary import dialog; ✕ means "ask me next time". -->
+<div class="modal-bg" id="obFundsModal">
+  <div class="modal" style="max-width:760px;width:95vw">
+    <div class="modal-h">
+      <div class="mt">Welcome to PorxPy — start with some funds?</div>
+      <button class="x" onclick="obFundsClose()" title="Ask me again next time">✕</button>
+    </div>
+    <div class="modal-b" style="font-family:var(--mono);font-size:.7rem;line-height:1.6">
+      <div style="margin-bottom:.8rem">
+        There are no funds in this PorxPy yet. A ready-made fund set
+        (holdings, breakdowns, factsheets) is published with every PorxPy
+        release. Where would you like to import it from?
+      </div>
+      <div style="color:var(--muted);margin-bottom:.8rem">
+        Whichever you choose, you first see what the bundle holds, and
+        nothing is written until you press Import. You can always do this
+        later from Settings → Backup &amp; restore.
+      </div>
+      <div id="obFundsMsg" style="margin-bottom:.4rem"></div>
+    </div>
+    <div class="modal-f" style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
+      <button class="btn btn-s" onclick="obFundsSkip()">Skip — start without funds</button>
+      <input type="file" id="obFile" accept=".zip" style="display:none"
+             onchange="obFundsLocal(this)">
+      <button class="btn btn-s" onclick="document.getElementById('obFile').click()">Local bundle…</button>
+      <button class="btn btn-s btn-p" id="obGithubBtn" onclick="obFundsGithub()">Download from GitHub</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-bg" id="bkImportModal">
   <div class="modal" style="max-width:900px;width:95vw;max-height:90vh;overflow-y:auto">
     <div class="modal-h">
@@ -4074,7 +4109,9 @@ let pfModalEditingId = '';
   // down — still in its temporal dead zone at this point.
   setTimeout(jobProgressResume, 0);
   try { await refreshConfigAndPortfolios(); }
-  catch(e){ setStatus('err','Could not reach backend — start main.py'); }
+  catch(e){ setStatus('err','Could not reach backend — start main.py'); return; }
+  // Deferred like jobProgressResume: the onboarding code is declared further down.
+  setTimeout(() => obMaybeOfferFunds().catch(()=>{}), 0);
 })();
 
 // Populate the Exchange dropdown after the whole script has executed
@@ -4189,11 +4226,15 @@ async function loadAppSettings(){
   } catch(e) { /* ignore — defaults stay in place */ }
 }
 
+// The running build's version, for comparing against a bundle's (v0.146.0).
+let APP_VERSION = '';
+
 async function loadAppMeta(){
   try {
     const r = await fetch(`${API}/meta`);
     if (!r.ok) return;
     const m = await r.json();
+    APP_VERSION = String(m.version || '');
     const name = escapeHtml(m.name    || 'PorxPy');
     const ver  = escapeHtml(m.version || '?');
     const bd   = escapeHtml(m.build_date || '?');
@@ -19058,6 +19099,21 @@ async function bkExportPortfolios(){
 async function bkDownload(resp, fallbackName){
   const cd = resp.headers.get('Content-Disposition') || '';
   const m  = cd.match(/filename="([^"]+)"/);
+  const blob = await bkVerifiedBlob(resp);
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = (m && m[1]) || fallbackName;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// The body of a _bundle_response, only once it is known to be whole —
+// see bkDownload above for why. Shared by every reader of one: a file
+// saved to disk (bkDownload) and the GitHub fund set handed to the
+// importer (bkImportFromGithub), which would otherwise fail later as
+// "not a zip" with nothing to say the transfer was the cause.
+async function bkVerifiedBlob(resp){
   const blob = await resp.blob();
 
   const want = parseInt(resp.headers.get('X-PorxPy-Bytes') || '', 10);
@@ -19088,20 +19144,25 @@ async function bkDownload(resp, fallbackName){
       if (/did not match/.test(e.message || '')) throw e;
     }
   }
-
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = (m && m[1]) || fallbackName;
-  document.body.appendChild(a); a.click(); a.remove();
-  URL.revokeObjectURL(url);
+  return blob;
 }
 
 async function bkInspect(input){
   const f = input.files && input.files[0];
   input.value = '';                       // re-selecting the same file works
   if (!f) return;
+  await bkInspectFile(f, document.getElementById('bkMsg'));
+}
+
+// Inspect one bundle and open the import dialog on it. THE entry to the
+// import, whichever way the bundle arrived — chosen from disk on the
+// Settings panel or in the first-start dialog, or downloaded from GitHub
+// (v0.146.0) — so all of them meet the same dialog and the same apply.
+// `msg` is where progress and errors are written, because the first-
+// start dialog is on screen when the Settings panel is not. Returns
+// whether the dialog opened.
+async function bkInspectFile(f, msg){
   _bkFile = f;
-  const msg = document.getElementById('bkMsg');
   msg.textContent = 'Reading bundle…';
   try {
     const fd = new FormData(); fd.append('file', f);
@@ -19109,21 +19170,128 @@ async function bkInspect(input){
     _bkInsp = await r.json();
   } catch(e){
     msg.innerHTML = `<span style="color:var(--red)">${escapeHtml(String(e.message||e))}</span>`;
-    return;
+    return false;
   }
   msg.textContent = '';
   if ((_bkInsp.errors || []).length){
     msg.innerHTML = `<span style="color:var(--red)">${
       _bkInsp.errors.map(escapeHtml).join('<br>')}</span>`;
-    return;
+    return false;
   }
   bkRenderImport();
   showModal('bkImportModal');
+  return true;
+}
+
+// Fetch the fund set attached to the newest GitHub release and hand it to
+// bkInspectFile as if it had been chosen from disk. The server does the
+// download (the browser cannot read a cross-origin release asset) and
+// returns the archive with the export's integrity headers, checked here
+// by the same routine a saved export is.
+async function bkImportFromGithub(msg, btn){
+  msg = msg || document.getElementById('bkMsg');
+  btn = btn || document.getElementById('bkGithubBtn');
+  if (btn) setBtnBusy(btn, 'Downloading…');
+  msg.textContent = 'Downloading the fund set from GitHub…';
+  try {
+    const r = await withJobProgress('Downloading the fund set from GitHub', (tok) =>
+      fetch(`${API}/bundles/funds/github`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({progress_token: tok})}));
+    if (!r.ok){
+      let why = `HTTP ${r.status}`;
+      try { why = (await r.json()).error || why; } catch(_){}
+      throw new Error(why);
+    }
+    const blob = await bkVerifiedBlob(r);
+    const f = new File([blob], 'porxpy_funds.zip', {type:'application/zip'});
+    return await bkInspectFile(f, msg);
+  } catch(e){
+    msg.innerHTML = `<span style="color:var(--red)">Could not download the fund set: ${
+      escapeHtml(String(e.message||e))}</span>`;
+    return false;
+  } finally {
+    if (btn) clearBtnBusy(btn);
+  }
+}
+
+// ── First start (v0.146.0) ─────────────────────────────────────────────
+// While no fund is saved and the question is unanswered, offer to import
+// the fund set: from GitHub, from a local bundle, or not at all. "Not at
+// all" and a completed import both answer it for good; ✕ and a failed
+// download leave it open for next start, and cancelling the import
+// dialog comes back here.
+let _obFundsPending = false;   // the import dialog was opened from here
+
+async function obMaybeOfferFunds(){
+  const r = await fetch(`${API}/onboarding`);
+  if (!r.ok) return;
+  const d = await r.json();
+  if (!d.offer_funds) return;
+  document.getElementById('obFundsMsg').textContent = '';
+  showModal('obFundsModal');
+}
+
+function obFundsClose(){ hideModal('obFundsModal'); }
+
+async function obFundsAnswered(){
+  _obFundsPending = false;
+  try { await fetch(`${API}/onboarding/funds_done`, {method:'POST'}); } catch(_){}
+  // Keep the browser's copy in step: a later Settings save PUTs the whole
+  // settings object, and a stale false would undo the answer.
+  if (appSettings) appSettings.onboarding = {...(appSettings.onboarding||{}), funds_offered:true};
+}
+
+async function obFundsSkip(){
+  hideModal('obFundsModal');
+  await obFundsAnswered();
+}
+
+async function obFundsLocal(input){
+  const f = input.files && input.files[0];
+  input.value = '';
+  if (!f) return;
+  if (await bkInspectFile(f, document.getElementById('obFundsMsg'))){
+    _obFundsPending = true;
+    hideModal('obFundsModal');
+  }
+}
+
+async function obFundsGithub(){
+  if (await bkImportFromGithub(document.getElementById('obFundsMsg'),
+                               document.getElementById('obGithubBtn'))){
+    _obFundsPending = true;
+    hideModal('obFundsModal');
+  }
 }
 
 function bkCloseImport(){
   hideModal('bkImportModal');
   _bkFile = null; _bkInsp = null;
+  // Begun from the first-start dialog and cancelled: back to its choices
+  // rather than to an empty app with the question silently dropped.
+  if (_obFundsPending){
+    _obFundsPending = false;
+    document.getElementById('obFundsMsg').textContent = '';
+    showModal('obFundsModal');
+  }
+}
+
+// A bundle written by a newer PorxPy may carry fields this one does not
+// know. Worth saying, not refusing: the GitHub download is always the
+// LATEST release's fund set, whatever this build is
+// (config.PRELOADED_FUNDS_URL).
+function bkNewerNote(bundleVer){
+  if (!bundleVer || !APP_VERSION) return '';
+  const parse = v => String(v||'').split('.').map(x => parseInt(x,10) || 0);
+  const a = parse(bundleVer), b = parse(APP_VERSION);
+  for (let i = 0; i < 3; i++){
+    if ((a[i]||0) > (b[i]||0)) return `<div style="color:var(--muted);margin-top:4px">
+      Made by a newer PorxPy than this one (v${escapeHtml(APP_VERSION)}): it imports,
+      but anything that version added may not show until you update.</div>`;
+    if ((a[i]||0) < (b[i]||0)) return '';
+  }
+  return '';
 }
 
 function bkRenderImport(){
@@ -19135,7 +19303,7 @@ function bkRenderImport(){
   if (d.kind === 'portfolios'){
     const miss = d.missing_funds || [];
     sum.innerHTML = `Portfolio backup, exported ${escapeHtml(d.manifest.exported_at || '')}
-      by version ${escapeHtml(d.manifest.app_version || '?')}.`;
+      by version ${escapeHtml(d.manifest.app_version || '?')}.` + bkNewerNote(d.manifest.app_version);
     body.innerHTML = `
       <div style="font-family:var(--mono);font-size:.68rem;line-height:1.7">
         ${(d.portfolios||[]).map(p => `• ${escapeHtml(p.name || p.id)}
@@ -19159,7 +19327,7 @@ function bkRenderImport(){
   sum.innerHTML = `Fund bundle, exported ${escapeHtml(d.manifest.exported_at || '')}
     by version ${escapeHtml(d.manifest.app_version || '?')} —
     <b>${funds.length}</b> fund${funds.length===1?'':'s'},
-    <b>${clash.length}</b> already here.`;
+    <b>${clash.length}</b> already here.` + bkNewerNote(d.manifest.app_version);
 
   const rows = funds.map(f => {
     const cost = f.local_overrides
@@ -19255,6 +19423,8 @@ async function bkApply(){
       clearBtnBusy(btn);
       return;
     }
+    const fromOnboarding = _obFundsPending;
+    if (fromOnboarding) await obFundsAnswered();   // before close, which would reopen it
     bkCloseImport();
     const msg = document.getElementById('bkMsg');
     const bits = [];
@@ -19268,6 +19438,9 @@ async function bkApply(){
     if ((rep.missing_funds||[]).length)
       bits.push(`${rep.missing_funds.length} referenced funds not present`);
     msg.textContent = bits.join(' · ') || 'Nothing to import.';
+    // The Settings panel holding bkMsg is not on screen after a first-
+    // start import, so the result goes to the status line as well.
+    if (fromOnboarding) setStatus('ok', escapeHtml(msg.textContent));
     // Imported funds join the universe, so peer groups resize for the
     // funds already in it — the same reason saveToPreloaded invalidates.
     invalidateFundDerived();

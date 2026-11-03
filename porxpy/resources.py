@@ -205,6 +205,10 @@ def write_resource_csv(fp: Path, fieldnames: list[str],
     # Oekraïne) survive a round trip through a spreadsheet instead of
     # coming back as mojibake. Without it, editing this file in Excel
     # corrupts every accented character in it.
+    # The folder may not exist yet: a data directory that has never held
+    # a resource file (a fresh PORXPY_DATA_DIR) gets its first one from
+    # a bundle import's merge (v0.146.0).
+    fp.parent.mkdir(parents=True, exist_ok=True)
     fp.write_text(buf.getvalue(), encoding="utf-8-sig")
 
 

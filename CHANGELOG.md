@@ -3,6 +3,55 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.146.0] - 2026-11-03
+
+### Added - The fund set downloads itself from GitHub
+
+**Settings → backup & restore** has a **Download fund set from GitHub**
+button beside *Choose file…*. The server fetches `porxpy_funds.zip`
+from the newest release (`config.PRELOADED_FUNDS_URL`, through
+`issuers.http_get`) and hands the archive back to the browser with the
+same size and SHA-256 headers an export carries; the browser checks
+them and puts the file through the ordinary import dialog, exactly as
+if it had been chosen from disk. There is no second import path: the
+conflict table, the resource-file choice and the importer are the ones
+a local bundle gets, and nothing is written until Import is pressed.
+The import summary now says when a bundle was made by a newer PorxPy
+than the one reading it — the download is always the latest release's.
+
+### Added - A first-start offer to import the fund set
+
+A PorxPy with no saved funds now asks on start where its funds should
+come from: **Download from GitHub**, **Local bundle…**, or **Skip**.
+Both choices that import lead into the same dialog; cancelling it goes
+back to the question. Skip and a completed import answer it for good
+(`settings.onboarding.funds_offered`); closing it with ✕ asks again
+next start. Asked only while no fund is saved, so an existing install,
+or one restored with funds, never sees it.
+
+### Fixed - A source run could share port 5000 with the installed PorxPy
+
+Only the installed build looked before binding. Run from PyCharm while
+the installed copy held 5000, the dev server bound the same port
+anyway — Windows allows it without an error — and requests were
+answered by whichever process won. `main.py` now applies one check,
+`_claim_port`, in both modes: a second start of the same checkout says
+where the first one is and stops, and when anything else holds 5000 the
+dev server serves on the next free port up to 5009 and prints that it
+did. The reloader's child process takes the port its watcher chose
+(through `PORXPY_PORT`) rather than checking again, since to it the
+port is held by its own parent. A source run records its port in
+`running.json` like the installed build, now gitignored.
+
+### Fixed - A separate data directory in a source run started without vocabularies
+
+`PORXPY_DATA_DIR` points a run at another data directory, but only the
+installed build copied the shipped resource CSVs into one, so a source
+run started with every vocabulary empty — and its first bundle import
+failed with a 500 writing into a `resources/` folder that did not
+exist. `main.py` now prepares the data directory whenever it is not the
+program's own, and `write_resource_csv` creates its folder.
+
 ## [0.145.2] - 2026-11-02
 
 ### Fixed - The portfolio backup carried the Anthropic API key

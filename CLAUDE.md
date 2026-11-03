@@ -153,7 +153,13 @@ Concretely, before finishing a change, sweep the parallel set it belongs to:
   unknown) — add a house's mechanism there, not in code.
 - Download a **document from a URL** → through `issuers.http_get`, the
   one routine (v0.139.0; a pasted URL had its own urllib copy until
-  then, whose separate cookie jar never saw a passed disclaimer).
+  then, whose separate cookie jar never saw a passed disclaimer). The
+  GitHub fund-set download uses it too (v0.146.0).
+- Import a **bundle**, however it arrived → through `bkInspectFile` in
+  the frontend and the `/api/bundles/inspect` → `/apply` pair. The GitHub
+  download returns the zip to the browser rather than importing it, so
+  a downloaded bundle, a chosen file and the first-start dialog all meet
+  one dialog and one importer.
 - Add or change an **issuer adapter** → it should be DATA, not code. A house
   is a `DOCUMENTS` table of URL templates and page-scrape specs plus a few
   class attributes (`hosts`, `name_patterns`, `SITE_PATH_SEGMENTS`);
@@ -267,6 +273,13 @@ of debugging.
 - Backend edits: `debug=True` means the stat reloader picks them up. If a
   reload needs nudging, `touch porxpy/app.py`.
 - Only start one when nothing answers on that port.
+- Since v0.146.0 `main.py` checks too, in source mode as in the installed
+  build (`_claim_port`): a second start of the SAME checkout (same
+  `data_id`) refuses and says where the first one is, and when anything
+  else holds 5000 it serves on 5001–5009 and prints that it did. So read
+  its startup lines — a dev server on 5001 means 5000 belongs to
+  something else (usually the installed PorxPy), and `curl` 5000 would
+  then be talking to that.
 
 There is **no test suite, linter config, or build step** in this repo. Verification is done by running the app and exercising the affected screen, or by the two `tools/` scripts. `test files/` holds sample CSVs for manually exercising the breakdown-upload flow, not automated tests.
 

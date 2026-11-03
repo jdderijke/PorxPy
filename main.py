@@ -127,7 +127,7 @@ def _legacy_check() -> None:
 
 
 def _prepare_data_dir() -> None:
-    """Make the installed build's data directory usable on first run.
+    """Make a separate data directory usable on first run.
 
     The program files are read-only, so the resource CSVs the app writes
     aliases into are copied to the user's data directory, where they are
@@ -163,10 +163,11 @@ def _porxpy_answering(port: int) -> bool:
         return False
 
 
-# Where a running installed copy says which port it took (v0.145.1). The
-# port is not always 5000 — something else may hold that one, a source
-# checkout's dev server for instance — so a second start has to be told
-# where to look rather than assume.
+# Where a running copy says which port it took (v0.145.1; a source run
+# writes it too since v0.146.0). The port is not always 5000 — the other
+# kind of PorxPy may hold that one — so a second start has to be told
+# where to look rather than assume. Gitignored: in a checkout DATA_DIR
+# is the project root.
 _RUNNING_FP = DATA_DIR / "running.json"
 
 
@@ -196,6 +197,49 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def _claim_port(preferred: int) -> tuple[int | None, int]:
+    """Decide where to serve, shared by the installed build and the source run.
+
+    One routine for both since v0.146.0. Until then only the installed
+    build looked before it bound: the source run took 5000 regardless,
+    and on Windows a second process binds a port another one is already
+    serving on without an error — so starting from PyCharm while the
+    installed copy held 5000 left two servers on one port, each request
+    answered by whichever won, with nothing on screen to say so.
+
+    Args:
+        preferred: The port to take when nothing holds it.
+
+    Returns:
+        ``(running, port)``. ``running`` is the port on which THIS
+        PorxPy (same data directory) already answers, or ``None``; when
+        it is set the caller should not start a second server. ``port``
+        is the one to serve on otherwise: ``preferred`` when it is free,
+        else the next free one up to nine above it — so the page keeps
+        one address from start to start, and the browser keeps the
+        page's own settings (the chosen portfolio, level selectors) per
+        address — and any free port last.
+    """
+    # Ourselves first: on the port the running copy recorded, then on the
+    # one we would take.
+    for p in dict.fromkeys(x for x in (_running_port(), preferred) if x):
+        if _porxpy_answering(p):
+            return p, p
+    port = preferred
+    if not _port_free(port):
+        port = next((p for p in range(port + 1, port + 10) if _port_free(p)),
+                    None) or _free_port()
+    return None, port
+
+
+def _record_port(port: int) -> None:
+    try:
+        _RUNNING_FP.write_text(json.dumps({"port": port, "pid": os.getpid()}),
+                               encoding="utf-8")
+    except OSError:
+        pass                        # only costs a second start its shortcut
+
+
 def _run_installed() -> None:
     """Serve the installed build: this PC only, no debugger, browser opened.
 
@@ -206,28 +250,15 @@ def _run_installed() -> None:
     it was served from, so any port works), another one when something
     else holds it. ``PORXPY_PORT`` picks one explicitly.
     """
-    port = int(os.environ.get("PORXPY_PORT") or 5000)
-    # Ourselves first: on the port the running copy recorded, then on the
-    # one we would take.
-    for p in dict.fromkeys(x for x in (_running_port(), port) if x):
-        if _porxpy_answering(p):
-            url = f"http://127.0.0.1:{p}/"
-            print(f"  PorxPy is already running — opening {url}")
-            print("  (this window closes by itself; the running PorxPy has its own)")
-            webbrowser.open(url)
-            time.sleep(4)
-            return
-    if not _port_free(port):
-        # The next few first, so the page keeps one address from start to
-        # start — the browser keeps the page's own settings (the chosen
-        # portfolio, level selectors) per address. Any free port last.
-        port = next((p for p in range(port + 1, port + 10) if _port_free(p)),
-                    None) or _free_port()
-    try:
-        _RUNNING_FP.write_text(json.dumps({"port": port, "pid": os.getpid()}),
-                               encoding="utf-8")
-    except OSError:
-        pass                        # only costs a second start its shortcut
+    running, port = _claim_port(int(os.environ.get("PORXPY_PORT") or 5000))
+    if running:
+        url = f"http://127.0.0.1:{running}/"
+        print(f"  PorxPy is already running — opening {url}")
+        print("  (this window closes by itself; the running PorxPy has its own)")
+        webbrowser.open(url)
+        time.sleep(4)
+        return
+    _record_port(port)
 
     url = f"http://127.0.0.1:{port}/"
     print(f"  Your data:  {DATA_DIR}")
@@ -246,24 +277,65 @@ def _run_installed() -> None:
             threaded=True)
 
 
+def _run_source() -> None:
+    """Serve from a source checkout: the dev server with the reloader.
+
+    The port is chosen by :func:`_claim_port` like the installed build's,
+    with one difference that follows from the reloader. Werkzeug's
+    reloader runs this file twice: a watcher process that binds the
+    socket, and a child (``WERKZEUG_RUN_MAIN=true``) that serves on the
+    socket it inherits and is restarted on every save. The child must
+    not look again — to it the port is held, by its own parent — so it
+    takes the port the watcher chose, passed down in ``PORXPY_PORT``.
+
+    A copy of THIS checkout already serving is not started twice: it
+    says where it is and stops, because two servers writing one data
+    directory is the failure the check exists to prevent.
+    """
+    _legacy_check()
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        port = int(os.environ.get("PORXPY_PORT") or 5000)
+    else:
+        running, port = _claim_port(int(os.environ.get("PORXPY_PORT") or 5000))
+        if running:
+            print(f"  PorxPy (this checkout) is already running on "
+                  f"http://127.0.0.1:{running}/ — not starting a second one.")
+            return
+        if port != 5000:
+            print(f"  Port 5000 is taken by something else (the installed "
+                  f"PorxPy, perhaps) — serving on {port} instead.")
+        print(f"  Open:       http://127.0.0.1:{port}/")
+        print()
+        os.environ["PORXPY_PORT"] = str(port)   # inherited by the reloader child
+        _record_port(port)
+    # Imported only now: it loads every resource CSV, which a start that
+    # is about to stop because the port is ours already should not wait for.
+    from porxpy.app import create_app
+    app = create_app()
+    app.run(host="0.0.0.0", port=port, debug=True)
+
+
 def main() -> None:
     """Build the Flask app and serve it.
 
-    From source: the development server on 0.0.0.0:5000 with the
-    reloader, as always. Installed (frozen): :func:`_run_installed`.
+    From source: :func:`_run_source`, the development server with the
+    reloader. Installed (frozen): :func:`_run_installed`.
     """
     # Before anything prints, including the banner.
     _force_utf8_output()
-    if FROZEN:
+    # Whenever the data lives apart from the program: always when
+    # installed, and in a source run pointed at PORXPY_DATA_DIR (v0.146.0)
+    # — which until then started with every vocabulary empty, and failed
+    # its first bundle import writing into a resources folder that did
+    # not exist. A plain source run reads and writes the shipped files
+    # in place, so there is nothing to copy.
+    if RESOURCES_DIR.resolve() != SHIPPED_RESOURCES_DIR.resolve():
         _prepare_data_dir()
     _print_banner()
     if FROZEN:
         _run_installed()
         return
-    _legacy_check()
-    from porxpy.app import create_app
-    app = create_app()
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    _run_source()
 
 
 if __name__ == "__main__":

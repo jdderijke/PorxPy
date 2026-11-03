@@ -287,6 +287,20 @@ another (`resource_action: merge_aliases`); running that same merge
 from the released files into the user's on each upgrade would close
 it, and is the shape to try first rather than a second merge.
 
+### Code-sign the installer and the program
+Unsigned, `PorxPy-Setup-<version>.exe` and the PyInstaller-built
+`PorxPy.exe` get the full treatment from a virus scanner on every
+install: the PyInstaller bootloader is a common heuristic hit, every
+rebuild has a hash nobody has seen before so no reputation builds, and
+the one-folder build unpacks thousands of files that are each scanned.
+An Authenticode signature (an OV certificate, or Microsoft's Trusted
+Signing where the user qualifies) moves reputation to the certificate,
+and `build.ps1` would sign both files with `signtool` after each step.
+Cheaper partial measures, worth having in any case: build the
+PyInstaller bootloader from source, exclude unused packages from the
+spec, and let setup close a running PorxPy before replacing its files
+(the likely source of the "restart" prompts). Raised 2026-11-03.
+
 ### ~~More user friendly way to enter the Claude API key~~ — shipped in v0.103.0
 The key is currently added as an environment variable, better to enter it in the settings somewhere.
 

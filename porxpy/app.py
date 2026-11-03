@@ -3718,6 +3718,66 @@ def create_app() -> Flask:
             progress_finish(_tok)
         return jsonify(report)
 
+    @app.route("/api/bundles/funds/github", methods=["POST"])
+    def api_bundle_funds_github() -> Response:
+        """Fetch the pre-loaded fund set from the newest GitHub release.
+
+        Returns the archive itself, with the same integrity headers an
+        export carries, rather than importing it. The browser then puts
+        it through the ordinary inspect → decide → apply flow as if the
+        user had chosen the file from disk, so a download from GitHub and
+        a local bundle meet exactly the same dialog, conflict choices and
+        importer — there is no second import path to drift.
+
+        Writes nothing, which is also why this does not ask
+        ``network_reachable()`` first: that check protects a held copy
+        from being replaced by an offline emptiness, and nothing is held
+        or replaced here. Offline, the download simply fails and says so.
+        """
+        from porxpy.config import PRELOADED_FUNDS_URL
+        from porxpy.issuers import http_get
+        _tok = _job_token()
+        # No byte counts: http_get reads the body in one go. A sweeping
+        # bar with the phase is what a job that cannot count itself gets.
+        progress_start(_tok, 0, "downloading the fund set from GitHub", "files")
+        try:
+            fetched = http_get(PRELOADED_FUNDS_URL)
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 502
+        finally:
+            progress_finish(_tok)
+        if not fetched.data.startswith(b"PK"):
+            return jsonify({"error": f"{PRELOADED_FUNDS_URL} did not return a "
+                                     f"zip archive ({fetched.content_type or 'unknown type'})"}), 502
+        return _bundle_response(fetched.data, "porxpy_funds.zip")
+
+    @app.route("/api/onboarding")
+    def api_onboarding() -> Response:
+        """Whether to offer the first-start fund import.
+
+        Offered while no fund is saved and the question has not been
+        answered (``settings.onboarding.funds_offered``). Both halves
+        matter: the flag alone would ask an install restored from a
+        backup that already has funds, and the empty list alone would
+        ask on every start somebody who chose to begin with none.
+        """
+        from porxpy.config import PRELOADED_FUNDS_URL
+        from porxpy.utils import load_settings, saved_listing_tickers
+        n_saved = len(saved_listing_tickers())
+        offered = bool((load_settings().get("onboarding") or {}).get("funds_offered"))
+        return jsonify({"offer_funds": (n_saved == 0 and not offered),
+                        "saved_funds": n_saved,
+                        "github_url":  PRELOADED_FUNDS_URL})
+
+    @app.route("/api/onboarding/funds_done", methods=["POST"])
+    def api_onboarding_funds_done() -> Response:
+        """Record that the first-start fund question has been answered."""
+        from porxpy.utils import load_settings, save_settings
+        s = load_settings()
+        save_settings({**s, "onboarding": {**(s.get("onboarding") or {}),
+                                           "funds_offered": True}})
+        return jsonify({"ok": True})
+
     @app.route("/api/resources/facet_alias_targets/<facet>")
     def api_facet_alias_targets(facet: str) -> Response:
         """Level-tagged canonical vocabulary a raw value may be aliased to.

@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.145.2. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.146.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -90,7 +90,8 @@ this PC only, on port 5000 — or, when something else holds 5000 (a
 PorxPy run from source, say), on the next free port up to 5009, so the
 address stays the same from one start to the next. Another PorxPy on
 the port is treated as just that: the installed one serves its own
-data, never another copy's.
+data, never another copy's. Since v0.146.0 a run from source follows the
+same rule, so the two can run side by side whichever starts first.
 
 Your data — portfolios, settings, the fund cache, and the resource
 files that collect your aliases — lives in `%LOCALAPPDATA%\PorxPy`, not
@@ -100,8 +101,8 @@ says where the folder is, if you want it gone too). One consequence: a
 newer version's resource files reach a fresh install only. An existing
 install keeps the copies it has, with your aliases in them.
 
-The installed app starts empty. Continue with section 4 to import the
-pre-loaded fund set; to bring portfolios over from another PorxPy,
+The installed app starts empty, and on its first start offers to import
+the pre-loaded fund set (section 4); to bring portfolios over from another PorxPy,
 export a portfolio backup there and import it here (section 11).
 
 To build the installer yourself from a checkout (Windows, with the
@@ -179,7 +180,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.145.2 (built 2026-11-02)
+  PorxPy  v0.146.0 (built 2026-11-03)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -246,11 +247,23 @@ their holdings.
 > again. Nothing of yours is at risk: the funds you imported live in
 > `cache/` and `isin_map.json`, which git never touches.
 
-To load it:
+**The quick way (v0.146.0).** On a first start with no funds, PorxPy
+asks where the fund set should come from: **Download from GitHub**
+fetches the zip above for you, **Local bundle…** takes one you already
+have, and **Skip** starts empty and does not ask again. Closing the
+question with ✕ means "ask me next time". The same download is under
+**Settings → backup & restore → Download fund set from GitHub** at any
+time. Either way you land in the import dialog of step 3 below, and
+nothing is written until you press Import. The download is always the
+newest release's fund set; if it was made by a newer PorxPy than yours,
+the dialog says so.
+
+To load it by hand:
 
 1. Go to **Settings → backup & restore**.
 2. Under **Import a bundle**, click **Choose file…** and pick the
-   `porxpy_funds.zip` you downloaded.
+   `porxpy_funds.zip` you downloaded (or **Download fund set from
+   GitHub** to skip the browser download).
 3. PorxPy reads the bundle and opens the import dialog. **Nothing has
    been written yet.** The summary line tells you how many funds the
    bundle holds and how many of them you already have; on a fresh
