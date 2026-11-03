@@ -3,6 +3,34 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.146.1] - 2026-11-03
+
+### Fixed - A reinstall was never a first start
+
+The installed PorxPy keeps its data in `%LOCALAPPDATA%\PorxPy`, apart
+from the program, so that an upgrade cannot lose anyone's portfolios.
+The uninstaller left that folder too and only said where it was, so
+uninstalling and installing again found the old portfolios, funds and
+settings and loaded them, with no way back to a clean start short of
+deleting the folder by hand in AppData. The uninstaller now asks
+whether to remove the data as well. **No** is the default, and the
+answer a silent uninstall gets, so nothing is deleted without someone
+choosing it; **Yes** removes the folder, and the next install starts
+empty with the first-start fund offer. Installing over an existing
+copy never runs the uninstaller, so an upgrade is unaffected.
+
+### Fixed - The import dialog and the Pre-loaded list counted different things
+
+The import dialog counts FUNDS (one row per ISIN, because overwrite or
+skip is decided per fund); the Pre-loaded funds list counts LISTINGS
+(one per ticker). A fund on three exchanges is one of the first and
+three of the second, so the shipped set read "78 funds" in the dialog
+and 89 in the list, with nothing to say both were right. The dialog now
+says "78 funds (89 listings)", shows each fund's tickers in a new
+*listings* column (`inspect_bundle` reports them per fund, read from
+each listing's identity block as the importer reads them), and the
+result line counts listings too.
+
 ## [0.146.0] - 2026-11-03
 
 ### Added - The fund set downloads itself from GitHub

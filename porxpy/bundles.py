@@ -380,7 +380,8 @@ def inspect_bundle(data: bytes) -> dict:
 
     Returns:
         ``{kind, manifest, funds: [...], resources: [...], errors: [...]}``
-        where each fund carries ``exists`` and, when it does, the count
+        where each fund carries its ``listings`` (tickers), ``exists`` and,
+        when it does, the count
         of local overrides an overwrite would replace — so "overwrite"
         can state its cost at the moment of choosing rather than
         discarding work silently.
@@ -441,6 +442,22 @@ def inspect_bundle(data: bytes) -> dict:
             except Exception:
                 ov_bundle = {}
 
+        # Which listings (tickers) the bundle carries for each fund
+        # (v0.146.1). A fund is one ISIN, but the Pre-loaded list counts
+        # listings, and a fund traded on three exchanges is one row here
+        # and three there — so the dialog said 78 and the list 89 with
+        # nothing to say both were right. Read the way apply_bundle reads
+        # them, from each listing's identity block.
+        listings_by_isin: dict[str, list[str]] = {}
+        for arc in sorted(n for n in z.namelist() if n.startswith("listings/")):
+            try:
+                blob = json.loads(z.read(arc).decode("utf-8"))
+            except Exception:
+                continue
+            l_isin = ((blob.get("identity") or {}).get("isin") or "").strip().upper()
+            if l_isin:
+                listings_by_isin.setdefault(l_isin, []).append(Path(arc).stem)
+
         for entry in manifest.get("funds") or []:
             isin = (entry.get("isin") or "").strip().upper()
             if not isin:
@@ -458,6 +475,7 @@ def inspect_bundle(data: bytes) -> dict:
                 "local_overrides": len([f for f in local_ov
                                         if f not in _PERSONAL_OVERRIDE_FIELDS]),
                 "bundle_overrides": len(ov_bundle.get(isin) or {}),
+                "listings": listings_by_isin.get(isin, []),
             })
 
         for name in manifest.get("resources") or []:

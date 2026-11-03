@@ -19324,18 +19324,28 @@ function bkRenderImport(){
 
   const funds = d.funds || [];
   const clash = funds.filter(f => f.exists);
+  // Funds AND listings (v0.146.1): the conflict choice is per fund (one
+  // ISIN), but the Pre-loaded list counts listings (one per ticker), so
+  // a fund on three exchanges is one row here and three there. Saying
+  // both is what lets the two screens' numbers be matched up.
+  const nListings = funds.reduce((n, f) => n + (f.listings || []).length, 0);
   sum.innerHTML = `Fund bundle, exported ${escapeHtml(d.manifest.exported_at || '')}
     by version ${escapeHtml(d.manifest.app_version || '?')} —
-    <b>${funds.length}</b> fund${funds.length===1?'':'s'},
-    <b>${clash.length}</b> already here.` + bkNewerNote(d.manifest.app_version);
+    <b>${funds.length}</b> fund${funds.length===1?'':'s'}${nListings ? `
+    (<b>${nListings}</b> listing${nListings===1?'':'s'})` : ''},
+    <b>${clash.length}</b> already here.` + bkNewerNote(d.manifest.app_version)
+    + (nListings > funds.length ? `<div style="color:var(--muted);margin-top:4px">
+      A fund traded on several exchanges is one row here and one listing per
+      ticker in the Pre-loaded funds list.</div>` : '');
 
   const rows = funds.map(f => {
     const cost = f.local_overrides
       ? ` <span style="color:var(--muted)">(replaces ${f.local_overrides} of your edits)</span>`
       : '';
     return `<tr>
-      <td style="white-space:nowrap">${escapeHtml(f.name)}</td>
-      <td style="color:var(--muted)">${escapeHtml(f.isin)}</td>
+      <td style="padding:3px 8px">${escapeHtml(f.name)}</td>
+      <td style="color:var(--muted);padding:3px 8px;white-space:nowrap">${escapeHtml(f.isin)}</td>
+      <td style="color:var(--muted);padding:3px 8px">${escapeHtml((f.listings || []).join(', '))}</td>
       <td>${f.exists ? `
         <select class="inp" style="font-size:.64rem" data-bkisin="${escapeAttr(f.isin)}">
           <option value="skip">skip — keep mine</option>
@@ -19361,6 +19371,7 @@ function bkRenderImport(){
       <table class="tbl" style="width:100%;font-family:var(--mono);font-size:.66rem">
         <thead style="position:sticky;top:0;background:var(--bg);z-index:2"><tr>
           <th style="text-align:left">fund</th><th style="text-align:left">isin</th>
+          <th style="text-align:left">listings</th>
           <th style="text-align:left">on conflict</th><th></th>
         </tr></thead>
         <tbody>${rows}</tbody>
@@ -19428,7 +19439,8 @@ async function bkApply(){
     bkCloseImport();
     const msg = document.getElementById('bkMsg');
     const bits = [];
-    if ((rep.funds_imported||[]).length) bits.push(`${rep.funds_imported.length} funds imported`);
+    if ((rep.funds_imported||[]).length) bits.push(`${rep.funds_imported.length} funds imported`
+      + (rep.listings ? ` (${rep.listings} listings)` : ''));
     if ((rep.funds_skipped||[]).length)  bits.push(`${rep.funds_skipped.length} skipped`);
     if (rep.portfolios_imported)         bits.push(`${rep.portfolios_imported} portfolios restored`);
     if (rep.factsheets)                  bits.push(`${rep.factsheets} factsheets`);

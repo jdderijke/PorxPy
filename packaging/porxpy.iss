@@ -10,8 +10,12 @@
 ; user's data is NOT the installer's business: the app keeps it under
 ; %LOCALAPPDATA%\PorxPy (porxpy/config.py, DATA_DIR) and creates it on
 ; first run, so an upgrade replaces the program and leaves portfolios,
-; settings and cache alone, and an uninstall does too - said on the
-; last page of the uninstaller rather than deleted silently.
+; settings and cache alone. An uninstall ASKS (v0.146.1): keeping the
+; data is the default answer, and the only one a silent uninstall
+; gets, so nothing is lost without a person saying so - but "uninstall,
+; reinstall, start clean" no longer means digging in AppData. Before
+; that it only said where the folder was, and a reinstall then found
+; the old portfolios and funds and loaded them as if it were a first run.
 
 #ifndef AppVersion
   #error AppVersion is not defined - run packaging\build.ps1
@@ -60,11 +64,29 @@ Filename: "{app}\PorxPy.exe"; Description: "Start PorxPy now"; Flags: nowait pos
 
 [Code]
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  DataDir: String;
 begin
-  if CurUninstallStep = usPostUninstall then
-    SuppressibleMsgBox('PorxPy has been removed.' + #13#10 + #13#10 +
-           'Your portfolios, settings and fund data were left in place, in' + #13#10 +
-           ExpandConstant('{localappdata}\PorxPy') + #13#10 + #13#10 +
-           'Delete that folder yourself if you no longer want them.',
-           mbInformation, MB_OK, IDOK);
+  if CurUninstallStep <> usPostUninstall then
+    exit;
+  DataDir := ExpandConstant('{localappdata}\PorxPy');
+  if not DirExists(DataDir) then
+    exit;
+  // No is the default button and what /SILENT gets: deleting the user's
+  // portfolios has to be somebody's explicit choice.
+  if SuppressibleMsgBox('PorxPy has been removed.' + #13#10 + #13#10 +
+         'Your portfolios, settings and fund data are still in' + #13#10 +
+         DataDir + #13#10 + #13#10 +
+         'Remove them as well?' + #13#10 + #13#10 +
+         'Yes deletes them permanently, so a new install starts clean.' + #13#10 +
+         'No keeps them, and a later install picks them up again.',
+         mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
+  begin
+    if DelTree(DataDir, True, True, True) then
+      SuppressibleMsgBox('Your PorxPy data has been removed.', mbInformation, MB_OK, IDOK)
+    else
+      SuppressibleMsgBox('Some of your PorxPy data could not be removed (is PorxPy' + #13#10 +
+             'still running?). What is left is in' + #13#10 + DataDir,
+             mbError, MB_OK, IDOK);
+  end;
 end;

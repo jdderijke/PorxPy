@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.146.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.146.1. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -96,8 +96,11 @@ same rule, so the two can run side by side whichever starts first.
 Your data — portfolios, settings, the fund cache, and the resource
 files that collect your aliases — lives in `%LOCALAPPDATA%\PorxPy`, not
 beside the program. Installing a newer version replaces the program
-and leaves that folder alone, and so does uninstalling (the uninstaller
-says where the folder is, if you want it gone too). One consequence: a
+and leaves that folder alone. Uninstalling asks whether to remove it
+too: **No** (the default) keeps it, and a later install picks your
+portfolios and funds up again; **Yes** deletes it, so the next install
+starts clean, with the first-start offer to import the fund set. Without
+that Yes, a reinstall is not a first start. One consequence: a
 newer version's resource files reach a fresh install only. An existing
 install keeps the copies it has, with your aliases in them.
 
@@ -180,7 +183,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.146.0 (built 2026-11-03)
+  PorxPy  v0.146.1 (built 2026-11-03)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -266,7 +269,10 @@ To load it by hand:
    GitHub** to skip the browser download).
 3. PorxPy reads the bundle and opens the import dialog. **Nothing has
    been written yet.** The summary line tells you how many funds the
-   bundle holds and how many of them you already have; on a fresh
+   bundle holds — and how many listings: a fund traded on several
+   exchanges is one row here but one entry per ticker in the
+   Pre-loaded funds list, which is why that list shows the larger
+   number — and how many of them you already have; on a fresh
    install that second number is zero and every row reads *new — will be
    imported*.
 4. Leave the **Resource files** action on **merge aliases, keep my key
