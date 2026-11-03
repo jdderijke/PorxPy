@@ -294,12 +294,17 @@ def create_app() -> Flask:
         · built 2026-04-28") and could be probed by any client wanting
         to confirm what backend it's talking to.
         """
-        from porxpy.config import data_dir_id
+        from porxpy.config import FROZEN, data_dir_id
         # data_id: which data directory this server works on, fingerprinted
         # — how a starting installed build recognises its own running copy
         # (main._porxpy_answering) rather than any PorxPy on the port.
+        # mode (v0.147.0): the installed build or a source run. The two can
+        # serve side by side on neighbouring ports with different data, and
+        # the page says which one it is so a browser tab cannot be mistaken
+        # for the other.
         return jsonify({"name": NAME, "version": VERSION, "build_date": BUILD_DATE,
-                        "data_id": data_dir_id()})
+                        "data_id": data_dir_id(),
+                        "mode": "installed" if FROZEN else "source"})
 
 
     # The per-facet card source is one registry field per facet now
@@ -2413,6 +2418,21 @@ def create_app() -> Flask:
             if isinstance(body, dict):
                 return str(body.get("progress_token") or "").strip()
         return ""
+
+    @app.after_request
+    def _stamp_data_generation(resp):
+        """Tell the browser how far the caches have moved (v0.147.0).
+
+        On every response, because any of them may be the one that
+        fetched: a portfolio view loads prices for every fund whose copy
+        is missing or stale, and the quality dots and scores the page
+        already holds were computed before that. The page compares this
+        with the number its copy was computed at (``noteDataGen``) and
+        fetches them again when it has moved on.
+        """
+        from porxpy.utils import data_generation
+        resp.headers["X-PorxPy-Data-Gen"] = str(data_generation())
+        return resp
 
     @app.after_request
     def _close_job_progress(resp):

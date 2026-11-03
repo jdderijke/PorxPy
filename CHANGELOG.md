@@ -3,6 +3,34 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.147.0] - 2026-11-03
+
+### Added - The browser tab says which PorxPy it is
+
+The installed Windows app and a source run from PyCharm keep different
+data and can now run side by side, so two tabs could look identical
+while showing different portfolios. `/api/meta` reports a `mode`
+(`installed` or `source`), and the tab title and the version pill in
+the header now read "PorxPy 0.147.0 · Windows" or "· PyCharm", and a
+badge beside the logo says the same at a glance — green for the
+installed app, amber for the source run, the copy to be careful in.
+
+### Fixed - Quality dots kept saying "missing returns" after the prices had arrived
+
+The page fetches the data-quality verdicts (and the scores) once per
+session and kept them until something it knew about changed. A load
+that FETCHED was not one of those things. A copy filled from a fund
+bundle has no price history — the bundle does not carry it — so its
+first portfolio view drew every fund red for missing returns, then
+fetched the prices, and went on showing red; only a page reload put it
+right, which made the installed copy look broken next to a source copy
+whose prices had been fetched long before. The server now counts its
+cache writes and stamps every response with the count
+(`X-PorxPy-Data-Gen`); after a portfolio view, a portfolio price
+history or a fund load, the page compares it with the count its
+verdicts were computed at and fetches them again when the caches have
+moved on. A load served from cache writes nothing, so it costs nothing.
+
 ## [0.146.1] - 2026-11-03
 
 ### Fixed - A reinstall was never a first start

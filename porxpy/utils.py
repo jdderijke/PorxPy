@@ -773,6 +773,19 @@ def _legacy_purge_moot(category: str, data: dict) -> bool:
                for blob in (store.get("sources") or {}).values())
 
 
+# How many times this process has written a listing or fund cache blob
+# (v0.147.0). Sent with every response as ``X-PorxPy-Data-Gen`` so the
+# browser can tell that what it computed from the caches — the quality
+# dots, the scores — was computed before data it now depends on landed.
+# A count, not a time: it only has to differ, and it never goes back.
+_DATA_GEN = 0
+
+
+def data_generation() -> int:
+    """The cache-write count; see ``_DATA_GEN``."""
+    return _DATA_GEN
+
+
 def cache_write(key: str, category: str, data: dict) -> None:
     """Persist a cache blob to disk.
 
@@ -783,11 +796,13 @@ def cache_write(key: str, category: str, data: dict) -> None:
             The blob is overwritten in place — callers should
             read-modify-write.
     """
+    global _DATA_GEN
     _legacy_purge_settle(data)
     fp = _cache_path_for(key, category)
     try:
         with open(fp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
+        _DATA_GEN += 1
     except Exception as exc:
         print(f"[Cache] write error for {key}/{category}: {exc}")
 

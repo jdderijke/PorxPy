@@ -50,6 +50,14 @@
   .version-pill{font-family:var(--mono);font-size:.7rem;color:var(--muted);margin-left:20px;margin-top:3px;letter-spacing:.05em;}
   .version-pill .vp-name{color:var(--accent);}
   .version-pill .vp-sep{opacity:.4;margin:0 6px;}
+  /* Which PorxPy this is (v0.147.0), beside the logo: green for the
+     installed Windows app, amber for a source run — amber because that
+     is the development copy, the one to be careful in. Hidden until
+     /api/meta has answered. */
+  .mode-badge{font-family:var(--mono);font-size:.6rem;letter-spacing:.12em;text-transform:uppercase;
+    padding:2px 8px;border-radius:10px;border:1px solid currentColor;margin-left:4px;display:none;}
+  .mode-badge.installed{display:inline-block;color:var(--green);background:rgba(52,211,153,.08);}
+  .mode-badge.source{display:inline-block;color:var(--amber);background:rgba(251,191,36,.08);}
 
   /* Portfolio bar */
   .pbar{display:flex;align-items:center;gap:8px;}
@@ -1547,7 +1555,7 @@
 
   <header>
     <div class="brand">
-      <div class="logo"><div class="dot"></div><h1>PorxPy</h1></div>
+      <div class="logo"><div class="dot"></div><h1>PorxPy</h1><span class="mode-badge" id="modeBadge"></span></div>
       <div class="tagline">// portfolio x-ray python</div>
       <div class="version-pill" id="versionPill">&nbsp;</div>
     </div>
@@ -4238,13 +4246,27 @@ async function loadAppMeta(){
     const name = escapeHtml(m.name    || 'PorxPy');
     const ver  = escapeHtml(m.version || '?');
     const bd   = escapeHtml(m.build_date || '?');
+    // Which PorxPy this tab belongs to (v0.147.0): the installed Windows
+    // app and a source run from PyCharm keep different data and can be
+    // open side by side, so both the pill and the tab title say which.
+    // Named as the user knows them rather than as the backend does.
+    const modeLabel = {installed: 'Windows', source: 'PyCharm'}[m.mode] || '';
     const pill = document.getElementById('versionPill');
     if (pill) {
       pill.innerHTML =
         `<span class="vp-name">${name}</span>` +
         `<span class="vp-sep">·</span>v${ver}` +
+        (modeLabel ? `<span class="vp-sep">·</span>${modeLabel}` : '') +
         `<span class="vp-sep">·</span>built ${bd}`;
-      document.title = `${name} ${ver}`;
+    }
+    document.title = `${name} ${ver}` + (modeLabel ? ` · ${modeLabel}` : '');
+    const badge = document.getElementById('modeBadge');
+    if (badge && modeLabel) {
+      badge.textContent = modeLabel;
+      badge.className = `mode-badge ${m.mode}`;
+      badge.title = m.mode === 'installed'
+        ? 'The installed PorxPy — its data is in %LOCALAPPDATA%\\PorxPy'
+        : 'PorxPy run from source (PyCharm) — its data is in the project folder';
     }
   } catch(e) { /* ignore — pill just stays blank */ }
 }
@@ -4600,7 +4622,7 @@ async function fetchFundWithProgress(params, title){
   return withJobProgress(title || 'Fetching fund data', (tok) => {
     params.set('progress_token', tok);
     return fetch(`${API}/fund?${params}`);
-  });
+  }).then(r => { noteDataGen(r); return r; });
 }
 
 // The enrichment callers predate the generalisation and read better in
@@ -5278,6 +5300,9 @@ function scorePresetOptionsHtml(selected){
 // is fine once and not fine on every render.
 let cacheQuality = null;
 let _qualityInFlight = null;
+// The server's cache-write count when cacheQuality was fetched (v0.147.0);
+// see noteDataGen.
+let cacheQualityGen = '';
 
 async function fetchQuality(force){
   if (cacheQuality && !force) return cacheQuality;
@@ -5288,6 +5313,7 @@ async function fetchQuality(force){
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
       cacheQuality = d.funds || {};
+      cacheQualityGen = r.headers.get('X-PorxPy-Data-Gen') || '';
       return cacheQuality;
     } finally { _qualityInFlight = null; }
   })();
@@ -5539,6 +5565,25 @@ function qualityRowsHtml(entry){
 // Cheap to call: the two fetches are read-only server-side passes over
 // the caches, and every surface repaints from data it already holds —
 // no extra /api/fund or /view round-trip.
+// Re-derive the quality dots and the scores when the server's caches have
+// moved on since they were fetched (v0.147.0). Both are computed from the
+// caches once per session; a load that FETCHED — a portfolio view filling
+// in missing price history, a fund opened past its TTL — changed what they
+// would say, and nothing told the page. A fresh install filled from a
+// bundle carries no price history, so its first portfolio view drew every
+// fund "missing returns" and kept saying so after the prices had arrived.
+// Called with the response of each load that can fetch; the server stamps
+// every response with its count. Unlike invalidateFundDerived it does not
+// reset lastLoadedPid — the portfolio that just loaded is current.
+function noteDataGen(resp){
+  const gen = resp && resp.headers ? resp.headers.get('X-PorxPy-Data-Gen') : null;
+  if (!gen || cacheQuality == null || gen === cacheQualityGen) return;
+  cacheQuality = null;
+  cacheScores  = {};
+  fPeersFor    = null;
+  refreshFundDerived().catch(e => console.warn('derived refresh:', e));
+}
+
 function invalidateFundDerived(){
   lastLoadedPid = '';
   cacheQuality  = null;
@@ -20686,6 +20731,7 @@ async function reloadPortfolio(forceRefresh, isSwitch = false){
     const r = await fetch(`${API}/portfolios/${activePid}/view?${params}`);
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+    noteDataGen(r);
     // The user moved to another portfolio while this was in flight;
     // this data is about a screen nobody is looking at.
     if (activePid !== pidAtStart) return;
@@ -24481,6 +24527,7 @@ async function loadPortfolioPriceHistory(forceRefresh){
     const r = await fetch(`${API}/portfolios/${activePid}/price_history?${params}`);
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+    noteDataGen(r);
     pPriceData = data;
 
     // Initialise visibility: every fund hidden by default. Users see only

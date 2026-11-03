@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.146.1. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.147.0. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -91,7 +91,10 @@ PorxPy run from source, say), on the next free port up to 5009, so the
 address stays the same from one start to the next. Another PorxPy on
 the port is treated as just that: the installed one serves its own
 data, never another copy's. Since v0.146.0 a run from source follows the
-same rule, so the two can run side by side whichever starts first.
+same rule, so the two can run side by side whichever starts first. A
+badge beside the PorxPy logo, and the browser tab's title, say which
+one a page belongs to: **Windows** (green) for the installed app,
+**PyCharm** (amber) for a run from source (v0.147.0).
 
 Your data — portfolios, settings, the fund cache, and the resource
 files that collect your aliases — lives in `%LOCALAPPDATA%\PorxPy`, not
@@ -183,7 +186,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.146.1 (built 2026-11-03)
+  PorxPy  v0.147.0 (built 2026-11-03)
   Portfolio X-ray Python
 =======================================================
 ```
