@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.147.0. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.147.1. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -186,7 +186,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.147.0 (built 2026-11-03)
+  PorxPy  v0.147.1 (built 2026-11-04)
   Portfolio X-ray Python
 =======================================================
 ```

@@ -3342,6 +3342,52 @@ def top10_weight_sum_pct(top_rows: list[dict]) -> float:
 # ---------------------------------------------------------------------------
 # Cached gateway
 # ---------------------------------------------------------------------------
+def _may_persist(yf_sym: str, key: str, category: str, commit: bool) -> bool:
+    """Whether a fresh fetch of one cache category may be written to disk.
+
+    The explicit-save model (v0.21.0) in one place. Three callers asked
+    this question with three copies of the answer — :func:`get_category`,
+    :func:`get_price_history_cached` and the holdings write in
+    :func:`load_fund_data` — and the copies had drifted: only the first
+    and last knew that a SAVED fund persists a category it has never
+    stored. The price-history loader did not, so a fund arriving from a
+    bundle (which carries no price history) fetched its prices every time
+    the fund page opened it, drew them on the chart, and threw them away;
+    the cache never gained them and the quality dot kept saying "missing
+    returns" (v0.147.1). Only a portfolio view, which commits, ever
+    stored them.
+
+    Three ways a category may be written, cheapest to answer first:
+
+    1. the caller committed (Save, or a portfolio view);
+    2. this exact category is already stored (a refresh). This tests the
+       CATEGORY, not the file: ``bool(cache_read(key, category))``
+       returns the whole blob, so a listing holding only its identity
+       stamp used to answer "already cached" and an unsaved fund began
+       persisting on its second view (v0.95.3);
+    3. the fund is saved at all. "Saved" is a property of the fund, so
+       a saved fund missing one category — an interrupted commit, or a
+       bundle that does not carry it — fills it on the next read rather
+       than staying half-saved until someone presses Save again
+       (v0.95.2). This used to be asked for fund-scope categories only;
+       it is asked for every category now, because a listing-scope one
+       (price history) has exactly the same hole.
+
+    Args:
+        yf_sym: The listing's Yahoo ticker — what "saved" is asked of.
+        key: The cache key the category lives under (ticker or ISIN).
+        category: The cache category being written.
+        commit: The caller's explicit save.
+
+    Returns:
+        True when the value may be written.
+    """
+    if commit:
+        return True
+    from porxpy.utils import cache_has_category, listing_is_saved
+    return cache_has_category(key, category) or listing_is_saved(yf_sym)
+
+
 def get_category(yf_sym: str, isin: str, category: str, cache_cfg: dict,
                  extractor, *, force: bool = False,
                  commit: bool = True
@@ -3367,11 +3413,10 @@ def get_category(yf_sym: str, isin: str, category: str, cache_cfg: dict,
             not already saved, the extractor still runs but the result is
             NOT written to disk -- it is returned in memory only. When
             True (default), when this entry already exists, or when the
-            fund's listing exists and this is a fund-scope category,
-            writes happen as before. Rationale: the file's presence in
-            ``cache/listings/`` IS the marker that the fund is saved to
-            the pre-loaded list — so it governs BOTH halves of that
-            fund's cache, not just the listing half (v0.95.2).
+            fund is saved, writes happen as before. "Saved" governs BOTH
+            halves of that fund's cache, not just the listing half
+            (v0.95.2), and every category in either half (v0.147.1) —
+            see :func:`_may_persist`.
 
     Returns:
         ``(value, meta)``. ``meta.source`` is ``"cache"`` or ``"live"``.
@@ -3427,28 +3472,9 @@ def get_category(yf_sym: str, isin: str, category: str, cache_cfg: dict,
     # was a peer group of one, since peer_key reads a primary asset class
     # that was permanently "unknown".
     #
-    # Asked only for fund-scope categories, and only when the cheaper
-    # tests have already failed, so the common paths cost nothing extra.
-    from porxpy.utils import cache_has_category, listing_is_saved
-    # Three ways this may be written, in increasing cost to answer:
-    #   1. the caller committed;
-    #   2. this exact category is already stored (a refresh);
-    #   3. the FUND is saved, and this is one of its fund-scope
-    #      categories that has never been written.
-    #
-    # (2) tests the CATEGORY, not the file. It used to be
-    # `bool(_cache_read(key, category))`, which returns the whole blob
-    # for that file — so a listing holding only its identity stamp
-    # answered "already cached" for profile and price history, and an
-    # unsaved fund quietly began persisting them on its second view.
-    #
-    # (3) is what stops a fund being half-saved for good: "saved" is a
-    # property of the fund, so a fund whose listing carries real data
-    # while its fund file was never written fills that file on the next
-    # read instead of staying broken until someone presses Save again.
-    should_write = commit or cache_has_category(key, category)
-    if not should_write and category in FUND_CATEGORIES:
-        should_write = listing_is_saved(yf_sym)
+    # The rule itself lives in _may_persist, shared with the price-history
+    # loader and the holdings write, which had their own copies of it.
+    should_write = _may_persist(yf_sym, key, category, commit)
 
     if enabled and should_write:
         meta = cache_put(key, category, value)
@@ -3503,13 +3529,10 @@ def get_price_history_cached(yf_sym: str, ticker: yf.Ticker,
 
     # v0.21.0 explicit-save: only write to disk when commit=True OR an
     # entry already exists (refresh of saved fund).
-    from porxpy.utils import cache_read as _cache_read
-    # cache_has_category, not bool(_cache_read(...)): the latter returns
-    # the whole listing blob, so an identity stamp alone answered "already
-    # cached" and an unsaved fund began persisting its price history on
-    # its second view (v0.95.3). Same test, same reason, as get_category.
-    from porxpy.utils import cache_has_category as _has_cat
-    should_write = commit or _has_cat(yf_sym, "price_history")
+    # Explicit-save rule shared with get_category (see _may_persist). Its
+    # own copy here lacked the "fund is saved" leg, which is why a fund
+    # imported from a bundle never kept the prices its page fetched.
+    should_write = _may_persist(yf_sym, yf_sym, "price_history", commit)
 
     cat_cfg = cache_cfg.get("price_history", {})
     enabled = bool(cat_cfg.get("enabled"))
@@ -4088,12 +4111,7 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
         # v0.21.0 explicit-save: only persist holdings when commit=True
         # OR a holdings cache already exists for this ISIN. Otherwise the
         # blob is returned in memory only (consistent with the listing).
-        from porxpy.utils import cache_read as _cache_read
-        # Fund-scope, so it follows the same three-way rule as
-        # get_category: an explicit commit, this category already stored,
-        # or the fund being saved at all.
-        from porxpy.utils import (cache_has_category as _has_cat2,
-                                  listing_is_saved as _saved2)
+        # The same explicit-save rule as get_category (_may_persist).
         # The outage can also begin between the probe above and the fetch;
         # an empty answer over a stored top-10 is then checked once more.
         prev_rows = (holdings_store.get("yahoo") or {}).get("rows") or []
@@ -4105,7 +4123,7 @@ def load_fund_data(isin: str, exchange: str | None, cache_cfg: dict,
             blob_source   = holdings_blob.get("source") or blob_source
             hmeta = {"source": "stale", "stale": True, "ttl_days": None,
                      "reason": "offline — could not refresh"}
-        elif commit or _has_cat2(isin, "holdings") or _saved2(yf_sym):
+        elif _may_persist(yf_sym, isin, "holdings", commit):
             meta = holdings_put(isin, holdings_blob, "yahoo",
                                 store=holdings_store)
             hmeta = {

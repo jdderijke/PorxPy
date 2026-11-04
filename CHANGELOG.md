@@ -3,6 +3,29 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.147.1] - 2026-11-04
+
+### Fixed - Opening an imported fund fetched its prices and threw them away
+
+A fund imported from a bundle arrives with no price history — the
+bundle does not carry it — and opening it from the Pre-loaded list did
+fetch the prices: the chart drew them. But the fund page loads a saved
+fund without an explicit save, and the price-history loader carried its
+own copy of the "may this be written?" rule, one that lacked the leg
+saying a SAVED fund persists a category it has never stored. The other
+two copies (the general category loader and the holdings write) had
+that leg since v0.95.2; this one never did. So the prices were shown
+and discarded, the cache never gained them, and the quality dot, which
+reads the cache, went on saying "missing returns" however often the
+fund was opened. Only a portfolio view, which always commits, stored
+them — which is why funds in a portfolio were fine.
+
+The rule is now one function, `extractors._may_persist`, called by all
+three writers, and its saved-fund leg applies to every category rather
+than to fund-scope ones only, since a listing-scope category has exactly
+the same hole. Opening an affected fund once now stores its prices, and
+the v0.147.0 data-generation check repaints the dot.
+
 ## [0.147.0] - 2026-11-03
 
 ### Added - The browser tab says which PorxPy it is
