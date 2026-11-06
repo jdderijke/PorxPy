@@ -2,7 +2,8 @@
 #
 #   powershell -ExecutionPolicy Bypass -File packaging\build.ps1
 #
-# Produces dist\PorxPy-Setup-<version>.exe from the current checkout:
+# Produces dist\PorxPy-Setup.exe from the current checkout (a fixed name
+# since v0.147.2, so it is a permanent release download -- see porxpy.iss):
 #   1. PyInstaller freezes main.py and its packages into dist\PorxPy\
 #      (packaging\porxpy.spec says what ships beside the code).
 #   2. Inno Setup wraps that folder into one installer
@@ -42,4 +43,4 @@ if (-not $iscc) { throw 'Inno Setup 6 not found - winget install JRSoftware.Inno
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed ($LASTEXITCODE)" }
 
 Write-Host ""
-Write-Host "Installer: $root\dist\PorxPy-Setup-$version.exe"
+Write-Host "Installer: $root\dist\PorxPy-Setup.exe (v$version)"

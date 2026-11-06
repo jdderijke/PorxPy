@@ -1,7 +1,9 @@
 # PorxPy
 
-*Current as of v0.147.1. This is the fullest architecture write-up;
+*Current as of v0.147.2. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
+
+[![Download for Windows](https://img.shields.io/badge/Download-Windows%20installer-0078D6?style=for-the-badge&logo=windows)](https://github.com/jdderijke/PorxPy/releases/latest/download/PorxPy-Setup.exe)
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
 true exposure of an investment portfolio across funds, ETFs, sectors,
@@ -987,7 +989,8 @@ than a file in the repository: git cannot merge a 30 MB zip, so a
 tracked copy collided with `git pull` for anyone who had re-exported
 over theirs.
 
-On Windows there is also an installer, `PorxPy-Setup-<version>.exe`,
+On Windows there is also an installer, `PorxPy-Setup.exe` — the
+download button at the top of this page, <https://github.com/jdderijke/PorxPy/releases/latest/download/PorxPy-Setup.exe> —
 which needs no Python: it starts PorxPy in a small console window and
 opens the browser for you, and keeps your data under
 `%LOCALAPPDATA%\PorxPy`. GETTING_STARTED §2 covers it, including how to
@@ -1050,6 +1053,6 @@ it does.
 
 ## Version
 
-Current release: **0.147.1** (2026-11-04)
+Current release: **0.147.2** (2026-11-06)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

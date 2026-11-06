@@ -3,6 +3,25 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.147.2] - 2026-11-06
+
+### Changed - The Windows installer has one name and a permanent download link
+
+The installer was built as `PorxPy-Setup-<version>.exe`, so every
+release carried a differently named file and there was no link that
+stayed right from one release to the next. It is now built as
+`PorxPy-Setup.exe` (`OutputBaseFilename` in `packaging/porxpy.iss`;
+`build.ps1` reports the name and the version it built). Attached to a
+release under that name, GitHub serves it at
+`https://github.com/jdderijke/PorxPy/releases/latest/download/PorxPy-Setup.exe`
+— the same mechanism that gives `porxpy_funds.zip` its permanent link.
+The version still travels with the file: in the release tag, the
+installer's title and the exe's file properties.
+
+README.md opens with a **Download for Windows** badge pointing at that
+link, and README, GETTING_STARTED and WISHLIST name the installer by
+its new filename.
+
 ## [0.147.1] - 2026-11-04
 
 ### Fixed - Opening an imported fund fetched its prices and threw them away

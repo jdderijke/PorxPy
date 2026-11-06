@@ -288,7 +288,7 @@ from the released files into the user's on each upgrade would close
 it, and is the shape to try first rather than a second merge.
 
 ### Code-sign the installer and the program
-Unsigned, `PorxPy-Setup-<version>.exe` and the PyInstaller-built
+Unsigned, `PorxPy-Setup.exe` and the PyInstaller-built
 `PorxPy.exe` get the full treatment from a virus scanner on every
 install: the PyInstaller bootloader is a common heuristic hit, every
 rebuild has a hash nobody has seen before so no reputation builds, and

@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.147.1. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.147.2. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -76,7 +76,10 @@ JSON files in the project directory.
 
 ### On Windows: the installer
 
-Since v0.145.0 there is a Windows installer, `PorxPy-Setup-<version>.exe`.
+Since v0.145.0 there is a Windows installer, `PorxPy-Setup.exe`,
+attached to every release under that fixed name, so this link always
+fetches the newest one:
+**<https://github.com/jdderijke/PorxPy/releases/latest/download/PorxPy-Setup.exe>**
 It needs no Python and no command line: run it, and it installs PorxPy
 for your Windows account (no administrator needed; the first page
 offers *for all users* if you have the rights), with a Start-menu entry
@@ -120,7 +123,8 @@ winget install JRSoftware.InnoSetup
 powershell -ExecutionPolicy Bypass -File packaging/build.ps1
 ```
 
-It writes `dist/PorxPy-Setup-<version>.exe`.
+It writes `dist/PorxPy-Setup.exe` — the same name for every version
+(v0.147.2), which is what keeps the download link above permanent.
 
 ### From source
 
@@ -186,7 +190,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.147.1 (built 2026-11-04)
+  PorxPy  v0.147.2 (built 2026-11-06)
   Portfolio X-ray Python
 =======================================================
 ```

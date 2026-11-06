@@ -253,7 +253,7 @@ python main.py                    # then open http://127.0.0.1:5000
 python tools/inspect_fund.py TDIV.AS [MORE.TICKERS]   # dump raw Yahoo fields behind TER/size/turnover (network, writes nothing)
 python tools/data_coverage.py                          # profile-field coverage across the saved listing cache (no network)
 
-# Windows installer (v0.145.0) -> dist/PorxPy-Setup-<version>.exe
+# Windows installer (v0.145.0) -> dist/PorxPy-Setup.exe (fixed name, v0.147.2)
 pip install -r packaging/requirements-build.txt        # once: PyInstaller
 winget install JRSoftware.InnoSetup                    # once: the installer compiler
 powershell -ExecutionPolicy Bypass -File packaging/build.ps1
@@ -364,6 +364,13 @@ External services: Yahoo Finance (always), OpenFIGI (ISIN→ticker), justETF (op
   `git pull` for every downstream clone whose owner had re-exported over
   theirs, and each re-export added another 30 MB to the history of every
   clone, permanently.
+- **The Windows installer is a release asset under a fixed name too**:
+  `PorxPy-Setup.exe`, which `packaging/porxpy.iss` builds by that name
+  since v0.147.2, so `.../releases/latest/download/PorxPy-Setup.exe` —
+  the README's download badge — always fetches the newest one. Upload it
+  to each release with `gh release upload <tag> dist/PorxPy-Setup.exe
+  --clobber`; never put a version back in the filename (the tag and the
+  exe's file properties carry it), and never track `dist/`.
 - **Comments record decisions, including rejected ones.** `config.py` in particular explains why sibling facets were backed out, why there is no geographic super-region, why a key was renamed. When changing something these comments cover, update the rationale rather than deleting it — and match the density: this codebase documents *why*, not *what*.
 - **Docstrings are Google-style with an explicit "why this exists" paragraph**, on modules and non-trivial functions alike.
 - Backend files are large and single-purpose; add to the existing module that owns the concern rather than creating a new one.
