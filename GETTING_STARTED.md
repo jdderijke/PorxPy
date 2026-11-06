@@ -1,6 +1,6 @@
 # GETTING_STARTED.md — install PorxPy and design your first portfolio
 
-*Current as of v0.147.2. Check the stamp against `porxpy/__init__.py`
+*Current as of v0.147.3. Check the stamp against `porxpy/__init__.py`
 before trusting a claim.*
 
 Everything between a fresh clone and a designed portfolio: install the
@@ -76,10 +76,10 @@ JSON files in the project directory.
 
 ### On Windows: the installer
 
-Since v0.145.0 there is a Windows installer, `PorxPy-Setup.exe`,
-attached to every release under that fixed name, so this link always
-fetches the newest one:
-**<https://github.com/jdderijke/PorxPy/releases/latest/download/PorxPy-Setup.exe>**
+Since v0.145.0 there is a Windows installer, `PorxPy-Setup.exe`. This
+link always fetches the current one — it never changes, only the file
+behind it does:
+**<https://github.com/jdderijke/PorxPy/releases/download/current/PorxPy-Setup.exe>**
 It needs no Python and no command line: run it, and it installs PorxPy
 for your Windows account (no administrator needed; the first page
 offers *for all users* if you have the rights), with a Start-menu entry
@@ -190,7 +190,7 @@ build you are about to use:
 
 ```
 =======================================================
-  PorxPy  v0.147.2 (built 2026-11-06)
+  PorxPy  v0.147.3 (built 2026-11-06)
   Portfolio X-ray Python
 =======================================================
 ```
@@ -220,15 +220,15 @@ The **Portfolio** selector in the header chooses the active portfolio.
 
 ## 4. Import the pre-loaded fund set
 
-A curated fund bundle ships with every release. It is **not** in the
-repository — it is attached to the release as a download:
+A curated fund bundle comes with PorxPy. It is **not** in the
+repository — it is a download from GitHub:
 
-**<https://github.com/jdderijke/PorxPy/releases/latest/download/porxpy_funds.zip>**
+**<https://github.com/jdderijke/PorxPy/releases/download/current/porxpy_funds.zip>**
 
-That link always resolves to the newest bundle, so it is the one to
-bookmark; the [Releases page](https://github.com/jdderijke/PorxPy/releases)
-lists every earlier one beside the changelog entry that explains what
-moved. Save the file into **`PreLoadedFunds/`** — that folder exists
+That link never changes: when the fund set is re-exported, the file
+behind it is replaced, so it is the one to bookmark. It sits beside the
+installer on the one GitHub release PorxPy keeps, `current`; older fund
+sets are not kept (v0.147.3). Save the file into **`PreLoadedFunds/`** — that folder exists
 for it, and git ignores every zip in it.
 
 The filename is fixed so that the link can be. The export date has not
@@ -265,7 +265,7 @@ question with ✕ means "ask me next time". The same download is under
 **Settings → backup & restore → Download fund set from GitHub** at any
 time. Either way you land in the import dialog of step 3 below, and
 nothing is written until you press Import. The download is always the
-newest release's fund set; if it was made by a newer PorxPy than yours,
+current fund set; if it was made by a newer PorxPy than yours,
 the dialog says so.
 
 To load it by hand:
@@ -692,10 +692,10 @@ treated very differently:
 
 | Export | Contains | Use it for |
 |---|---|---|
-| **Export funds** | The curated asset — holdings, factsheets, corrected fields, per-card source pins and the resource files. | Moving your fund research to another install, or handing it to someone else. This is how the `porxpy_funds.zip` attached to each release is made —
+| **Export funds** | The curated asset — holdings, factsheets, corrected fields, per-card source pins and the resource files. | Moving your fund research to another install, or handing it to someone else. This is how the downloadable `porxpy_funds.zip` is made —
 the export names the file after the day it ran and records that date in
-`manifest.json`, and the release upload renames it to the fixed name
-that keeps the download link permanent. |
+`manifest.json`, and the upload renames it to the fixed name that
+keeps the download link permanent. |
 | **Export portfolios** | Portfolios, targets, cash positions and settings — but never your Anthropic API key. | Your own backup. Restores on top of whatever fund set is present, and keeps the key already on this machine. |
 
 Price history is off by default in the funds export, because it

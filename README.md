@@ -1,9 +1,9 @@
 # PorxPy
 
-*Current as of v0.147.2. This is the fullest architecture write-up;
+*Current as of v0.147.3. This is the fullest architecture write-up;
 check the stamp against `porxpy/__init__.py` before trusting a claim.*
 
-[![Download for Windows](https://img.shields.io/badge/Download-Windows%20installer-0078D6?style=for-the-badge&logo=windows)](https://github.com/jdderijke/PorxPy/releases/latest/download/PorxPy-Setup.exe)
+[![Download for Windows](https://img.shields.io/badge/Download-Windows%20installer-0078D6?style=for-the-badge&logo=windows)](https://github.com/jdderijke/PorxPy/releases/download/current/PorxPy-Setup.exe)
 
 **Portfolio X-ray Python** — a self-hosted tool for analysing the
 true exposure of an investment portfolio across funds, ETFs, sectors,
@@ -24,7 +24,7 @@ order for a new user:
 
 | Document | Answers | Read it when |
 |---|---|---|
-| **[GETTING_STARTED.md](GETTING_STARTED.md)** | How do I install PorxPy, load the fund set that ships with it, and design a first portfolio? | First. It is the only place the installation procedure lives, and it runs end to end: install, import the fund bundle attached to the latest release, create a portfolio, give it cash, set targets, run the optimiser, apply the trades. |
+| **[GETTING_STARTED.md](GETTING_STARTED.md)** | How do I install PorxPy, load the fund set that ships with it, and design a first portfolio? | First. It is the only place the installation procedure lives, and it runs end to end: install, import the current fund bundle from GitHub, create a portfolio, give it cash, set targets, run the optimiser, apply the trades. |
 | **[IMPORT_NEW_FUNDS_GUIDE.md](IMPORT_NEW_FUNDS_GUIDE.md)** | How do I add a fund the shipped set does not have, and get it fully described? | When you want your own funds in the cache. ISIN and ticker imports, holdings uploads, factsheets and their extraction, §11b's full account of how enrichment identifies and fills a holding, the Edit fund dialog, resolving unmatched values, and what every tile means. |
 | **README.md** (this file) | What is PorxPy, what does it do, and how is it built? | For the feature tour and the architecture — module roles, the cache layout, the request flow, external services, privacy. |
 | **[FACET_TREE.md](FACET_TREE.md)** | How do facets actually work? | When a breakdown reads oddly, or before changing anything that touches one. The four trees, why every level travels together, what `unknown` means against `n/a`, what is deliberately *not* a facet, and §17's verified defects. |
@@ -978,8 +978,8 @@ in **[GETTING_STARTED.md](GETTING_STARTED.md)** — start there.
 
 The short version: clone the repo, `pip install -r requirements.txt`,
 `python main.py`, open <http://127.0.0.1:5000>, and import the fund
-bundle attached to the latest release —
-<https://github.com/jdderijke/PorxPy/releases/latest/download/porxpy_funds.zip> —
+fund-set bundle —
+<https://github.com/jdderijke/PorxPy/releases/download/current/porxpy_funds.zip> —
 from Settings → backup & restore so there is a fund universe to work
 with from the first minute. Since v0.146.0 PorxPy can fetch that bundle
 itself: on a first start with no funds it offers to download it from
@@ -990,7 +990,7 @@ tracked copy collided with `git pull` for anyone who had re-exported
 over theirs.
 
 On Windows there is also an installer, `PorxPy-Setup.exe` — the
-download button at the top of this page, <https://github.com/jdderijke/PorxPy/releases/latest/download/PorxPy-Setup.exe> —
+download button at the top of this page, <https://github.com/jdderijke/PorxPy/releases/download/current/PorxPy-Setup.exe> —
 which needs no Python: it starts PorxPy in a small console window and
 opens the browser for you, and keeps your data under
 `%LOCALAPPDATA%\PorxPy`. GETTING_STARTED §2 covers it, including how to
@@ -1053,6 +1053,6 @@ it does.
 
 ## Version
 
-Current release: **0.147.2** (2026-11-06)
+Current release: **0.147.3** (2026-11-06)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

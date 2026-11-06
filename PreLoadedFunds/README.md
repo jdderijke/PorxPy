@@ -1,12 +1,13 @@
 # PreLoadedFunds
 
 This folder is where the shipped fund bundle goes. It arrives empty in a
-fresh clone, because the bundle is **not** tracked in git — it is
-attached to each release as a download:
+fresh clone, because the bundle is **not** tracked in git — it is a
+download from the repository's one GitHub release, `current`:
 
-**<https://github.com/jdderijke/PorxPy/releases/latest/download/porxpy_funds.zip>**
+**<https://github.com/jdderijke/PorxPy/releases/download/current/porxpy_funds.zip>**
 
-That link always resolves to the newest bundle. Save the file here, then
+That link never changes; when the fund set is re-exported, the file
+behind it is replaced. Save the file here, then
 import it from **Settings → backup & restore**.
 [GETTING_STARTED.md](../GETTING_STARTED.md) §4 owns that procedure and
 describes it in full; this file only says where the file comes from.

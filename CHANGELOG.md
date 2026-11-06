@@ -3,6 +3,36 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.147.3] - 2026-11-06
+
+### Changed - One GitHub release holds the current installer and fund set
+
+`porxpy_funds.zip` was fetched from
+`.../releases/latest/download/porxpy_funds.zip`, and "latest" looks
+only at the newest release. So every versioned release had to carry its
+own copy of an unchanged 36 MB zip, a release that forgot it would have
+broken **Download fund set from GitHub**, the first-start offer and
+every doc that links the file, and the old copies of both it and the
+installer piled up on the Releases page for nobody.
+
+The repository now has exactly one release, tagged `current`, holding
+`PorxPy-Setup.exe` and `porxpy_funds.zip`. An update replaces the file
+in place, so both links are permanent and only the files behind them
+change:
+
+- `https://github.com/jdderijke/PorxPy/releases/download/current/PorxPy-Setup.exe`
+- `https://github.com/jdderijke/PorxPy/releases/download/current/porxpy_funds.zip`
+  (`config.PRELOADED_FUNDS_URL`)
+
+The README badge, GETTING_STARTED, `PreLoadedFunds/README.md` and the
+in-app tooltip point at them. `current` is also marked Latest, so the
+`latest/download` links built into v0.146.0–v0.147.2 installs resolve to
+the same files and keep working. The earlier releases (v0.118.1 fund
+set, v0.139.0, v0.146.0, v0.147.2) were removed; their git tags remain.
+Committing the two files into the repository instead was considered
+and rejected: git keeps every committed version for ever, so each
+update would have added about 85 MB to every clone permanently.
+
 ## [0.147.2] - 2026-11-06
 
 ### Changed - The Windows installer has one name and a permanent download link

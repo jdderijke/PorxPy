@@ -534,16 +534,28 @@ NETWORK_PROBE_TIMEOUT_S = 3.0
 # times. Short enough that reconnecting is noticed within a reload.
 NETWORK_PROBE_CACHE_S   = 30.0
 
-# The pre-loaded fund set, as attached to the newest GitHub release
-# (v0.146.0). The asset name is fixed precisely so this link never moves
-# (CLAUDE.md, "The pre-loaded fund bundle is a release asset"); the date
-# it was exported is in the bundle's own manifest, which the import
-# dialog shows. Always the LATEST release rather than the one matching
-# this build: the fund data is what goes stale, and the importer already
-# reads bundles from other versions — the dialog says when a bundle was
-# made by a newer PorxPy than the one reading it.
+# The pre-loaded fund set (v0.146.0), at a URL that never changes. The
+# repository has exactly one GitHub release, tagged `current`, holding
+# the current fund set and the current installer under fixed names
+# (CLAUDE.md, "The fund set and the installer live on one rolling
+# release"). An update replaces the file on that release and nothing
+# else moves; the date the set was exported is in the bundle's own
+# manifest, which the import dialog shows.
+#
+# Until v0.147.3 this was .../releases/latest/download/porxpy_funds.zip,
+# with a copy of the zip attached to every versioned release. Rejected:
+# "latest" looks only at the newest release, so each release had to
+# re-carry an unchanged 36 MB file, one that forgot it broke this
+# download for everybody, and the old copies piled up for nobody. The
+# `current` release is also marked Latest, so that old link — still
+# built into v0.146.0–v0.147.2 installs — resolves to the same file.
+#
+# Not the release matching this build either: the fund data is what goes
+# stale, and the importer already reads bundles from other versions — the
+# dialog says when a bundle was made by a newer PorxPy than the one
+# reading it.
 PRELOADED_FUNDS_URL = ("https://github.com/jdderijke/PorxPy/releases/"
-                       "latest/download/porxpy_funds.zip")
+                       "download/current/porxpy_funds.zip")
 
 # ISIN→ticker resolutions are extremely stable (an ISIN's ticker on a given
 # exchange essentially never changes). Cache on disk for a long time to

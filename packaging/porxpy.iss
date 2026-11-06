@@ -38,11 +38,11 @@ DefaultDirName={autopf}\PorxPy
 DefaultGroupName=PorxPy
 DisableProgramGroupPage=yes
 OutputDir=..\dist
-; A fixed name, not PorxPy-Setup-<version> (v0.147.2): attached to a
-; GitHub release under it, the installer has a permanent link,
-; .../releases/latest/download/PorxPy-Setup.exe, that the README's
-; download badge can hardcode -- the same reason porxpy_funds.zip has a
-; fixed name. The version is not lost: it is in the release tag, the
+; A fixed name, not PorxPy-Setup-<version> (v0.147.2): replaced in place
+; on the one `current` GitHub release, the installer has a permanent
+; link, .../releases/download/current/PorxPy-Setup.exe, that the
+; README's download badge can hardcode -- the same reason
+; porxpy_funds.zip has a fixed name. The version is not lost: it is in the release tag, the
 ; installer's title, and the exe's file properties (AppVersion).
 OutputBaseFilename=PorxPy-Setup
 SetupIconFile=porxpy.ico

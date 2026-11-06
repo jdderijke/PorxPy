@@ -2539,7 +2539,7 @@
           <button class="btn btn-s"
                   onclick="document.getElementById('bkFile').click()">Choose file…</button>
           <button class="btn btn-s" id="bkGithubBtn" style="margin-top:6px"
-                  title="Download porxpy_funds.zip from the newest PorxPy release on GitHub, then show what it would import"
+                  title="Download the current porxpy_funds.zip from GitHub, then show what it would import"
                   onclick="bkImportFromGithub()">Download fund set from GitHub</button>
         </div>
       </div>
@@ -19324,8 +19324,7 @@ function bkCloseImport(){
 
 // A bundle written by a newer PorxPy may carry fields this one does not
 // know. Worth saying, not refusing: the GitHub download is always the
-// LATEST release's fund set, whatever this build is
-// (config.PRELOADED_FUNDS_URL).
+// CURRENT fund set, whatever this build is (config.PRELOADED_FUNDS_URL).
 function bkNewerNote(bundleVer){
   if (!bundleVer || !APP_VERSION) return '';
   const parse = v => String(v||'').split('.').map(x => parseInt(x,10) || 0);

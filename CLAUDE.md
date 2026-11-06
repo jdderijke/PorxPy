@@ -352,25 +352,31 @@ External services: Yahoo Finance (always), OpenFIGI (ISIN→ticker), justETF (op
   quietly makes every claim in the file untrustworthy without saying which ones
   went stale. Hand back the list of documents you checked, so the sweep is
   visible rather than assumed.
-- **The pre-loaded fund bundle is a release asset, never a tracked
-  file.** Re-exporting the shipped fund set means attaching the zip to
-  the GitHub release under the fixed name `porxpy_funds.zip`. The fixed
-  name is the whole point: it is what makes
-  `.../releases/latest/download/porxpy_funds.zip` a permanent link the
-  docs can hardcode, and the export date survives in the bundle's own
-  `manifest.json` and in the release tag, so nothing is lost by dropping
-  it from the filename. Never re-add `PreLoadedFunds/*.zip` to the
-  index: git cannot three-way-merge a 30 MB zip, so a tracked copy broke
-  `git pull` for every downstream clone whose owner had re-exported over
-  theirs, and each re-export added another 30 MB to the history of every
-  clone, permanently.
-- **The Windows installer is a release asset under a fixed name too**:
-  `PorxPy-Setup.exe`, which `packaging/porxpy.iss` builds by that name
-  since v0.147.2, so `.../releases/latest/download/PorxPy-Setup.exe` —
-  the README's download badge — always fetches the newest one. Upload it
-  to each release with `gh release upload <tag> dist/PorxPy-Setup.exe
-  --clobber`; never put a version back in the filename (the tag and the
-  exe's file properties carry it), and never track `dist/`.
+- **The fund set and the installer live on one rolling release,
+  never in the repository.** The repo has exactly ONE GitHub release,
+  tagged `current` and marked Latest, holding `PorxPy-Setup.exe` and
+  `porxpy_funds.zip` under those fixed names. The user keeps no older
+  copies (v0.147.3): an update REPLACES the file on that release
+  (`gh release upload current <file> --clobber`), so
+  `.../releases/download/current/<file>` is a permanent link the docs,
+  the README badge and `config.PRELOADED_FUNDS_URL` hardcode. Being
+  Latest, it also answers the `.../releases/latest/download/<file>`
+  links of v0.146.0–v0.147.2 installs and older docs. Never create a
+  second release, never put a version or date in either filename (the
+  CHANGELOG, the exe's file properties and the bundle's own
+  `manifest.json` carry those), and never track `dist/` or
+  `PreLoadedFunds/*.zip`: git keeps every committed version of a file
+  for ever, so each 85 MB update would have grown every clone
+  permanently, and a tracked zip broke `git pull` for every clone
+  whose owner had re-exported over theirs (git cannot merge one).
+- **Publishing an update to `current` is Claude's job.** The user does
+  not upload these files. Installer: build it (`packaging/build.ps1`,
+  which uses `.venv1`) and upload with `--clobber`. Fund set: upload
+  the user's new export renamed to `porxpy_funds.zip`. Then move the
+  tag to the commit the files came from (`git tag -f current` and a
+  push of the tag — which, like any push, needs the user's word), set
+  the release notes to the version now in it, and check that both
+  `.../download/current/...` links answer 200.
 - **Comments record decisions, including rejected ones.** `config.py` in particular explains why sibling facets were backed out, why there is no geographic super-region, why a key was renamed. When changing something these comments cover, update the rationale rather than deleting it — and match the density: this codebase documents *why*, not *what*.
 - **Docstrings are Google-style with an explicit "why this exists" paragraph**, on modules and non-trivial functions alike.
 - Backend files are large and single-purpose; add to the existing module that owns the concern rather than creating a new one.
@@ -391,7 +397,7 @@ stated, and a reader who cannot find `FACET_TREE.md` will not know to
 look for it.
 
 The two user-facing guides are `GETTING_STARTED.md` (install, import the
-fund set attached to the latest GitHub release as `porxpy_funds.zip`,
+fund set downloadable from GitHub as `porxpy_funds.zip`,
 and design a first portfolio: cash, targets, optimiser) and `IMPORT_NEW_FUNDS_GUIDE.md`
 (everything about getting one more fund in and fully described). They
 carry the same version stamp as the design docs, and the installation
